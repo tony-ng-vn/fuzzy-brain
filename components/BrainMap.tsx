@@ -41,6 +41,16 @@ function colorFor(type: string): string {
   return `hsl(${hash}, 85%, 72%)`;
 }
 
+// Tooltip labels are raw HTML, so interpolated text must be escaped.
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function endpointId(end: string | BrainNode): string {
   return typeof end === "string" ? end : end.id;
 }
@@ -105,7 +115,7 @@ export default function BrainMap() {
           backgroundColor="#000005"
           nodeLabel={(node) => {
             const n = node as BrainNode;
-            return `<div style="color:#c9d4e3;font-size:12px"><b>${n.title}</b><br/><span style="opacity:.6">${n.type}</span></div>`;
+            return `<div style="color:#c9d4e3;font-size:12px"><b>${esc(n.title)}</b><br/><span style="opacity:.6">${esc(n.type)}</span></div>`;
           }}
           nodeCanvasObject={(node, ctx, globalScale) => {
             const n = node as BrainNode;
@@ -145,7 +155,7 @@ export default function BrainMap() {
           linkWidth={(link) => (selectedEdge?.id === (link as BrainEdge).id ? 2 : 0.6)}
           linkLabel={(link) => {
             const e = link as BrainEdge;
-            return `<div style="color:#c9d4e3;font-size:12px;max-width:280px">${e.why}</div>`;
+            return `<div style="color:#c9d4e3;font-size:12px;max-width:280px">${esc(e.why)}</div>`;
           }}
           linkDirectionalParticles={1}
           linkDirectionalParticleSpeed={0.0025}
