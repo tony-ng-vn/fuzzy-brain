@@ -16,7 +16,7 @@ Rules for any session that touches the brain data:
    Connections are decided in conversation with Tony: discuss first, write only after he agrees.
 3. Every edge must carry a "why" sentence explaining the connection.
    The database rejects blank whys; do not work around that.
-4. Claude is the write layer.
-   Insert nodes and edges directly into Polygres (DATABASE_URL in .env.local); the app has no editing UI on purpose.
+4. There are two write paths: Claude inserting directly into Polygres (DATABASE_URL in .env.local), and the in-app add-node panel (POST /api/nodes).
+   Both enforce the why rule; the database CHECK constraint is the final gate.
 5. Do not delete or rewrite existing nodes without Tony's explicit ask.
    The brain is append-mostly; history is part of the story.

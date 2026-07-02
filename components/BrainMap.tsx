@@ -1,7 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import AddNodePanel from "@/components/AddNodePanel";
 
 // force-graph touches window at import time, so it must never render on the server.
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
@@ -62,6 +63,7 @@ export default function BrainMap() {
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<BrainNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<BrainEdge | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
   const [dims, setDims] = useState({ w: 0, h: 0 });
 
   useEffect(() => {
@@ -71,17 +73,25 @@ export default function BrainMap() {
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  useEffect(() => {
-    fetch("/api/graph")
+  const fetchGraph = useCallback(() => {
+    return fetch("/api/graph")
       .then((res) => res.json())
       .then((data) => {
         if (data.error) throw new Error(data.error);
         setNodes(data.nodes);
         setEdges(data.edges);
+        return data.nodes as BrainNode[];
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        return [] as BrainNode[];
+      })
       .finally(() => setLoaded(true));
   }, []);
+
+  useEffect(() => {
+    fetchGraph();
+  }, [fetchGraph]);
 
   // force-graph mutates this object (positions, resolved links), so keep it stable.
   const graphData = useMemo(
@@ -183,6 +193,16 @@ export default function BrainMap() {
         <span style={{ fontSize: 11, opacity: 0.45 }}>
           {nodes.length} nodes / {edges.length} connections
         </span>
+        <button
+          style={styles.addButton}
+          onClick={() => {
+            setShowAdd(true);
+            setSelectedNode(null);
+            setSelectedEdge(null);
+          }}
+        >
+          + add node
+        </button>
       </header>
 
       {typesInUse.length > 0 && (
@@ -211,7 +231,19 @@ export default function BrainMap() {
         </div>
       )}
 
-      {selectedNode && (
+      {showAdd && (
+        <AddNodePanel
+          nodes={nodes}
+          onClose={() => setShowAdd(false)}
+          onCreated={async (nodeId) => {
+            const fresh = await fetchGraph();
+            setShowAdd(false);
+            setSelectedNode(fresh.find((n) => n.id === nodeId) ?? null);
+          }}
+        />
+      )}
+
+      {!showAdd && selectedNode && (
         <aside style={styles.panel}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span
@@ -250,7 +282,7 @@ export default function BrainMap() {
         </aside>
       )}
 
-      {selectedEdge && (
+      {!showAdd && selectedEdge && (
         <aside style={styles.panel}>
           <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
             Connection
@@ -275,7 +307,20 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 4,
+    alignItems: "flex-start",
+    // The header itself must not swallow graph drags; only the button is clickable.
     pointerEvents: "none",
+  },
+  addButton: {
+    pointerEvents: "auto",
+    marginTop: 8,
+    padding: "4px 10px",
+    fontSize: 12,
+    color: "#9fb4d8",
+    background: "rgba(120,150,220,0.08)",
+    border: "1px solid rgba(120,150,220,0.25)",
+    borderRadius: 6,
+    cursor: "pointer",
   },
   // Bottom-right so the Next.js dev-tools badge (bottom-left) never covers it.
   legend: {

@@ -24,8 +24,8 @@ It starts empty and gets more beautiful as it grows; it does not fake density.
 3. Every edge carries a "why" sentence.
    No naked connections.
    This is enforced by a database CHECK constraint, not by convention.
-4. Claude Code is the write layer.
-   The app has no editing UI in v1; it is purely for wandering the map.
+4. Claude Code is the primary write layer.
+   Tony later asked for an in-app add-node panel as well (added same day); it creates a node plus optional connections via POST /api/nodes, and it cannot create a connection without a why.
 
 ## Architecture
 
