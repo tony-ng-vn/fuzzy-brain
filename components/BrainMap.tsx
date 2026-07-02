@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AddNodePanel from "@/components/AddNodePanel";
+import { ACTIVE_BACKGROUND, BACKGROUNDS } from "@/components/backgrounds";
 
 // force-graph touches window at import time, so it must never render on the server.
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
@@ -34,8 +35,9 @@ const TYPE_COLORS: Record<string, string> = {
   person: "#ff8ab3",
 };
 
-// Unknown types still get a stable, luminous color of their own.
+// Untyped nodes are plain stars; unknown types get a stable, luminous color of their own.
 function colorFor(type: string): string {
+  if (!type) return "#cfe0ff";
   if (TYPE_COLORS[type]) return TYPE_COLORS[type];
   let hash = 0;
   for (const ch of type) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
@@ -113,19 +115,27 @@ export default function BrainMap() {
       });
   }, [selectedNode, edges, nodes]);
 
-  const typesInUse = useMemo(() => [...new Set(nodes.map((n) => n.type))], [nodes]);
+  const typesInUse = useMemo(
+    () => [...new Set(nodes.map((n) => n.type))].filter(Boolean),
+    [nodes],
+  );
+
+  const Background = BACKGROUNDS[ACTIVE_BACKGROUND];
 
   return (
     <div style={{ width: "100vw", height: "100vh", position: "relative" }}>
+      <Background />
       {dims.w > 0 && (
+        <div style={{ position: "relative", zIndex: 1 }}>
         <ForceGraph2D
           width={dims.w}
           height={dims.h}
           graphData={graphData}
-          backgroundColor="#000005"
+          backgroundColor="rgba(0,0,0,0)"
           nodeLabel={(node) => {
             const n = node as BrainNode;
-            return `<div style="color:#c9d4e3;font-size:12px"><b>${esc(n.title)}</b><br/><span style="opacity:.6">${esc(n.type)}</span></div>`;
+            const typeLine = n.type ? `<br/><span style="opacity:.6">${esc(n.type)}</span>` : "";
+            return `<div style="color:#c9d4e3;font-size:12px"><b>${esc(n.title)}</b>${typeLine}</div>`;
           }}
           nodeCanvasObject={(node, ctx, globalScale) => {
             const n = node as BrainNode;
@@ -186,6 +196,7 @@ export default function BrainMap() {
             setSelectedEdge(null);
           }}
         />
+        </div>
       )}
 
       <header style={styles.header}>
@@ -253,9 +264,11 @@ export default function BrainMap() {
                 boxShadow: `0 0 8px ${colorFor(selectedNode.type)}`,
               }}
             />
-            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
-              {selectedNode.type}
-            </span>
+            {selectedNode.type && (
+              <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
+                {selectedNode.type}
+              </span>
+            )}
           </div>
           <h2 style={{ fontSize: 17, margin: "10px 0 4px" }}>{selectedNode.title}</h2>
           <p style={{ fontSize: 11, opacity: 0.4, margin: 0 }}>
@@ -302,6 +315,7 @@ export default function BrainMap() {
 const styles: Record<string, React.CSSProperties> = {
   header: {
     position: "absolute",
+    zIndex: 2,
     top: 20,
     left: 24,
     display: "flex",
@@ -325,6 +339,7 @@ const styles: Record<string, React.CSSProperties> = {
   // Bottom-right so the Next.js dev-tools badge (bottom-left) never covers it.
   legend: {
     position: "absolute",
+    zIndex: 2,
     bottom: 20,
     right: 24,
     display: "flex",
@@ -339,6 +354,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   empty: {
     position: "absolute",
+    zIndex: 2,
     inset: 0,
     display: "flex",
     flexDirection: "column",
@@ -349,6 +365,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   panel: {
     position: "absolute",
+    zIndex: 2,
     top: 0,
     right: 0,
     width: 340,

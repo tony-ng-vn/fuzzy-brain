@@ -5,8 +5,6 @@ import { useState } from "react";
 type BrainNode = { id: string; type: string; title: string };
 type ConnectionDraft = { targetId: string; why: string };
 
-const SUGGESTED_TYPES = ["story", "lesson", "quote", "event", "person"];
-
 export default function AddNodePanel({
   nodes,
   onClose,
@@ -16,7 +14,6 @@ export default function AddNodePanel({
   onClose: () => void;
   onCreated: (nodeId: string) => void;
 }) {
-  const [type, setType] = useState("story");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [connections, setConnections] = useState<ConnectionDraft[]>([]);
@@ -29,7 +26,6 @@ export default function AddNodePanel({
   const submit = async () => {
     setError(null);
     if (!title.trim()) return setError("A title is required.");
-    if (!type.trim()) return setError("A type is required.");
     for (const c of connections) {
       if (!c.targetId) return setError("Every connection needs a target node.");
       if (!c.why.trim()) return setError("Every connection needs a why sentence.");
@@ -39,7 +35,7 @@ export default function AddNodePanel({
       const res = await fetch("/api/nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, title, body, connections }),
+        body: JSON.stringify({ title, body, connections }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
@@ -58,21 +54,6 @@ export default function AddNodePanel({
           close
         </button>
       </div>
-
-      <label style={styles.label}>
-        Type
-        <input
-          style={styles.input}
-          list="node-types"
-          value={type}
-          onChange={(e) => setType(e.target.value)}
-        />
-        <datalist id="node-types">
-          {SUGGESTED_TYPES.map((t) => (
-            <option key={t} value={t} />
-          ))}
-        </datalist>
-      </label>
 
       <label style={styles.label}>
         Title
@@ -143,6 +124,7 @@ export default function AddNodePanel({
 const styles: Record<string, React.CSSProperties> = {
   panel: {
     position: "absolute",
+    zIndex: 2,
     top: 0,
     right: 0,
     width: 340,

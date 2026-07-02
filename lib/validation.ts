@@ -11,7 +11,6 @@ export function validateNodeInput(raw: unknown): Result {
   const type = typeof r.type === "string" ? r.type.trim() : "";
   const title = typeof r.title === "string" ? r.title.trim() : "";
   const body = typeof r.body === "string" ? r.body : "";
-  if (!type) return { ok: false, error: "type is required" };
   if (!title) return { ok: false, error: "title is required" };
 
   const rawConnections = Array.isArray(r.connections) ? r.connections : [];

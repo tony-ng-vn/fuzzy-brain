@@ -9,6 +9,12 @@ test("accepts a minimal valid node", () => {
   if (res.ok) assert.deepEqual(res.value.connections, []);
 });
 
+test("type is optional and defaults to empty", () => {
+  const res = validateNodeInput({ title: "Untyped node" });
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value.type, "");
+});
+
 test("trims and accepts a node with connections", () => {
   const res = validateNodeInput({
     type: " lesson ",
@@ -24,9 +30,8 @@ test("trims and accepts a node with connections", () => {
   }
 });
 
-test("rejects missing title or type", () => {
+test("rejects missing title", () => {
   assert.equal(validateNodeInput({ type: "story", title: "  " }).ok, false);
-  assert.equal(validateNodeInput({ type: "", title: "x" }).ok, false);
   assert.equal(validateNodeInput(null).ok, false);
 });
 
