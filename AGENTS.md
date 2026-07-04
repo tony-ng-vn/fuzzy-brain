@@ -20,3 +20,10 @@ Rules for any session that touches the brain data:
    Both enforce the why rule; the database CHECK constraint is the final gate.
 5. Do not delete or rewrite existing nodes without Tony's explicit ask.
    The brain is append-mostly; history is part of the story.
+6. Every node is a raw and messy thought Tony wants to keep, not a polished artifact.
+   It does not need to be a story, or have a type, or connect to anything, or come with a summary of what it "really means".
+   Some things have depth we can only partly show or understand right now, and the rest becomes visible through other layers and nodes later, not by forcing an explanation now.
+   The point is capture: it is better to store a half-formed thought than let it stay in his head and get forgotten.
+7. When writing a node's body from something Tony said, keep his raw wording.
+   Fix objective grammar and typos if he asks, but do not paraphrase, restructure, or add stylistic flourishes (like em dashes) he didn't use.
+   His own words are the abstraction layer this brain exists to protect; do not launder them into Claude's voice.
