@@ -1,9 +1,3 @@
-<!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
-
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
-<!-- END:nextjs-agent-rules -->
-
 # Fuzzy Brain: the ritual
 
 This repo is Tony's brain map.
@@ -24,6 +18,7 @@ Rules for any session that touches the brain data:
    It does not need to be a story, or have a type, or connect to anything, or come with a summary of what it "really means".
    Some things have depth we can only partly show or understand right now, and the rest becomes visible through other layers and nodes later, not by forcing an explanation now.
    The point is capture: it is better to store a half-formed thought than let it stay in his head and get forgotten.
-7. When writing a node's body from something Tony said, keep his raw wording.
-   Fix objective grammar and typos if he asks, but do not paraphrase, restructure, or add stylistic flourishes (like em dashes) he didn't use.
+7. When Tony pastes a raw thought as a new node, run the structure pass described in docs/writing-style.md automatically: fix typos and grammar, add paragraph breaks, nothing else.
+   Show Tony the result before saving it. Never paraphrase, restructure sentences, or add stylistic flourishes (like em dashes) he didn't use.
    His own words are the abstraction layer this brain exists to protect; do not launder them into Claude's voice.
+   If Tony corrects the pass, log the correction as a new rule in docs/writing-style.md so it doesn't recur -- the guide should need fewer corrections over time, not the same ones repeated.
