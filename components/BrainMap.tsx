@@ -1,12 +1,13 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
 import { colorFor } from "@/lib/node-colors";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
 // force-graph touches window at import time, so it must never render on the server.
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
+const ForceGraph3D = dynamic(() => import("react-force-graph-3d"), { ssr: false });
 
 // Tooltip labels are raw HTML, so interpolated text must be escaped.
 function esc(s: string): string {
@@ -18,8 +19,9 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// The force-directed map view. Selection state and the detail panels live in
-// BrainView; this component only draws the graph and reports clicks upward.
+// The force-directed map view, in 3D: drag rotates the camera, scroll zooms.
+// Selection state and the detail panels live in BrainView; this component only
+// draws the graph and reports clicks upward.
 export default function BrainMap({
   nodes,
   edges,
@@ -38,6 +40,9 @@ export default function BrainMap({
   onClearSelection: () => void;
 }) {
   const [dims, setDims] = useState({ w: 0, h: 0 });
+  // One glow texture shared by every node sprite; created lazily because
+  // document does not exist during the server render pass.
+  const spriteMap = useRef<THREE.Texture | null>(null);
 
   useEffect(() => {
     const measure = () => setDims({ w: window.innerWidth, h: window.innerHeight });
@@ -60,52 +65,39 @@ export default function BrainMap({
   return (
     <div style={styles.layer}>
       {dims.w > 0 && (
-        <ForceGraph2D
+        <ForceGraph3D
           width={dims.w}
           height={dims.h}
           graphData={graphData}
           backgroundColor="rgba(0,0,0,0)"
+          controlType="orbit"
+          showNavInfo={false}
           nodeLabel={(node) => {
             const n = node as BrainNode;
             const typeLine = n.type ? `<br/><span style="opacity:.6">${esc(n.type)}</span>` : "";
             return `<div style="color:#c9d4e3;font-size:12px"><b>${esc(n.title)}</b>${typeLine}</div>`;
           }}
-          nodeCanvasObject={(node, ctx, globalScale) => {
+          nodeThreeObject={(node) => {
             const n = node as BrainNode;
-            const color = colorFor(n.type);
+            if (!spriteMap.current) spriteMap.current = makeGlowTexture();
             const isSelected = selectedNode?.id === n.id;
-            const r = isSelected ? 6 : 4;
-            ctx.shadowColor = color;
-            ctx.shadowBlur = isSelected ? 30 : 16;
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            if (isSelected) {
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 0.8;
-              ctx.beginPath();
-              ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, 2 * Math.PI);
-              ctx.stroke();
-            }
-            // Titles appear once you zoom in close enough to read them.
-            if (globalScale > 1.6 || isSelected) {
-              ctx.font = `${Math.max(3, 11 / globalScale)}px sans-serif`;
-              ctx.textAlign = "center";
-              ctx.fillStyle = "rgba(201,212,227,0.85)";
-              ctx.fillText(n.title, n.x ?? 0, (n.y ?? 0) + r + 10 / globalScale);
-            }
+            const sprite = new THREE.Sprite(
+              new THREE.SpriteMaterial({
+                map: spriteMap.current,
+                color: colorFor(n.type),
+                transparent: true,
+                opacity: isSelected ? 1 : 0.9,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+              }),
+            );
+            const scale = isSelected ? 16 : 10;
+            sprite.scale.set(scale, scale, 1);
+            return sprite;
           }}
-          nodePointerAreaPaint={(node, color, ctx) => {
-            const n = node as BrainNode;
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(n.x ?? 0, n.y ?? 0, 8, 0, 2 * Math.PI);
-            ctx.fill();
-          }}
-          linkColor={() => "rgba(120,150,220,0.25)"}
-          linkWidth={(link) => (selectedEdge?.id === (link as BrainEdge).id ? 2 : 0.6)}
+          linkColor={() => "rgba(120,150,220,0.4)"}
+          linkWidth={(link) => (selectedEdge?.id === (link as BrainEdge).id ? 1.5 : 0)}
+          linkOpacity={0.35}
           linkLabel={(link) => {
             const e = link as BrainEdge;
             return `<div style="color:#c9d4e3;font-size:12px;max-width:280px">${esc(e.why)}</div>`;
@@ -113,9 +105,6 @@ export default function BrainMap({
           linkDirectionalParticles={1}
           linkDirectionalParticleSpeed={0.0025}
           linkDirectionalParticleWidth={1.6}
-          linkDirectionalParticleColor={() => "rgba(160,190,255,0.5)"}
-          d3AlphaDecay={0.02}
-          d3VelocityDecay={0.25}
           onNodeClick={(node) => onSelectNode(node as BrainNode)}
           onLinkClick={(link) => onSelectEdge(link as BrainEdge)}
           onBackgroundClick={onClearSelection}
@@ -134,6 +123,21 @@ export default function BrainMap({
       )}
     </div>
   );
+}
+
+// Same 64x64 radial glow the face view uses, so both skies feel like one system.
+function makeGlowTexture(): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return new THREE.Texture();
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.4, "rgba(255,255,255,0.8)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(canvas);
 }
 
 const styles: Record<string, React.CSSProperties> = {

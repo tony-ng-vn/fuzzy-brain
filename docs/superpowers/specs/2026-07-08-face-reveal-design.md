@@ -42,7 +42,8 @@ The one transform detail worth spelling out here, because it is the highest-risk
 Point colors are graded at render time, not baked into the asset: the committed asset stores raw averaged photo colors, so FaceView reuses the tool's `grade()` formula (contrast pivots around mid-grey, then brightness scales, clamped to [0, 1]) per point on load, reading `settings.contrast` and `settings.brightness` from the asset file.
 Lit points and ghost points are two separate `THREE.Points` clouds sharing the sprite texture but with different materials, so raycasting only ever targets the lit cloud and ghosts are structurally unclickable.
 Ghost points are a fixed dim grey (`rgb(120,120,120)`) at low opacity (0.15), stored as named constants so the "always faintly present" target shape is tunable in one place.
-The `<Canvas>` is transparent (`gl={{ alpha: true }}`, no `scene.background`) so `GalaxyBackground` shows through consistently with the map view.
+The `<Canvas>` is transparent (`gl={{ alpha: true }}`, no `scene.background`) over `BrainView`'s solid night-sky root (`#05070f`); the animated galaxy background was removed at Tony's request on 2026-07-08, same day as launch.
+Connected lit points are joined by faint line strands (`lineSegments`, the map view's link color at low opacity): Tony asked for visible connections after seeing the near-empty reveal, where the whys are most of the brain; an edge draws only when both its endpoints are lit.
 OrbitControls keep `enableDamping` on for the intended inertial feel, but damping is disabled when `prefers-reduced-motion: reduce` is set, matching how `GalaxyBackground` gates its animation.
 Free orbit (no rotation clamp): losing and refinding the face is the point.
 A small "front" button in FaceView's header snaps the camera back to the reveal viewpoint (position `(0, 0, 6)`, zoom 1, target origin), the same reset the tool's snap-to-front uses; this is the defined way back for a user who orbits far off-axis.
@@ -75,7 +76,8 @@ Ghost points are not clickable: they live in a separate cloud the raycaster neve
 ## Mode toggle
 
 The face view is the new default landing view.
-A small header control in `BrainView` switches between face and map (today's force graph).
+A small header control in `BrainView` switches between face and map.
+The map itself became a 3D force graph (react-force-graph-3d, orbit controls: drag rotates, scroll zooms) at Tony's request on launch day, with the same glow-sprite look as the face view so the two skies feel like one system.
 Both views read the one `GET /api/graph` response `BrainView` owns; fetch logic is shared there, not duplicated per view (see App integration).
 
 ## Data and schema
@@ -92,7 +94,6 @@ No visual tests; the visual test is Tony looking at it.
 
 ## Explicitly out of scope for v1
 
-- Edges or connection lines in the face view (the graph view owns relationships).
 - Per-type point colors (the photo's own colors are the palette).
 - Any behavior at or past 3,809 nodes (years away; decide then).
 - Rotation clamping and the synthesized back-of-head shell (explored in spikes, dropped with the anamorphic design).
