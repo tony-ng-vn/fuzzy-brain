@@ -1,5 +1,5 @@
-import BrainMap from "@/components/BrainMap";
+import BrainView from "@/components/BrainView";
 
 export default function Home() {
-  return <BrainMap />;
+  return <BrainView />;
 }

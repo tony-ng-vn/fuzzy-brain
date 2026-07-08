@@ -1,48 +1,12 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import AddNodePanel from "@/components/AddNodePanel";
-import { ACTIVE_BACKGROUND, BACKGROUNDS } from "@/components/backgrounds";
+import { useEffect, useMemo, useState } from "react";
+import { colorFor } from "@/lib/node-colors";
+import type { BrainEdge, BrainNode } from "@/components/types";
 
 // force-graph touches window at import time, so it must never render on the server.
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
-
-type BrainNode = {
-  id: string;
-  type: string;
-  title: string;
-  body: string;
-  created_at: string;
-  x?: number;
-  y?: number;
-};
-
-type BrainEdge = {
-  id: string;
-  // The simulation replaces id strings with node objects once it takes over.
-  source: string | BrainNode;
-  target: string | BrainNode;
-  why: string;
-  created_at: string;
-};
-
-const TYPE_COLORS: Record<string, string> = {
-  story: "#6ec8ff",
-  lesson: "#b18aff",
-  quote: "#ffc46b",
-  event: "#6bffb8",
-  person: "#ff8ab3",
-};
-
-// Untyped nodes are plain stars; unknown types get a stable, luminous color of their own.
-function colorFor(type: string): string {
-  if (!type) return "#cfe0ff";
-  if (TYPE_COLORS[type]) return TYPE_COLORS[type];
-  let hash = 0;
-  for (const ch of type) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
-  return `hsl(${hash}, 85%, 72%)`;
-}
 
 // Tooltip labels are raw HTML, so interpolated text must be escaped.
 function esc(s: string): string {
@@ -54,18 +18,25 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function endpointId(end: string | BrainNode): string {
-  return typeof end === "string" ? end : end.id;
-}
-
-export default function BrainMap() {
-  const [nodes, setNodes] = useState<BrainNode[]>([]);
-  const [edges, setEdges] = useState<BrainEdge[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedNode, setSelectedNode] = useState<BrainNode | null>(null);
-  const [selectedEdge, setSelectedEdge] = useState<BrainEdge | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+// The force-directed map view. Selection state and the detail panels live in
+// BrainView; this component only draws the graph and reports clicks upward.
+export default function BrainMap({
+  nodes,
+  edges,
+  selectedNode,
+  selectedEdge,
+  onSelectNode,
+  onSelectEdge,
+  onClearSelection,
+}: {
+  nodes: BrainNode[];
+  edges: BrainEdge[];
+  selectedNode: BrainNode | null;
+  selectedEdge: BrainEdge | null;
+  onSelectNode: (node: BrainNode) => void;
+  onSelectEdge: (edge: BrainEdge) => void;
+  onClearSelection: () => void;
+}) {
   const [dims, setDims] = useState({ w: 0, h: 0 });
 
   useEffect(() => {
@@ -75,58 +46,20 @@ export default function BrainMap() {
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  const fetchGraph = useCallback(() => {
-    return fetch("/api/graph")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.error) throw new Error(data.error);
-        setNodes(data.nodes);
-        setEdges(data.edges);
-        return data.nodes as BrainNode[];
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : String(err));
-        return [] as BrainNode[];
-      })
-      .finally(() => setLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    fetchGraph();
-  }, [fetchGraph]);
-
   // force-graph mutates this object (positions, resolved links), so keep it stable.
   const graphData = useMemo(
     () => ({ nodes, links: edges.map((e) => ({ ...e })) }),
     [nodes, edges],
   );
 
-  const connectionsOfSelected = useMemo(() => {
-    if (!selectedNode) return [];
-    return edges
-      .filter(
-        (e) =>
-          endpointId(e.source) === selectedNode.id || endpointId(e.target) === selectedNode.id,
-      )
-      .map((e) => {
-        const otherId =
-          endpointId(e.source) === selectedNode.id ? endpointId(e.target) : endpointId(e.source);
-        return { edge: e, other: nodes.find((n) => n.id === otherId) };
-      });
-  }, [selectedNode, edges, nodes]);
-
   const typesInUse = useMemo(
     () => [...new Set(nodes.map((n) => n.type))].filter(Boolean),
     [nodes],
   );
 
-  const Background = BACKGROUNDS[ACTIVE_BACKGROUND];
-
   return (
-    <div style={{ width: "100vw", height: "100vh", position: "relative" }}>
-      <Background />
+    <div style={styles.layer}>
       {dims.w > 0 && (
-        <div style={{ position: "relative", zIndex: 1 }}>
         <ForceGraph2D
           width={dims.w}
           height={dims.h}
@@ -183,38 +116,11 @@ export default function BrainMap() {
           linkDirectionalParticleColor={() => "rgba(160,190,255,0.5)"}
           d3AlphaDecay={0.02}
           d3VelocityDecay={0.25}
-          onNodeClick={(node) => {
-            setSelectedNode(node as BrainNode);
-            setSelectedEdge(null);
-          }}
-          onLinkClick={(link) => {
-            setSelectedEdge(link as BrainEdge);
-            setSelectedNode(null);
-          }}
-          onBackgroundClick={() => {
-            setSelectedNode(null);
-            setSelectedEdge(null);
-          }}
+          onNodeClick={(node) => onSelectNode(node as BrainNode)}
+          onLinkClick={(link) => onSelectEdge(link as BrainEdge)}
+          onBackgroundClick={onClearSelection}
         />
-        </div>
       )}
-
-      <header style={styles.header}>
-        <span style={{ letterSpacing: 4, fontSize: 13, opacity: 0.9 }}>FUZZY BRAIN</span>
-        <span style={{ fontSize: 11, opacity: 0.45 }}>
-          {nodes.length} nodes / {edges.length} connections
-        </span>
-        <button
-          style={styles.addButton}
-          onClick={() => {
-            setShowAdd(true);
-            setSelectedNode(null);
-            setSelectedEdge(null);
-          }}
-        >
-          + add node
-        </button>
-      </header>
 
       {typesInUse.length > 0 && (
         <div style={styles.legend}>
@@ -226,115 +132,15 @@ export default function BrainMap() {
           ))}
         </div>
       )}
-
-      {loaded && !error && nodes.length === 0 && (
-        <div style={styles.empty}>
-          <p style={{ fontSize: 15, opacity: 0.8, margin: 0 }}>The brain is empty.</p>
-          <p style={{ fontSize: 13, opacity: 0.45, marginTop: 8 }}>
-            Open Claude Code in this repo and tell it a story.
-          </p>
-        </div>
-      )}
-
-      {error && (
-        <div style={styles.empty}>
-          <p style={{ fontSize: 14, color: "#ff8a8a", margin: 0 }}>Cannot reach the brain: {error}</p>
-        </div>
-      )}
-
-      {showAdd && (
-        <AddNodePanel
-          nodes={nodes}
-          onClose={() => setShowAdd(false)}
-          onCreated={async (nodeId) => {
-            const fresh = await fetchGraph();
-            setShowAdd(false);
-            setSelectedNode(fresh.find((n) => n.id === nodeId) ?? null);
-          }}
-        />
-      )}
-
-      {!showAdd && selectedNode && (
-        <aside style={styles.panel}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span
-              style={{
-                ...styles.dot,
-                background: colorFor(selectedNode.type),
-                boxShadow: `0 0 8px ${colorFor(selectedNode.type)}`,
-              }}
-            />
-            {selectedNode.type && (
-              <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
-                {selectedNode.type}
-              </span>
-            )}
-          </div>
-          <h2 style={{ fontSize: 17, margin: "10px 0 4px" }}>{selectedNode.title}</h2>
-          <p style={{ fontSize: 11, opacity: 0.4, margin: 0 }}>
-            {new Date(selectedNode.created_at).toLocaleDateString()}
-          </p>
-          <p style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", opacity: 0.85 }}>
-            {selectedNode.body}
-          </p>
-          {connectionsOfSelected.length > 0 && (
-            <>
-              <h3 style={styles.panelSubhead}>Connections</h3>
-              {connectionsOfSelected.map(({ edge, other }) => (
-                <div key={edge.id} style={styles.connection}>
-                  <p style={{ fontSize: 13, margin: 0, color: other ? colorFor(other.type) : undefined }}>
-                    {other?.title ?? "(unknown node)"}
-                  </p>
-                  <p style={{ fontSize: 12, opacity: 0.55, margin: "4px 0 0", lineHeight: 1.5 }}>
-                    {edge.why}
-                  </p>
-                </div>
-              ))}
-            </>
-          )}
-        </aside>
-      )}
-
-      {!showAdd && selectedEdge && (
-        <aside style={styles.panel}>
-          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
-            Connection
-          </span>
-          <h2 style={{ fontSize: 15, margin: "10px 0" }}>
-            {typeof selectedEdge.source === "object" ? selectedEdge.source.title : ""}
-            <span style={{ opacity: 0.4 }}> to </span>
-            {typeof selectedEdge.target === "object" ? selectedEdge.target.title : ""}
-          </h2>
-          <p style={{ fontSize: 13, lineHeight: 1.6, opacity: 0.85 }}>{selectedEdge.why}</p>
-        </aside>
-      )}
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  header: {
+  layer: {
     position: "absolute",
-    zIndex: 2,
-    top: 20,
-    left: 24,
-    display: "flex",
-    flexDirection: "column",
-    gap: 4,
-    alignItems: "flex-start",
-    // The header itself must not swallow graph drags; only the button is clickable.
-    pointerEvents: "none",
-  },
-  addButton: {
-    pointerEvents: "auto",
-    marginTop: 8,
-    padding: "4px 10px",
-    fontSize: 12,
-    color: "#9fb4d8",
-    background: "rgba(120,150,220,0.08)",
-    border: "1px solid rgba(120,150,220,0.25)",
-    borderRadius: 6,
-    cursor: "pointer",
+    inset: 0,
+    zIndex: 1,
   },
   // Bottom-right so the Next.js dev-tools badge (bottom-left) never covers it.
   legend: {
@@ -351,43 +157,5 @@ const styles: Record<string, React.CSSProperties> = {
     height: 8,
     borderRadius: "50%",
     display: "inline-block",
-  },
-  empty: {
-    position: "absolute",
-    zIndex: 2,
-    inset: 0,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    textAlign: "center",
-    pointerEvents: "none",
-  },
-  panel: {
-    position: "absolute",
-    zIndex: 2,
-    top: 0,
-    right: 0,
-    width: 340,
-    maxWidth: "90vw",
-    height: "100vh",
-    overflowY: "auto",
-    padding: "24px 22px",
-    background: "rgba(4, 8, 18, 0.88)",
-    borderLeft: "1px solid rgba(120,150,220,0.15)",
-    backdropFilter: "blur(6px)",
-  },
-  panelSubhead: {
-    fontSize: 11,
-    textTransform: "uppercase",
-    letterSpacing: 2,
-    opacity: 0.5,
-    marginTop: 24,
-  },
-  connection: {
-    padding: "10px 12px",
-    marginBottom: 8,
-    background: "rgba(120,150,220,0.06)",
-    borderRadius: 8,
   },
 };
