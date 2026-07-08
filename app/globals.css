@@ -1,13 +1,53 @@
+:root {
+  /* Dark theme (default). Chrome tokens only: header, panels, buttons, text.
+     The sky itself (the 3D canvases) is a deliberate always-dark space, never
+     themed -- see components/FaceView.tsx and components/BrainMap.tsx. */
+  --panel-bg: rgba(4, 8, 18, 0.88);
+  --panel-bg-strong: rgba(4, 8, 18, 0.92);
+  --panel-border: rgba(120, 150, 220, 0.15);
+  --control-border: rgba(120, 150, 220, 0.25);
+  --control-border-soft: rgba(120, 150, 220, 0.2);
+  --surface-soft: rgba(120, 150, 220, 0.08);
+  --surface-softer: rgba(120, 150, 220, 0.06);
+  --text: #c9d4e3;
+  --text-strong: #dfe9ff;
+  --text-accent: #9fb4d8;
+  --accent-active-bg: rgba(110, 200, 255, 0.18);
+  --accent-active-border: rgba(110, 200, 255, 0.5);
+  --accent-lavender: #b9a6ff;
+  --error: #ff8a8a;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --panel-bg: rgba(255, 255, 255, 0.88);
+  --panel-bg-strong: rgba(255, 255, 255, 0.94);
+  --panel-border: rgba(60, 80, 130, 0.15);
+  --control-border: rgba(60, 80, 130, 0.28);
+  --control-border-soft: rgba(60, 80, 130, 0.22);
+  --surface-soft: rgba(60, 80, 130, 0.07);
+  --surface-softer: rgba(60, 80, 130, 0.05);
+  --text: #1b2233;
+  --text-strong: #0a0f1c;
+  --text-accent: #34578c;
+  --accent-active-bg: rgba(30, 110, 195, 0.14);
+  --accent-active-border: rgba(30, 110, 195, 0.45);
+  --accent-lavender: #6a4fd6;
+  --error: #c0323a;
+  color-scheme: light;
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* Always dark: this is the sky, not chrome, and stays one visual world in
+     both themes. Only text/panels/controls (chrome) theme via the tokens above. */
   background: #000005;
-  color: #c9d4e3;
+  color: var(--text);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   overflow: hidden;
-  color-scheme: dark;
   -webkit-font-smoothing: antialiased;
 }
 

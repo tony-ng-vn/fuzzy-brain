@@ -78,9 +78,10 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100vh",
     overflowY: "auto",
     padding: "24px 22px",
-    background: "rgba(4, 8, 18, 0.88)",
-    borderLeft: "1px solid rgba(120,150,220,0.15)",
+    background: "var(--panel-bg)",
+    borderLeft: "1px solid var(--panel-border)",
     backdropFilter: "blur(6px)",
+    color: "var(--text)",
   },
   dot: {
     width: 8,
@@ -98,7 +99,7 @@ const styles: Record<string, React.CSSProperties> = {
   connection: {
     padding: "10px 12px",
     marginBottom: 8,
-    background: "rgba(120,150,220,0.06)",
+    background: "var(--surface-softer)",
     borderRadius: 8,
   },
 };

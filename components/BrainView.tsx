@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import AddNodePanel from "@/components/AddNodePanel";
 import NodeDetailPanel from "@/components/NodeDetailPanel";
 import type { BrainEdge, BrainNode } from "@/components/types";
+import { useTheme } from "@/lib/use-theme";
 
 // Both views touch window and WebGL at import or mount time, so neither may
 // ever server-render; BrainMap imports react-force-graph-3d at the top level.
@@ -24,6 +25,7 @@ export default function BrainView() {
   const [selectedNode, setSelectedNode] = useState<BrainNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<BrainEdge | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [theme, toggleTheme] = useTheme();
 
   const fetchGraph = useCallback(() => {
     return fetch("/api/graph")
@@ -92,16 +94,26 @@ export default function BrainView() {
         <span style={{ fontSize: 11, opacity: 0.45 }}>
           {nodes.length} nodes / {edges.length} connections
         </span>
-        <div style={styles.toggle}>
-          {(["face", "map"] as const).map((m) => (
-            <button
-              key={m}
-              style={m === mode ? styles.toggleActive : styles.toggleButton}
-              onClick={() => switchMode(m)}
-            >
-              {m}
-            </button>
-          ))}
+        <div style={styles.row}>
+          <div style={styles.toggle}>
+            {(["face", "map"] as const).map((m) => (
+              <button
+                key={m}
+                style={m === mode ? styles.toggleActive : styles.toggleButton}
+                onClick={() => switchMode(m)}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <button
+            style={styles.themeButton}
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? "light" : "dark"}
+          </button>
         </div>
         <button
           style={styles.addButton}
@@ -125,7 +137,7 @@ export default function BrainView() {
 
       {error && (
         <div style={styles.empty}>
-          <p style={{ fontSize: 14, color: "#ff8a8a", margin: 0 }}>Cannot reach the brain: {error}</p>
+          <p style={{ fontSize: 14, color: "var(--error)", margin: 0 }}>Cannot reach the brain: {error}</p>
         </div>
       )}
 
@@ -163,7 +175,8 @@ export default function BrainView() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  // Solid night sky; the ratified studio color, no animated background behind it.
+  // Solid night sky, always dark: this is the space the views render into,
+  // not chrome, so it does not theme. Only text/panels/controls below do.
   root: { width: "100vw", height: "100vh", position: "relative", background: "#05070f" },
   header: {
     position: "absolute",
@@ -174,29 +187,43 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     gap: 8,
     alignItems: "flex-start",
+    color: "var(--text)",
     // The header must not swallow view drags; only its buttons are clickable.
     pointerEvents: "none",
   },
-  toggle: {
+  row: {
     pointerEvents: "auto",
+    display: "flex",
+    gap: 8,
+  },
+  toggle: {
     display: "flex",
     gap: 4,
   },
   toggleButton: {
     padding: "4px 12px",
     fontSize: 12,
-    color: "#9fb4d8",
-    background: "rgba(120,150,220,0.08)",
-    border: "1px solid rgba(120,150,220,0.25)",
+    color: "var(--text-accent)",
+    background: "var(--surface-soft)",
+    border: "1px solid var(--control-border)",
     borderRadius: 6,
     cursor: "pointer",
   },
   toggleActive: {
     padding: "4px 12px",
     fontSize: 12,
-    color: "#dfe9ff",
-    background: "rgba(110,200,255,0.18)",
-    border: "1px solid rgba(110,200,255,0.5)",
+    color: "var(--text-strong)",
+    background: "var(--accent-active-bg)",
+    border: "1px solid var(--accent-active-border)",
+    borderRadius: 6,
+    cursor: "pointer",
+  },
+  themeButton: {
+    padding: "4px 12px",
+    fontSize: 12,
+    color: "var(--text-accent)",
+    background: "var(--surface-soft)",
+    border: "1px solid var(--control-border)",
     borderRadius: 6,
     cursor: "pointer",
   },
@@ -204,9 +231,9 @@ const styles: Record<string, React.CSSProperties> = {
     pointerEvents: "auto",
     padding: "4px 10px",
     fontSize: 12,
-    color: "#9fb4d8",
-    background: "rgba(120,150,220,0.08)",
-    border: "1px solid rgba(120,150,220,0.25)",
+    color: "var(--text-accent)",
+    background: "var(--surface-soft)",
+    border: "1px solid var(--control-border)",
     borderRadius: 6,
     cursor: "pointer",
   },
@@ -219,6 +246,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     textAlign: "center",
+    color: "var(--text)",
     pointerEvents: "none",
   },
   panel: {
@@ -231,8 +259,9 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100vh",
     overflowY: "auto",
     padding: "24px 22px",
-    background: "rgba(4, 8, 18, 0.88)",
-    borderLeft: "1px solid rgba(120,150,220,0.15)",
+    background: "var(--panel-bg)",
+    borderLeft: "1px solid var(--panel-border)",
     backdropFilter: "blur(6px)",
+    color: "var(--text)",
   },
 };

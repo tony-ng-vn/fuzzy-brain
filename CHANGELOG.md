@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.3.0
+
+Jul 8, 2026
+
+**UI**
+
+- Added a dark mode / light mode switch in the header. The switch themes the chrome only (header, panels, buttons, tooltips, forms); the sky itself (the face and map point clouds) stays a deliberate always-dark space in both modes.
+- Defaults to the OS color-scheme preference on first visit, then remembers an explicit choice; the theme is set before first paint, so there is no flash of the wrong theme on load.
+
+---
+
 ## v0.2.0
 
 Jul 8, 2026

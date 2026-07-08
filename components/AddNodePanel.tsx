@@ -112,7 +112,7 @@ export default function AddNodePanel({
         + add connection{nodes.length === 0 ? " (no other nodes yet)" : ""}
       </button>
 
-      {error && <p style={{ color: "#ff8a8a", fontSize: 12, margin: "10px 0 0" }}>{error}</p>}
+      {error && <p style={{ color: "var(--error)", fontSize: 12, margin: "10px 0 0" }}>{error}</p>}
 
       <button style={styles.submit} onClick={submit} disabled={saving}>
         {saving ? "adding..." : "Add to the brain"}
@@ -132,9 +132,10 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100vh",
     overflowY: "auto",
     padding: "24px 22px",
-    background: "rgba(4, 8, 18, 0.92)",
-    borderLeft: "1px solid rgba(120,150,220,0.15)",
+    background: "var(--panel-bg-strong)",
+    borderLeft: "1px solid var(--panel-border)",
     backdropFilter: "blur(6px)",
+    color: "var(--text)",
     display: "flex",
     flexDirection: "column",
     gap: 12,
@@ -160,9 +161,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     letterSpacing: 0,
     textTransform: "none",
-    color: "#c9d4e3",
-    background: "rgba(120,150,220,0.08)",
-    border: "1px solid rgba(120,150,220,0.2)",
+    color: "var(--text)",
+    background: "var(--surface-soft)",
+    border: "1px solid var(--control-border-soft)",
     borderRadius: 6,
     outline: "none",
     fontFamily: "inherit",
@@ -172,16 +173,16 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     gap: 6,
     padding: "10px 12px",
-    background: "rgba(120,150,220,0.06)",
+    background: "var(--surface-softer)",
     borderRadius: 8,
   },
   ghostButton: {
     alignSelf: "flex-start",
     padding: "4px 10px",
     fontSize: 12,
-    color: "#9fb4d8",
+    color: "var(--text-accent)",
     background: "transparent",
-    border: "1px solid rgba(120,150,220,0.25)",
+    border: "1px solid var(--control-border)",
     borderRadius: 6,
     cursor: "pointer",
   },
@@ -190,9 +191,9 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "10px 12px",
     fontSize: 13,
     letterSpacing: 1,
-    color: "#dfe9ff",
-    background: "rgba(110,200,255,0.15)",
-    border: "1px solid rgba(110,200,255,0.45)",
+    color: "var(--text-strong)",
+    background: "var(--accent-active-bg)",
+    border: "1px solid var(--accent-active-border)",
     borderRadius: 8,
     cursor: "pointer",
   },

@@ -17,6 +17,21 @@ export const metadata: Metadata = {
   description: "A living map of Tony's brain",
 };
 
+// Sets data-theme before first paint, so there is no flash of the wrong theme
+// while the app's theme hook hydrates. A stored choice wins; otherwise it
+// follows the OS preference.
+const THEME_INIT_SCRIPT = `
+(function () {
+  try {
+    var stored = localStorage.getItem("fuzzy-brain-theme");
+    var theme = stored === "light" || stored === "dark"
+      ? stored
+      : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    document.documentElement.setAttribute("data-theme", theme);
+  } catch (e) {}
+})();
+`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -24,6 +39,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );
