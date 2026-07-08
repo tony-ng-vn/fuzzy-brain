@@ -22,3 +22,6 @@ Rules for any session that touches the brain data:
    Show Tony the result before saving it. Never paraphrase, restructure sentences, or add stylistic flourishes (like em dashes) he didn't use.
    His own words are the abstraction layer this brain exists to protect; do not launder them into Claude's voice.
    If Tony corrects the pass, log the correction as a new rule in docs/writing-style.md so it doesn't recur -- the guide should need fewer corrections over time, not the same ones repeated.
+8. Keep CHANGELOG.md up to date after any user-visible change, following the format defined in the global changelog rule (see ~/.codex/AGENTS.md).
+   This repo's fixed categories are: Face, Map, Data, API, Tools, UI, Docs -- use whichever apply, in that order, and add a new one only if a change genuinely does not fit.
+   Bump package.json's version to match the newest changelog entry: patch for small fixes or docs-only changes, minor for new features or visible behavior changes.

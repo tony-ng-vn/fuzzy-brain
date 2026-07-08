@@ -1,6 +1,6 @@
 {
   "name": "fuzzy-brain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -17,7 +17,6 @@
     "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-force-graph-2d": "^1.29.1",
     "react-force-graph-3d": "^1.29.1",
     "three": "^0.185.1"
   },
