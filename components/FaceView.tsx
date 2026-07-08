@@ -11,7 +11,7 @@ import {
   seededShuffle,
   sortNodesForReveal,
 } from "@/lib/face-reveal";
-import type { BrainNode } from "@/components/types";
+import type { BrainEdge, BrainNode } from "@/components/types";
 
 type FacePoint = { x: number; y: number; zScatter: number; color: string };
 type FaceAsset = {
@@ -38,12 +38,18 @@ const FRONT_POSITION: [number, number, number] = [0, 0, 6];
 // the world footprint is constant and this is set once, never per frame.
 const POINT_RAYCAST_THRESHOLD = 0.02;
 
+// Connection strands between lit points, matching the map view's link color.
+const EDGE_COLOR = 0x7896dc;
+const EDGE_OPACITY = 0.3;
+
 export default function FaceView({
   nodes,
+  edges,
   loaded,
   onSelectNode,
 }: {
   nodes: BrainNode[];
+  edges: BrainEdge[];
   loaded: boolean;
   onSelectNode: (node: BrainNode | null) => void;
 }) {
@@ -92,6 +98,12 @@ export default function FaceView({
     () => (asset ? buildAttributes(asset, shuffle.slice(litIndices.length), false) : null),
     [asset, shuffle, litIndices.length],
   );
+  // Strands between connected lit points: with a handful of nodes the whys are
+  // most of the brain, so their existence should be visible in the face too.
+  const edgeLines = useMemo(
+    () => (asset ? buildEdgeLines(asset, sorted, litIndices, edges) : null),
+    [asset, sorted, litIndices, edges],
+  );
 
   const snapToFront = () => {
     const controls = controlsRef.current;
@@ -138,6 +150,19 @@ export default function FaceView({
             sprite={sprite}
             opacity={GHOST_OPACITY}
           />
+          {edgeLines && edgeLines.length > 0 && (
+            <lineSegments key={`edges-${edgeLines.length}`}>
+              <bufferGeometry>
+                <bufferAttribute attach="attributes-position" args={[edgeLines, 3]} />
+              </bufferGeometry>
+              <lineBasicMaterial
+                color={EDGE_COLOR}
+                transparent
+                opacity={EDGE_OPACITY}
+                depthWrite={false}
+              />
+            </lineSegments>
+          )}
         </Canvas>
       )}
       {asset && (
@@ -229,17 +254,22 @@ function PointCloud({
   );
 }
 
+// Negate y to turn image space (y-down) into three.js space (y-up); skip it
+// and the face renders upside-down.
+function toWorld(point: FacePoint, scatter: number): [number, number, number] {
+  return [(point.x - 0.5) * 1.6, -(point.y - 0.5) * 1.6, point.zScatter * scatter];
+}
+
 function buildAttributes(asset: FaceAsset, indices: readonly number[], withColor: boolean) {
   const { scatter, contrast, brightness } = asset.settings;
   const positions = new Float32Array(indices.length * 3);
   const colors = withColor ? new Float32Array(indices.length * 3) : undefined;
   for (let i = 0; i < indices.length; i++) {
     const point = asset.points[indices[i]];
-    positions[i * 3] = (point.x - 0.5) * 1.6;
-    // Negate y to turn image space (y-down) into three.js space (y-up); skip it
-    // and the face renders upside-down.
-    positions[i * 3 + 1] = -(point.y - 0.5) * 1.6;
-    positions[i * 3 + 2] = point.zScatter * scatter;
+    const [x, y, z] = toWorld(point, scatter);
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
     if (colors) {
       const [r, g, b] = parseRgb(point.color);
       colors[i * 3] = grade(r, contrast, brightness);
@@ -248,6 +278,32 @@ function buildAttributes(asset: FaceAsset, indices: readonly number[], withColor
     }
   }
   return { positions, colors };
+}
+
+function endpointId(end: BrainEdge["source"]): string {
+  return typeof end === "string" ? end : end.id;
+}
+
+// One line segment per edge whose endpoints are both lit. Positions reuse the
+// exact lit-point transform so strands land on the points they connect.
+function buildEdgeLines(
+  asset: FaceAsset,
+  sortedNodes: readonly BrainNode[],
+  litIndices: readonly number[],
+  edges: readonly BrainEdge[],
+): Float32Array {
+  const positionByNode = new Map<string, [number, number, number]>();
+  for (let i = 0; i < litIndices.length && i < sortedNodes.length; i++) {
+    positionByNode.set(sortedNodes[i].id, toWorld(asset.points[litIndices[i]], asset.settings.scatter));
+  }
+  const segments: number[] = [];
+  for (const edge of edges) {
+    const a = positionByNode.get(endpointId(edge.source));
+    const b = positionByNode.get(endpointId(edge.target));
+    if (!a || !b) continue;
+    segments.push(...a, ...b);
+  }
+  return new Float32Array(segments);
 }
 
 function parseRgb(rgb: string): [number, number, number] {

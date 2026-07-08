@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState } from "react";
 import AddNodePanel from "@/components/AddNodePanel";
 import BrainMap from "@/components/BrainMap";
 import NodeDetailPanel from "@/components/NodeDetailPanel";
-import { ACTIVE_BACKGROUND, BACKGROUNDS } from "@/components/backgrounds";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
 // FaceView's Canvas and OrbitControls touch window and WebGL at mount, so it
@@ -66,14 +65,10 @@ export default function BrainView() {
     clearSelection();
   };
 
-  const Background = BACKGROUNDS[ACTIVE_BACKGROUND];
-
   return (
     <div style={styles.root}>
-      <Background />
-
       {mode === "face" ? (
-        <FaceView nodes={nodes} loaded={loaded} onSelectNode={selectNode} />
+        <FaceView nodes={nodes} edges={edges} loaded={loaded} onSelectNode={selectNode} />
       ) : (
         <BrainMap
           nodes={nodes}
@@ -162,7 +157,8 @@ export default function BrainView() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  root: { width: "100vw", height: "100vh", position: "relative" },
+  // Solid night sky; the ratified studio color, no animated background behind it.
+  root: { width: "100vw", height: "100vh", position: "relative", background: "#05070f" },
   header: {
     position: "absolute",
     zIndex: 2,
