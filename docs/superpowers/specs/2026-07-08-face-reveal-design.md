@@ -46,7 +46,11 @@ The `<Canvas>` is transparent (`gl={{ alpha: true }}`, no `scene.background`) ov
 Connected lit points are joined by faint line strands (`lineSegments`, the map view's link color at low opacity): Tony asked for visible connections after seeing the near-empty reveal, where the whys are most of the brain; an edge draws only when both its endpoints are lit.
 OrbitControls keep `enableDamping` on for the intended inertial feel, but damping is disabled when `prefers-reduced-motion: reduce` is set, matching how `GalaxyBackground` gates its animation.
 Free orbit (no rotation clamp): losing and refinding the face is the point.
-A small "front" button in FaceView's header snaps the camera back to the reveal viewpoint (position `(0, 0, 6)`, zoom 1, target origin), the same reset the tool's snap-to-front uses; this is the defined way back for a user who orbits far off-axis.
+A slow idle drift (OrbitControls autoRotate at a very low speed) keeps the scatter alive when untouched, so the face gently dissolves on its own and invites refinding; it is movement, so reduced motion disables it.
+A small "front" button snaps the camera back to the reveal viewpoint (position `(0, 0, 6)`, zoom 1, target origin); the snap is a tweened camera move (about 0.8s, strong ease-in-out) so the face visibly assembles rather than teleporting, a user drag cancels the tween immediately, and reduced motion jumps instantly instead.
+On mount the clouds fade in staggered (ghosts, then lit points, then strands, opacity-only over about 0.5s), which survives reduced motion because nothing moves.
+The selected node's point carries a slow-breathing lavender halo (state indication shared with the new-node moment, since a just-created node is auto-selected); under reduced motion the halo is static but still present.
+Hovering a lit point shows a brief tooltip (title, type, first ~120 characters of the body), mirroring the map view's hover labels.
 We do not clamp zoom: the ratified tool sets no min/max zoom, and snap-to-front already recovers any extreme, so adding limits would fight the "lose and refind" intent.
 
 ## App integration

@@ -3,13 +3,13 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useState } from "react";
 import AddNodePanel from "@/components/AddNodePanel";
-import BrainMap from "@/components/BrainMap";
 import NodeDetailPanel from "@/components/NodeDetailPanel";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
-// FaceView's Canvas and OrbitControls touch window and WebGL at mount, so it
-// must never server-render, exactly like BrainMap wraps ForceGraph2D.
+// Both views touch window and WebGL at import or mount time, so neither may
+// ever server-render; BrainMap imports react-force-graph-3d at the top level.
 const FaceView = dynamic(() => import("@/components/FaceView"), { ssr: false });
+const BrainMap = dynamic(() => import("@/components/BrainMap"), { ssr: false });
 
 type Mode = "face" | "map";
 
@@ -68,7 +68,13 @@ export default function BrainView() {
   return (
     <div style={styles.root}>
       {mode === "face" ? (
-        <FaceView nodes={nodes} edges={edges} loaded={loaded} onSelectNode={selectNode} />
+        <FaceView
+          nodes={nodes}
+          edges={edges}
+          selectedNode={selectedNode}
+          loaded={loaded}
+          onSelectNode={selectNode}
+        />
       ) : (
         <BrainMap
           nodes={nodes}

@@ -1,13 +1,14 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
+import ForceGraph3D, { type ForceGraphMethods, type LinkObject, type NodeObject } from "react-force-graph-3d";
 import * as THREE from "three";
 import { colorFor } from "@/lib/node-colors";
+import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
-// force-graph touches window at import time, so it must never render on the server.
-const ForceGraph3D = dynamic(() => import("react-force-graph-3d"), { ssr: false });
+// This module imports react-force-graph-3d at the top level, which touches
+// window at import time, so BrainView loads this whole file with ssr: false.
 
 // Tooltip labels are raw HTML, so interpolated text must be escaped.
 function esc(s: string): string {
@@ -19,9 +20,20 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// The force-directed map view, in 3D: drag rotates the camera, scroll zooms.
-// Selection state and the detail panels live in BrainView; this component only
-// draws the graph and reports clicks upward.
+function brief(body: string): string {
+  return body.length > 120 ? body.slice(0, 120).trimEnd() + "..." : body;
+}
+
+type MapNode = NodeObject<BrainNode>;
+type MapLink = LinkObject<BrainNode, BrainEdge>;
+
+// How far the camera settles from a focused node, in graph units.
+const FOCUS_DISTANCE = 90;
+const FOCUS_MS = 900;
+
+// The force-directed map view, in 3D: drag rotates the camera, scroll zooms,
+// dragging a node pulls its connections along. Selection state and the detail
+// panels live in BrainView; this component only draws and reports clicks.
 export default function BrainMap({
   nodes,
   edges,
@@ -40,8 +52,9 @@ export default function BrainMap({
   onClearSelection: () => void;
 }) {
   const [dims, setDims] = useState({ w: 0, h: 0 });
-  // One glow texture shared by every node sprite; created lazily because
-  // document does not exist during the server render pass.
+  const fgRef = useRef<ForceGraphMethods<MapNode, MapLink> | undefined>(undefined);
+  const reducedMotion = usePrefersReducedMotion();
+  // One glow texture shared by every node sprite.
   const spriteMap = useRef<THREE.Texture | null>(null);
 
   useEffect(() => {
@@ -62,10 +75,28 @@ export default function BrainMap({
     [nodes],
   );
 
+  // Ease the camera in toward a clicked node while its panel opens: the move
+  // orients (which part of the sky am I reading?) rather than decorates.
+  const focusNode = (node: MapNode) => {
+    const fg = fgRef.current;
+    if (!fg || node.x == null || node.y == null || node.z == null) return;
+    const distance = Math.hypot(node.x, node.y, node.z);
+    const position =
+      distance > 0
+        ? {
+            x: node.x * (1 + FOCUS_DISTANCE / distance),
+            y: node.y * (1 + FOCUS_DISTANCE / distance),
+            z: node.z * (1 + FOCUS_DISTANCE / distance),
+          }
+        : { x: 0, y: 0, z: FOCUS_DISTANCE };
+    fg.cameraPosition(position, { x: node.x, y: node.y, z: node.z }, reducedMotion ? 0 : FOCUS_MS);
+  };
+
   return (
     <div style={styles.layer}>
       {dims.w > 0 && (
         <ForceGraph3D
+          ref={fgRef}
           width={dims.w}
           height={dims.h}
           graphData={graphData}
@@ -74,8 +105,9 @@ export default function BrainMap({
           showNavInfo={false}
           nodeLabel={(node) => {
             const n = node as BrainNode;
-            const typeLine = n.type ? `<br/><span style="opacity:.6">${esc(n.type)}</span>` : "";
-            return `<div style="color:#c9d4e3;font-size:12px"><b>${esc(n.title)}</b>${typeLine}</div>`;
+            const typeLine = n.type ? `<div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;opacity:.55;margin-top:2px">${esc(n.type)}</div>` : "";
+            const bodyLine = n.body ? `<div style="margin-top:4px;opacity:.75">${esc(brief(n.body))}</div>` : "";
+            return `<div style="max-width:280px;color:#c9d4e3;font-size:12px;line-height:1.5"><b>${esc(n.title)}</b>${typeLine}${bodyLine}</div>`;
           }}
           nodeThreeObject={(node) => {
             const n = node as BrainNode;
@@ -105,7 +137,12 @@ export default function BrainMap({
           linkDirectionalParticles={1}
           linkDirectionalParticleSpeed={0.0025}
           linkDirectionalParticleWidth={1.6}
-          onNodeClick={(node) => onSelectNode(node as BrainNode)}
+          d3AlphaDecay={0.02}
+          d3VelocityDecay={0.25}
+          onNodeClick={(node) => {
+            onSelectNode(node as BrainNode);
+            focusNode(node);
+          }}
           onLinkClick={(link) => onSelectEdge(link as BrainEdge)}
           onBackgroundClick={onClearSelection}
         />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, OrthographicCamera } from "@react-three/drei";
 import * as THREE from "three";
@@ -11,6 +11,7 @@ import {
   seededShuffle,
   sortNodesForReveal,
 } from "@/lib/face-reveal";
+import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
 type FacePoint = { x: number; y: number; zScatter: number; color: string };
@@ -42,19 +43,34 @@ const POINT_RAYCAST_THRESHOLD = 0.02;
 const EDGE_COLOR = 0x7896dc;
 const EDGE_OPACITY = 0.3;
 
+// Selection halo shares the UI's lavender accent so "selected" reads the same
+// in the panel and in the sky.
+const HALO_COLOR = 0xb9a6ff;
+
+// Motion constants. Fades are opacity-only (kept under reduced motion); the
+// snap tween and idle drift are movement (dropped under reduced motion).
+const FADE_SECONDS = 0.5;
+const LIT_FADE_DELAY = 0.15;
+const STRAND_FADE_DELAY = 0.3;
+const SNAP_SECONDS = 0.8;
+const DRIFT_SPEED = 0.3; // autoRotateSpeed units: 2.0 is one orbit in 30s
+
 export default function FaceView({
   nodes,
   edges,
+  selectedNode,
   loaded,
   onSelectNode,
 }: {
   nodes: BrainNode[];
   edges: BrainEdge[];
+  selectedNode: BrainNode | null;
   loaded: boolean;
   onSelectNode: (node: BrainNode | null) => void;
 }) {
   const [asset, setAsset] = useState<FaceAsset | null>(null);
-  const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null);
+  const [hover, setHover] = useState<{ node: BrainNode; x: number; y: number } | null>(null);
+  const [snapSignal, setSnapSignal] = useState(0);
   const reducedMotion = usePrefersReducedMotion();
 
   useEffect(() => {
@@ -105,16 +121,12 @@ export default function FaceView({
     [asset, sorted, litIndices, edges],
   );
 
-  const snapToFront = () => {
-    const controls = controlsRef.current;
-    if (!controls) return;
-    const camera = controls.object as THREE.OrthographicCamera;
-    camera.position.set(...FRONT_POSITION);
-    camera.zoom = 1;
-    camera.updateProjectionMatrix();
-    controls.target.set(0, 0, 0);
-    controls.update();
-  };
+  const haloPosition = useMemo(() => {
+    if (!asset || !selectedNode) return null;
+    const index = sorted.findIndex((n) => n.id === selectedNode.id);
+    if (index < 0 || index >= litIndices.length) return null;
+    return toWorld(asset.points[litIndices[index]], asset.settings.scatter);
+  }, [asset, selectedNode, sorted, litIndices]);
 
   return (
     <div style={styles.layer}>
@@ -122,24 +134,39 @@ export default function FaceView({
         <Canvas
           gl={{ alpha: true, antialias: true }}
           dpr={[1, 2]}
-          style={{ position: "absolute", inset: 0 }}
+          style={{ position: "absolute", inset: 0, cursor: hover ? "pointer" : "grab" }}
           onCreated={({ raycaster }) => {
             raycaster.params.Points.threshold = POINT_RAYCAST_THRESHOLD;
           }}
           onPointerMissed={() => onSelectNode(null)}
         >
           <RevealCamera />
-          <OrbitControls ref={controlsRef} makeDefault enableDamping={!reducedMotion} />
+          <OrbitControls
+            makeDefault
+            enableDamping={!reducedMotion}
+            autoRotate={!reducedMotion}
+            autoRotateSpeed={DRIFT_SPEED}
+          />
+          <CameraDirector snapSignal={snapSignal} reducedMotion={reducedMotion} />
           <PointCloud
             key={`lit-${lit.positions.length}`}
             positions={lit.positions}
             colors={lit.colors}
             baseSize={asset.settings.pointSize}
             sprite={sprite}
-            opacity={1}
+            targetOpacity={1}
+            fadeDelay={LIT_FADE_DELAY}
             onPick={(index) => {
               const node = sorted[index];
               if (node) onSelectNode(node);
+            }}
+            onHover={(index, x, y) => {
+              if (index == null) {
+                setHover(null);
+                return;
+              }
+              const node = sorted[index];
+              if (node) setHover({ node, x, y });
             }}
           />
           <PointCloud
@@ -148,27 +175,35 @@ export default function FaceView({
             uniformColor={GHOST_COLOR}
             baseSize={asset.settings.pointSize}
             sprite={sprite}
-            opacity={GHOST_OPACITY}
+            targetOpacity={GHOST_OPACITY}
+            fadeDelay={0}
           />
           {edgeLines && edgeLines.length > 0 && (
-            <lineSegments key={`edges-${edgeLines.length}`}>
-              <bufferGeometry>
-                <bufferAttribute attach="attributes-position" args={[edgeLines, 3]} />
-              </bufferGeometry>
-              <lineBasicMaterial
-                color={EDGE_COLOR}
-                transparent
-                opacity={EDGE_OPACITY}
-                depthWrite={false}
-              />
-            </lineSegments>
+            <EdgeStrands key={`edges-${edgeLines.length}`} positions={edgeLines} />
+          )}
+          {haloPosition && (
+            <SelectedHalo
+              position={haloPosition}
+              baseSize={asset.settings.pointSize}
+              sprite={sprite}
+              reducedMotion={reducedMotion}
+            />
           )}
         </Canvas>
       )}
       {asset && (
-        <button style={styles.frontButton} onClick={snapToFront}>
-          front
-        </button>
+        <div style={styles.frontWrap}>
+          <button style={styles.frontButton} onClick={() => setSnapSignal((s) => s + 1)}>
+            front
+          </button>
+        </div>
+      )}
+      {hover && (
+        <div style={{ ...styles.tooltip, left: hover.x + 14, top: hover.y + 14 }}>
+          <div style={{ fontWeight: 600 }}>{hover.node.title}</div>
+          {hover.node.type && <div style={styles.tooltipType}>{hover.node.type}</div>}
+          {hover.node.body && <div style={styles.tooltipBody}>{brief(hover.node.body)}</div>}
+        </div>
       )}
     </div>
   );
@@ -195,29 +230,145 @@ function RevealCamera() {
   );
 }
 
+type ControlsLike = {
+  target: THREE.Vector3;
+  update: () => void;
+  autoRotate: boolean;
+  addEventListener: (type: string, listener: () => void) => void;
+  removeEventListener: (type: string, listener: () => void) => void;
+};
+
+// Strong ease-in-out: the snap is a scene-level camera move, watched closely,
+// so it gets more shape than a micro-interaction would.
+function easeInOutQuart(t: number): number {
+  return t < 0.5 ? 8 * t * t * t * t : 1 - Math.pow(-2 * t + 2, 4) / 2;
+}
+
+const FRONT_VEC = new THREE.Vector3(...FRONT_POSITION);
+const ORIGIN = new THREE.Vector3(0, 0, 0);
+
+// Tweens the camera home when the front button fires. A user drag cancels the
+// tween immediately: gestures win over system motion, always. All camera and
+// controls mutation happens inside useFrame via r3f state, never at render.
+function CameraDirector({
+  snapSignal,
+  reducedMotion,
+}: {
+  snapSignal: number;
+  reducedMotion: boolean;
+}) {
+  const lastSignal = useRef(0);
+  const tween = useRef<{
+    start: number;
+    fromPos: THREE.Vector3;
+    fromZoom: number;
+    fromTarget: THREE.Vector3;
+  } | null>(null);
+
+  const controlsForCancel = useThree((state) => state.controls) as unknown as ControlsLike | null;
+  useEffect(() => {
+    const controls = controlsForCancel;
+    if (!controls) return;
+    const cancel = () => {
+      tween.current = null;
+      controls.autoRotate = !reducedMotion;
+    };
+    controls.addEventListener("start", cancel);
+    return () => controls.removeEventListener("start", cancel);
+  }, [controlsForCancel, reducedMotion]);
+
+  useFrame((state) => {
+    const camera = state.camera as THREE.OrthographicCamera;
+    const controls = state.controls as unknown as ControlsLike | null;
+
+    if (snapSignal !== lastSignal.current) {
+      lastSignal.current = snapSignal;
+      if (reducedMotion) {
+        camera.position.copy(FRONT_VEC);
+        camera.zoom = 1;
+        camera.updateProjectionMatrix();
+        if (controls) {
+          controls.target.copy(ORIGIN);
+          controls.update();
+        }
+        tween.current = null;
+        return;
+      }
+      if (controls) controls.autoRotate = false;
+      tween.current = {
+        start: state.clock.elapsedTime,
+        fromPos: camera.position.clone(),
+        fromZoom: camera.zoom,
+        fromTarget: controls ? controls.target.clone() : ORIGIN.clone(),
+      };
+    }
+
+    const tw = tween.current;
+    if (!tw) return;
+    const progress = Math.min(1, (state.clock.elapsedTime - tw.start) / SNAP_SECONDS);
+    const eased = easeInOutQuart(progress);
+    camera.position.lerpVectors(tw.fromPos, FRONT_VEC, eased);
+    camera.zoom = tw.fromZoom + (1 - tw.fromZoom) * eased;
+    camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.lerpVectors(tw.fromTarget, ORIGIN, eased);
+      controls.update();
+    }
+    if (progress === 1) {
+      tween.current = null;
+      if (controls) controls.autoRotate = !reducedMotion;
+    }
+  });
+
+  return null;
+}
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
 function PointCloud({
   positions,
   colors,
   uniformColor,
-  opacity,
+  targetOpacity,
+  fadeDelay,
   baseSize,
   sprite,
   onPick,
+  onHover,
 }: {
   positions: Float32Array;
   colors?: Float32Array;
   uniformColor?: number;
-  opacity: number;
+  targetOpacity: number;
+  fadeDelay: number;
   baseSize: number;
   sprite: THREE.Texture;
   onPick?: (index: number) => void;
+  onHover?: (index: number | null, x: number, y: number) => void;
 }) {
   const materialRef = useRef<THREE.PointsMaterial>(null);
+  const fadeStart = useRef<number | null>(null);
+  const fadeDone = useRef(false);
   // sizeAttenuation is off (see PointsMaterial), so size lives in pixels and is
   // scaled by zoom here each frame; this is what lets dense clouds hold together.
-  useFrame(({ camera }) => {
+  // The mount fade is opacity-only, so it survives prefers-reduced-motion.
+  useFrame(({ camera, clock }) => {
     const material = materialRef.current;
-    if (material) material.size = baseSize * (camera as THREE.OrthographicCamera).zoom;
+    if (!material) return;
+    material.size = baseSize * (camera as THREE.OrthographicCamera).zoom;
+    if (fadeDone.current) return;
+    if (fadeStart.current == null) fadeStart.current = clock.elapsedTime;
+    const t = (clock.elapsedTime - fadeStart.current - fadeDelay) / FADE_SECONDS;
+    if (t <= 0) {
+      material.opacity = 0;
+    } else if (t >= 1) {
+      material.opacity = targetOpacity;
+      fadeDone.current = true;
+    } else {
+      material.opacity = targetOpacity * easeOutCubic(t);
+    }
   });
 
   return (
@@ -232,6 +383,16 @@ function PointCloud({
             }
           : undefined
       }
+      onPointerMove={
+        onHover
+          ? (event) => {
+              event.stopPropagation();
+              if (event.index == null) return;
+              onHover(event.index, event.nativeEvent.clientX, event.nativeEvent.clientY);
+            }
+          : undefined
+      }
+      onPointerOut={onHover ? () => onHover(null, 0, 0) : undefined}
     >
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args={[positions, 3]} />
@@ -245,12 +406,85 @@ function PointCloud({
         vertexColors={Boolean(colors)}
         color={uniformColor ?? 0xffffff}
         transparent
-        opacity={opacity}
+        opacity={0}
         alphaTest={0.05}
         depthWrite={false}
         blending={THREE.AdditiveBlending}
       />
     </points>
+  );
+}
+
+// Strands fade in last: constellation base, then thoughts, then their whys.
+function EdgeStrands({ positions }: { positions: Float32Array }) {
+  const materialRef = useRef<THREE.LineBasicMaterial>(null);
+  const fadeStart = useRef<number | null>(null);
+  const fadeDone = useRef(false);
+  useFrame(({ clock }) => {
+    const material = materialRef.current;
+    if (!material || fadeDone.current) return;
+    if (fadeStart.current == null) fadeStart.current = clock.elapsedTime;
+    const t = (clock.elapsedTime - fadeStart.current - STRAND_FADE_DELAY) / FADE_SECONDS;
+    if (t <= 0) {
+      material.opacity = 0;
+    } else if (t >= 1) {
+      material.opacity = EDGE_OPACITY;
+      fadeDone.current = true;
+    } else {
+      material.opacity = EDGE_OPACITY * easeOutCubic(t);
+    }
+  });
+  return (
+    <lineSegments>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial
+        ref={materialRef}
+        color={EDGE_COLOR}
+        transparent
+        opacity={0}
+        depthWrite={false}
+      />
+    </lineSegments>
+  );
+}
+
+// A soft breathing glow behind the selected point: state indication, not
+// decoration, so under reduced motion it stays visible but holds still.
+function SelectedHalo({
+  position,
+  baseSize,
+  sprite,
+  reducedMotion,
+}: {
+  position: [number, number, number];
+  baseSize: number;
+  sprite: THREE.Texture;
+  reducedMotion: boolean;
+}) {
+  const ref = useRef<THREE.Sprite>(null);
+  const height = useThree((state) => state.size.height);
+  // Matches the points' constant world footprint (their px size scales with
+  // zoom, so world size is fixed); the halo just multiplies it.
+  const worldSize = ((baseSize * FRUSTUM) / height) * 2.6;
+  useFrame(({ clock }) => {
+    const halo = ref.current;
+    if (!halo) return;
+    const breath = reducedMotion ? 1 : 1 + 0.08 * Math.sin(clock.elapsedTime * 2.6);
+    halo.scale.set(worldSize * breath, worldSize * breath, 1);
+  });
+  return (
+    <sprite ref={ref} position={position}>
+      <spriteMaterial
+        map={sprite}
+        color={HALO_COLOR}
+        transparent
+        opacity={0.5}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+      />
+    </sprite>
   );
 }
 
@@ -312,6 +546,10 @@ function parseRgb(rgb: string): [number, number, number] {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+function brief(body: string): string {
+  return body.length > 120 ? body.slice(0, 120).trimEnd() + "..." : body;
+}
+
 // The 64x64 radial-gradient glow sprite from the render reference.
 function makeSprite(): THREE.Texture {
   const canvas = document.createElement("canvas");
@@ -327,30 +565,22 @@ function makeSprite(): THREE.Texture {
   return new THREE.CanvasTexture(canvas);
 }
 
-function usePrefersReducedMotion(): boolean {
-  return useSyncExternalStore(
-    (onChange) => {
-      const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-      query.addEventListener("change", onChange);
-      return () => query.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    () => false,
-  );
-}
-
 const styles: Record<string, React.CSSProperties> = {
   layer: {
     position: "absolute",
     inset: 0,
     zIndex: 1,
   },
-  frontButton: {
+  // Positioning lives on the wrapper so the button's transform slot stays free
+  // for the global :active press feedback.
+  frontWrap: {
     position: "absolute",
     zIndex: 2,
     bottom: 20,
     left: "50%",
     transform: "translateX(-50%)",
+  },
+  frontButton: {
     padding: "5px 14px",
     fontSize: 12,
     color: "#b9a6ff",
@@ -358,5 +588,29 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid rgba(120,150,220,0.3)",
     borderRadius: 6,
     cursor: "pointer",
+  },
+  tooltip: {
+    position: "fixed",
+    zIndex: 3,
+    maxWidth: 280,
+    padding: "8px 10px",
+    background: "rgba(4, 8, 18, 0.92)",
+    border: "1px solid rgba(120,150,220,0.2)",
+    borderRadius: 6,
+    fontSize: 12,
+    color: "#c9d4e3",
+    lineHeight: 1.5,
+    pointerEvents: "none",
+  },
+  tooltipType: {
+    fontSize: 10,
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+    opacity: 0.55,
+    marginTop: 2,
+  },
+  tooltipBody: {
+    marginTop: 4,
+    opacity: 0.75,
   },
 };
