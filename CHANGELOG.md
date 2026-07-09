@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.5.0
+
+Jul 9, 2026
+
+**Map**
+
+- Fixed a crash in the map view where grabbing a node dot -- pressing on it, whether you then dragged it or just let go -- could throw "undefined is not an object (evaluating 'position.x')" and blank the view. The map's camera controls no longer trip over a pointer they never finished tracking.
+- Node dots now feel alive: a dot brightens and swells while it moves (as the layout settles or when you drag it) and eases back once it comes to rest, and the whole field breathes gently when idle so the sky never looks frozen. All of this is turned off automatically if you have reduced motion enabled.
+
+---
+
 ## v0.4.0
 
 Jul 9, 2026

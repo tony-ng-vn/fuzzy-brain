@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods, type LinkObject, type NodeObject } from "react-force-graph-3d";
 import * as THREE from "three";
 import { colorFor } from "@/lib/node-colors";
+import { guardOrbitPointerPositions } from "@/lib/orbit-pointer-guard";
 import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
@@ -31,6 +32,35 @@ type MapLink = LinkObject<BrainNode, BrainEdge>;
 const FOCUS_DISTANCE = 90;
 const FOCUS_MS = 900;
 
+// Node-dot motion. A dot brightens and swells while it moves (during layout or a
+// drag), then relaxes as it settles; at rest the whole field breathes gently so
+// the sky never freezes. All of this is dropped under prefers-reduced-motion.
+const SWELL = 0.55; // extra size at full motion, as a fraction of base scale
+const BRIGHTEN = 0.3; // extra opacity added at full motion
+const DELTA_FULL = 2.2; // per-frame travel (graph units) that reads as full motion
+const ATTACK = 0.35; // how fast a dot flares up when it starts moving
+const RELEASE = 0.06; // how slowly it eases back down once it stops
+const BREATHE_AMP = 0.05; // idle pulse depth, as a fraction of base scale
+const BREATHE_SPEED = 0.0009; // idle pulse rate (rad/ms); ~7s period
+
+// Per-sprite animation state, stashed on sprite.userData.
+type SpriteAnim = {
+  baseScale: number;
+  baseOpacity: number;
+  phase: number; // breathing offset so dots don't pulse in lockstep
+  lastX?: number;
+  lastY?: number;
+  lastZ?: number;
+  intensity: number; // smoothed 0..1 motion level
+};
+
+// Stable per-node breathing phase derived from the id (no per-frame randomness).
+function phaseFor(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1000;
+  return (h / 1000) * Math.PI * 2;
+}
+
 // The force-directed map view, in 3D: drag rotates the camera, scroll zooms,
 // dragging a node pulls its connections along. Selection state and the detail
 // panels live in BrainView; this component only draws and reports clicks.
@@ -56,6 +86,8 @@ export default function BrainMap({
   const reducedMotion = usePrefersReducedMotion();
   // One glow texture shared by every node sprite.
   const spriteMap = useRef<THREE.Texture | null>(null);
+  // Live node sprites keyed by node id, so the motion loop can animate them.
+  const nodeSprites = useRef<Map<string, THREE.Sprite>>(new Map());
 
   useEffect(() => {
     const measure = () => setDims({ w: window.innerWidth, h: window.innerHeight });
@@ -63,6 +95,58 @@ export default function BrainMap({
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, []);
+
+  // Harden the OrbitControls instance against an upstream onPointerUp crash as
+  // soon as the graph exposes it. controls() is only ready after mount, so poll
+  // briefly; guardOrbitPointerPositions is idempotent and best-effort.
+  useEffect(() => {
+    if (dims.w === 0) return;
+    let tries = 0;
+    const id = setInterval(() => {
+      const controls = fgRef.current?.controls?.();
+      if (guardOrbitPointerPositions(controls) || ++tries > 50) clearInterval(id);
+    }, 60);
+    return () => clearInterval(id);
+  }, [dims.w]);
+
+  // Drive the node-dot motion each frame: swell + brighten a dot by how far it
+  // travelled since the last frame (captures both layout settling and drags),
+  // plus a gentle idle breathe. force-graph only writes each sprite's position,
+  // so our scale/opacity writes are ours to own. Skipped under reduced motion,
+  // which leaves every dot at the base size and opacity set in nodeThreeObject.
+  useEffect(() => {
+    if (reducedMotion || dims.w === 0) return;
+    let raf = 0;
+    const tick = (t: number) => {
+      nodeSprites.current.forEach((sprite) => {
+        if (!sprite.parent) return; // replaced or disposed; skip
+        const u = sprite.userData as SpriteAnim;
+        const { x, y, z } = sprite.position;
+        if (u.lastX === undefined) {
+          u.lastX = x;
+          u.lastY = y;
+          u.lastZ = z;
+        }
+        const delta = Math.hypot(x - u.lastX, y - (u.lastY ?? y), z - (u.lastZ ?? z));
+        u.lastX = x;
+        u.lastY = y;
+        u.lastZ = z;
+        const target = Math.min(1, delta / DELTA_FULL);
+        // Flare up quickly, ease back down slowly.
+        u.intensity += (target - u.intensity) * (target > u.intensity ? ATTACK : RELEASE);
+        const breathe = 1 + BREATHE_AMP * Math.sin(t * BREATHE_SPEED + u.phase);
+        const s = u.baseScale * (1 + SWELL * u.intensity) * breathe;
+        sprite.scale.set(s, s, 1);
+        (sprite.material as THREE.SpriteMaterial).opacity = Math.min(
+          1,
+          u.baseOpacity + BRIGHTEN * u.intensity,
+        );
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [reducedMotion, dims.w]);
 
   // force-graph mutates this object (positions, resolved links), so keep it stable.
   const graphData = useMemo(
@@ -125,6 +209,13 @@ export default function BrainMap({
             );
             const scale = isSelected ? 16 : 10;
             sprite.scale.set(scale, scale, 1);
+            sprite.userData = {
+              baseScale: scale,
+              baseOpacity: isSelected ? 1 : 0.9,
+              phase: phaseFor(n.id),
+              intensity: 0,
+            } satisfies SpriteAnim;
+            nodeSprites.current.set(n.id, sprite);
             return sprite;
           }}
           linkColor={() => "rgba(120,150,220,0.4)"}
