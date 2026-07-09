@@ -45,7 +45,7 @@ Normals: from the depth-map gradient on the front, from the revolved shell geome
 
 ## Asset format
 
-`brain-face-v3.json` is `{ settings, points }` like v2, but `points` uses flat parallel arrays to keep tens of thousands of dots small: `positions` (xyz triples), `normals` (xyz triples), `albedo` (one luminance value per dot from the photo), `region` (one region id per dot), `strand` (one strand id per dot, for possible strand-level effects).
+`brain-face-v3.json` keeps v2's `settings` block but replaces the `points` object array with flat parallel top-level arrays to keep tens of thousands of dots small: `positions` (xyz triples), `normals` (xyz triples), `albedo` (one luminance value per dot from the photo), `region` (one region id per dot), `strand` (one strand id per dot, for possible strand-level effects).
 Values are rounded to 3 decimals; at the expected 30k-60k dots the file lands in the low single-digit megabytes and is fetched at runtime like `brain-face.json`, staying out of the client JS bundle.
 `settings` records the ratified slider values plus the light direction and bronze ramp, applied at render time, not baked into dot colors, mirroring v2's render-time grading decision.
 
@@ -54,7 +54,8 @@ Values are rounded to 3 decimals; at the expected 30k-60k dots the file lands in
 A new `FaceLinesView` client component (or a mode inside `FaceView` if the overlap turns out large; decided during implementation planning) built on the existing three / r3f / drei stack, no new dependencies.
 Perspective camera with full 360 orbit: v2's orthographic camera was load-bearing for the anamorphic trick, but v3 is a real 3D head and perspective gives natural parallax.
 Per-dot brightness at render time: lambert term (normal dot light direction) times albedo, mapped through the bronze ramp (deep brown when dim, warm gold approaching white when bright), on black.
-Reuses the hard-won v2 rendering lessons verbatim: `sizeAttenuation: false` with per-frame `material.size = pointSize * camera.zoom`, additive blending with `depthWrite: false` and `alphaTest`, the radial-gradient sprite, damping and autorotate disabled under `prefers-reduced-motion`, snap-to-front button, and silent fallback (view renders nothing and the app stays functional) if the asset fetch fails.
+Reuses the hard-won v2 rendering lessons where they apply: additive blending with `depthWrite: false` and `alphaTest`, the radial-gradient sprite, damping and autorotate disabled under `prefers-reduced-motion`, snap-to-front button, and silent fallback (view renders nothing and the app stays functional) if the asset fetch fails.
+One v2 lesson deliberately does not carry over: the per-frame `material.size = pointSize * camera.zoom` hack fixed a purely orthographic problem (ortho zoom never changes the perspective divide); with a perspective camera the natural `sizeAttenuation: true` with a world-unit point size is correct, and OrbitControls zooming (dollying) scales dots for free.
 Lit and ghost dots are separate `THREE.Points` clouds so raycasting only targets lit dots, as in v2.
 
 ## Reveal logic
