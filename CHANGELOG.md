@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.4.0
+
+Jul 9, 2026
+
+**Tools**
+
+- Added the brain companion: talk the way you would to someone who remembers everything, and your thoughts become nodes as the conversation goes -- no form to fill out. It loads your whole brain, opens by picking up where you left off, runs the structure pass on what you share, and offers connections for you to approve before anything is linked.
+- Added `scripts/brain.mjs`, the tool the companion runs on: `index` for the whole brain at a glance, `show` for the full text of a node on demand, and `add-node` / `add-edge` for writing, with the database "why" rule as the final gate.
+
+---
+
 ## v0.3.0
 
 Jul 8, 2026

@@ -43,3 +43,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# claude code runtime state (skills under .claude are tracked; the lock is not)
+.claude/scheduled_tasks.lock
