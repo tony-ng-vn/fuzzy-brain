@@ -1,0 +1,741 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fuzzy-brain face space</title>
+<style>
+  body { margin: 0; background: #05070f; color: #eaf1ff; font-family: system-ui, sans-serif; overflow: hidden; }
+  .panel { position: absolute; z-index: 2; background: rgba(4,8,18,0.9); padding: 14px 16px; border-radius: 8px; border: 1px solid #2a3350; }
+  #studio { top: 16px; left: 16px; width: 280px; max-height: 94vh; overflow-y: auto; }
+  #spacebar { top: 16px; right: 16px; width: 220px; }
+  .panel p { margin: 0 0 8px; font-size: 13px; color: #9aa7c7; }
+  label { display: block; font-size: 12px; color: #9aa7c7; margin-top: 10px; }
+  .group { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1c2740; }
+  .group-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #5c6788; }
+  input[type=range] { width: 100%; }
+  #cropWrap { margin-top: 8px; position: relative; display: none; line-height: 0; }
+  #cropCanvas { width: 100%; border-radius: 4px; cursor: crosshair; touch-action: none; }
+  #status, #spaceStatus { font-size: 12px; color: #5c6788; margin-top: 10px; white-space: pre-wrap; }
+  button { padding: 6px 12px; background: rgba(120,150,220,0.12); color: #b9a6ff; border: 1px solid rgba(120,150,220,0.3); border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 8px; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: rgba(110,200,255,0.18); border-color: rgba(110,200,255,0.5); color: #dfe9ff; }
+  button.danger { color: #ff9a9a; border-color: rgba(255,120,120,0.35); background: rgba(255,120,120,0.08); }
+  .rowbtns { display: flex; gap: 6px; }
+  .rowbtns button { flex: 1; margin-top: 0; }
+  #hint { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #7f8db0; z-index: 2; text-align: center; background: rgba(4,8,18,0.7); padding: 6px 14px; border-radius: 20px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.166.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+  <div class="panel" id="studio">
+    <p>studio: tune one portrait, then add it to the space</p>
+    <input type="file" id="photoInput" accept="image/*">
+
+    <div class="group">
+      <div class="group-title">crop to subject</div>
+      <div id="cropWrap"><canvas id="cropCanvas"></canvas></div>
+      <label>crop size <span id="cropVal">0.60</span>
+        <input type="range" id="cropSize" min="0.15" max="1" step="0.01" value="0.6"></label>
+      <label style="color:#5c6788">drag on the photo to move the box.</label>
+    </div>
+
+    <div class="group">
+      <div class="group-title">grid</div>
+      <label>drone spacing <span id="pitchVal">14</span>px
+        <input type="range" id="pitch" min="8" max="32" value="14"></label>
+      <label>point size <span id="sizeVal">4</span>
+        <input type="range" id="size" min="1" max="12" step="0.5" value="4"></label>
+      <label>scatter depth <span id="scatterVal">1.8</span>
+        <input type="range" id="scatter" min="0" max="4" step="0.1" value="1.8"></label>
+    </div>
+
+    <div class="group">
+      <div class="group-title">color</div>
+      <label>brightness <span id="brightVal">1.0</span>
+        <input type="range" id="bright" min="0.4" max="2.5" step="0.05" value="1.0"></label>
+      <label>contrast <span id="contrastVal">1.3</span>
+        <input type="range" id="contrast" min="0.5" max="3" step="0.05" value="1.3"></label>
+      <label>saturation <span id="satVal">0.7</span>
+        <input type="range" id="sat" min="0" max="1.8" step="0.05" value="0.7"></label>
+    </div>
+
+    <div class="group">
+      <div class="group-title">background removal</div>
+      <label><input type="checkbox" id="cutBg" checked> trim background from edges</label>
+      <label>trim tolerance <span id="tolVal">34</span>
+        <input type="range" id="tol" min="4" max="90" step="1" value="34"></label>
+    </div>
+
+    <div id="status">no model needed -- just a photo.</div>
+    <button class="primary" id="addBtn" disabled style="width:100%">+ add this portrait to the space</button>
+  </div>
+
+  <div class="panel" id="spacebar">
+    <p>the space</p>
+    <div id="spaceStatus">empty. add a portrait to begin.</div>
+    <button id="viewBtn" style="width:100%" disabled>enter the space</button>
+    <button id="nearestBtn" class="primary" style="width:100%; display:none">go to nearest portrait</button>
+    <button id="flyBtn" style="width:100%; display:none">free fly</button>
+    <div class="rowbtns" style="margin-top:8px">
+      <button id="prevBtn" disabled>&lt; prev</button>
+      <button id="nextBtn" disabled>next &gt;</button>
+    </div>
+    <button id="deleteBtn" class="danger" style="width:100%; display:none">delete this portrait</button>
+    <button id="studioBtn" style="width:100%; display:none">back to studio</button>
+    <button id="dlBtn" style="width:100%" disabled>download space.json</button>
+  </div>
+
+  <p id="hint" style="display:none"></p>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  const el = (id) => document.getElementById(id);
+  const statusEl = el('status'), spaceStatusEl = el('spaceStatus'), hintEl = el('hint');
+  const pitchInput = el('pitch'), sizeInput = el('size'), scatterInput = el('scatter');
+  const brightInput = el('bright'), contrastInput = el('contrast'), satInput = el('sat');
+  const cutBgInput = el('cutBg'), tolInput = el('tol'), cropSizeInput = el('cropSize');
+  const cropCanvas = el('cropCanvas'), cropWrap = el('cropWrap');
+  const cropCtx = cropCanvas.getContext('2d');
+  const addBtn = el('addBtn'), viewBtn = el('viewBtn'), studioBtn = el('studioBtn');
+  const nearestBtn = el('nearestBtn'), flyBtn = el('flyBtn'), deleteBtn = el('deleteBtn');
+  const prevBtn = el('prevBtn'), nextBtn = el('nextBtn'), dlBtn = el('dlBtn');
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05070f);
+
+  const frustum = 2.2;
+  let aspect = innerWidth / innerHeight;
+
+  function makeOrtho() {
+    const c = new THREE.OrthographicCamera(-frustum * aspect / 2, frustum * aspect / 2, frustum / 2, -frustum / 2, 0.01, 100);
+    c.position.set(0, 0, 6);
+    return c;
+  }
+  const orthoCam = makeOrtho();
+  const focusCam = makeOrtho();
+
+  const FLY_FOV = 60, PARK_FOV = 11, PARK_DIST = 14;
+  const perspCam = new THREE.PerspectiveCamera(FLY_FOV, aspect, 0.05, 2000);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  document.body.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(orthoCam, renderer.domElement);
+  controls.enableDamping = true;
+
+  function makeSprite() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.4, 'rgba(255,255,255,0.8)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  }
+  const sprite = makeSprite();
+
+  // ---------------- studio: process one image ----------------
+  let imgData = null, imgW = 0, imgH = 0, imgEl = null;
+  let bgMask = null, maskW = 0, maskH = 0;
+  let matrix = [];
+  let studioCloud = null;
+  const crop = { cx: 0.5, cy: 0.5, size: 0.6 };
+
+  function mulberry32(seed) {
+    let s = seed;
+    return function () {
+      s |= 0; s = (s + 0x6D2B79F5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function pixelAt(x, y) { const i = (y * imgW + x) * 4; const d = imgData.data; return [d[i], d[i + 1], d[i + 2]]; }
+
+  function cropRectPx() {
+    const side = crop.size * Math.min(imgW, imgH);
+    let x0 = crop.cx * imgW - side / 2, y0 = crop.cy * imgH - side / 2;
+    x0 = Math.max(0, Math.min(imgW - side, x0));
+    y0 = Math.max(0, Math.min(imgH - side, y0));
+    return { x0, y0, side };
+  }
+
+  function drawCropPreview() {
+    if (!imgEl) return;
+    const pw = 248, ph = Math.round(pw * imgH / imgW);
+    cropCanvas.width = pw; cropCanvas.height = ph;
+    cropCtx.drawImage(imgEl, 0, 0, pw, ph);
+    const { x0, y0, side } = cropRectPx();
+    const sx = pw / imgW, sy = ph / imgH;
+    cropCtx.fillStyle = 'rgba(4,8,18,0.5)';
+    cropCtx.fillRect(0, 0, pw, y0 * sy);
+    cropCtx.fillRect(0, (y0 + side) * sy, pw, ph);
+    cropCtx.fillRect(0, y0 * sy, x0 * sx, side * sy);
+    cropCtx.fillRect((x0 + side) * sx, y0 * sy, pw, side * sy);
+    cropCtx.strokeStyle = '#b9a6ff'; cropCtx.lineWidth = 2;
+    cropCtx.strokeRect(x0 * sx, y0 * sy, side * sx, side * sy);
+  }
+
+  function buildBackgroundMask(tolerance) {
+    const maxDim = 360;
+    const scale = Math.min(1, maxDim / Math.max(imgW, imgH));
+    maskW = Math.max(1, Math.round(imgW * scale));
+    maskH = Math.max(1, Math.round(imgH * scale));
+    const small = document.createElement('canvas');
+    small.width = maskW; small.height = maskH;
+    const sctx = small.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(imgEl, 0, 0, maskW, maskH);
+    const sd = sctx.getImageData(0, 0, maskW, maskH).data;
+    const mask = new Uint8Array(maskW * maskH);
+    const stack = [];
+    const at = (x, y) => (y * maskW + x);
+    const rgbAt = (idx) => [sd[idx * 4], sd[idx * 4 + 1], sd[idx * 4 + 2]];
+    for (let x = 0; x < maskW; x++) { stack.push(at(x, 0)); stack.push(at(x, maskH - 1)); }
+    for (let y = 0; y < maskH; y++) { stack.push(at(0, y)); stack.push(at(maskW - 1, y)); }
+    const tol2 = tolerance * tolerance * 3;
+    while (stack.length) {
+      const idx = stack.pop();
+      if (mask[idx]) continue;
+      mask[idx] = 1;
+      const x = idx % maskW, y = (idx / maskW) | 0;
+      const [r, g, b] = rgbAt(idx);
+      const ns = [x > 0 ? idx - 1 : -1, x < maskW - 1 ? idx + 1 : -1, y > 0 ? idx - maskW : -1, y < maskH - 1 ? idx + maskW : -1];
+      for (const ni of ns) {
+        if (ni < 0 || mask[ni]) continue;
+        const [nr, ng, nb] = rgbAt(ni);
+        const dr = nr - r, dg = ng - g, db = nb - b;
+        if (dr * dr + dg * dg + db * db <= tol2) stack.push(ni);
+      }
+    }
+    bgMask = mask;
+  }
+  function isBackgroundAt(x, y) {
+    if (!bgMask) return false;
+    const mx = Math.min(maskW - 1, (x / imgW * maskW) | 0);
+    const my = Math.min(maskH - 1, (y / imgH * maskH) | 0);
+    return bgMask[my * maskW + mx] === 1;
+  }
+
+  function cellColor(cx, cy, pitch, cutBg) {
+    let r = 0, g = 0, b = 0, n = 0, fg = 0, total = 0;
+    const half = Math.floor(pitch / 2);
+    for (let y = cy - half; y <= cy + half; y += 2) {
+      for (let x = cx - half; x <= cx + half; x += 2) {
+        if (x < 0 || y < 0 || x >= imgW || y >= imgH) continue;
+        total++;
+        if (cutBg && isBackgroundAt(x, y)) continue;
+        const [pr, pg, pb] = pixelAt(x, y);
+        fg++; r += pr; g += pg; b += pb; n++;
+      }
+    }
+    if (n === 0 || fg / total < 0.4) return null;
+    return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+  }
+
+  function buildMatrix() {
+    const pitch = Number(pitchInput.value), cutBg = cutBgInput.checked;
+    el('pitchVal').textContent = pitch;
+    const { x0, y0, side } = cropRectPx();
+    const rand = mulberry32(20260708);
+    const pts = [];
+    let row = 0;
+    for (let gy = Math.floor(pitch / 2); gy < side; gy += pitch, row++) {
+      const offset = (row % 2) * Math.floor(pitch / 2);
+      for (let gx = Math.floor(pitch / 2) + offset; gx < side; gx += pitch) {
+        const color = cellColor(Math.round(x0 + gx), Math.round(y0 + gy), pitch, cutBg);
+        const zRand = rand();
+        if (!color) continue;
+        pts.push({ x: gx / side, y: gy / side, zScatter: zRand - 0.5, r: color[0], g: color[1], b: color[2] });
+      }
+    }
+    matrix = pts;
+  }
+
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  function gradeColor(r, g, b, contrast, brightness, saturation) {
+    r /= 255; g /= 255; b /= 255;
+    const L = 0.299 * r + 0.587 * g + 0.114 * b;
+    const Lg = clamp01(((L - 0.5) * contrast + 0.5) * brightness);
+    const scale = L > 1e-4 ? Lg / L : 0;
+    return [clamp01(Lg + (r * scale - Lg) * saturation), clamp01(Lg + (g * scale - Lg) * saturation), clamp01(Lg + (b * scale - Lg) * saturation)];
+  }
+  function currentGrade() {
+    return { brightness: Number(brightInput.value), contrast: Number(contrastInput.value), saturation: Number(satInput.value) };
+  }
+
+  function bakePortrait() {
+    const scatter = Number(scatterInput.value);
+    const { brightness, contrast, saturation } = currentGrade();
+    const positions = new Float32Array(matrix.length * 3);
+    const colors = new Float32Array(matrix.length * 3);
+    matrix.forEach((p, i) => {
+      positions[i * 3] = (p.x - 0.5) * 1.6;
+      positions[i * 3 + 1] = -(p.y - 0.5) * 1.6;
+      positions[i * 3 + 2] = p.zScatter * scatter;
+      const [cr, cg, cb] = gradeColor(p.r, p.g, p.b, contrast, brightness, saturation);
+      colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
+    });
+    return { positions, colors, pointSize: Number(sizeInput.value) };
+  }
+
+  function makePoints(baked) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(baked.positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(baked.colors, 3));
+    const mat = new THREE.PointsMaterial({
+      size: baked.pointSize, sizeAttenuation: false, vertexColors: true, map: sprite,
+      transparent: true, alphaTest: 0.05, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    return new THREE.Points(geo, mat);
+  }
+
+  function rebuildStudio() {
+    if (!matrix.length) return;
+    el('scatterVal').textContent = Number(scatterInput.value).toFixed(1);
+    el('brightVal').textContent = Number(brightInput.value).toFixed(2);
+    el('contrastVal').textContent = Number(contrastInput.value).toFixed(2);
+    el('satVal').textContent = Number(satInput.value).toFixed(2);
+    el('tolVal').textContent = tolInput.value;
+    el('cropVal').textContent = crop.size.toFixed(2);
+    if (studioCloud) { scene.remove(studioCloud); studioCloud.geometry.dispose(); studioCloud.material.dispose(); }
+    studioCloud = makePoints(bakePortrait());
+    scene.add(studioCloud);
+    statusEl.textContent = `${matrix.length} points. tune, then add to the space.`;
+    addBtn.disabled = false;
+  }
+
+  function reprocess() {
+    if (!imgData) return;
+    if (cutBgInput.checked) buildBackgroundMask(Number(tolInput.value));
+    buildMatrix();
+    rebuildStudio();
+    drawCropPreview();
+  }
+
+  // ---------------- signs (per-portrait beacon) ----------------
+  function makeLabelSprite(text) {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 72;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(185,166,255,0.95)';
+    g.font = 'bold 40px system-ui, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(text, 64, 40);
+    const tex = new THREE.CanvasTexture(c);
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+    s.scale.set(0.9, 0.5, 1);
+    return s;
+  }
+  function makeSign(text) {
+    const group = new THREE.Group();
+    const dot = new THREE.Sprite(new THREE.SpriteMaterial({ map: sprite, color: 0xb9a6ff, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending }));
+    dot.scale.set(0.5, 0.5, 1);
+    const label = makeLabelSprite(text);
+    label.position.set(0, 0.5, 0);
+    group.add(dot); group.add(label);
+    group.userData.label = label;
+    return group;
+  }
+
+  // ---------------- the space: ring of portraits ----------------
+  const portraits = []; // { group, points, sign, baked, angle }
+  let mode = 'studio';   // studio | focus | fly
+  let focusIndex = 0;
+  let focusZoom = 1;
+
+  function ringRadius() { return Math.max(4, portraits.length * 0.8); }
+
+  function layoutRing() {
+    const n = portraits.length, R = ringRadius();
+    portraits.forEach((p, i) => {
+      const a = (i / Math.max(1, n)) * Math.PI * 2;
+      p.angle = a;
+      p.group.position.set(R * Math.sin(a), 0, R * Math.cos(a));
+      p.group.rotation.set(0, a + Math.PI, 0);
+      p.points.material.size = p.baked.pointSize;
+      // Sign floats just in front of the face (toward the ring center).
+      const dir = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+      p.sign.position.copy(dir.clone().multiplyScalar(R - 1.3));
+      p.sign.position.y = 1.15;
+      const lbl = makeLabelSprite(`#${i + 1}`);
+      lbl.position.copy(p.sign.userData.label.position);
+      p.sign.remove(p.sign.userData.label);
+      p.sign.add(lbl); p.sign.userData.label = lbl;
+    });
+  }
+
+  function addPortrait(baked, save) {
+    const group = new THREE.Group();
+    const points = makePoints(baked);
+    group.add(points);
+    const sign = makeSign(`#${portraits.length + 1}`);
+    scene.add(group); scene.add(sign);
+    const rec = { group, points, sign, baked, angle: 0 };
+    portraits.push(rec);
+    setVisibility();
+    layoutRing();
+    if (save) saveSpace();
+    return rec;
+  }
+
+  addBtn.addEventListener('click', () => {
+    addPortrait(bakePortrait(), true);
+    focusIndex = portraits.length - 1;
+    updateSpaceUI();
+  });
+
+  deleteBtn.addEventListener('click', () => {
+    if (!portraits.length) return;
+    const [rec] = portraits.splice(focusIndex, 1);
+    scene.remove(rec.group); scene.remove(rec.sign);
+    rec.points.geometry.dispose(); rec.points.material.dispose();
+    saveSpace();
+    if (portraits.length === 0) { enterStudio(); return; }
+    layoutRing();
+    focusIndex = Math.min(focusIndex, portraits.length - 1);
+    if (mode === 'focus') focusPortrait(focusIndex); else { setVisibility(); updateSpaceUI(); }
+  });
+
+  function updateSpaceUI() {
+    const n = portraits.length;
+    spaceStatusEl.textContent = n === 0 ? 'empty. add a portrait to begin.'
+      : `${n} portrait${n > 1 ? 's' : ''} in the space  (viewing #${focusIndex + 1}).`;
+    viewBtn.disabled = n === 0;
+    dlBtn.disabled = n === 0;
+    const inSpace = mode !== 'studio';
+    prevBtn.disabled = !inSpace || n < 2;
+    nextBtn.disabled = !inSpace || n < 2;
+  }
+
+  // ---------------- focus: reproduce the exact studio view ----------------
+  function focusPortrait(i) {
+    if (!portraits.length) return;
+    mode = 'focus'; parked = false; parking = false; releasing = false;
+    focusIndex = (i + portraits.length) % portraits.length;
+    const p = portraits[focusIndex];
+    p.group.position.set(0, 0, 0);
+    p.group.rotation.set(0, 0, 0);
+    setVisibility();
+    focusZoom = 0.72;
+    setSpaceButtons(); updateSpaceUI();
+  }
+
+  // ---------------- free fly ----------------
+  const fly = { yaw: 0, pitch: 0, dragging: false, lastX: 0, lastY: 0 };
+  const keys = new Set();
+  let shiftHeld = false;
+  const FLY_SPEED = 3.2;
+  let parked = false, parking = false;
+  let fovTarget = FLY_FOV;
+  let releasing = false, releaseT = 0;
+  const releaseStart = { pos: new THREE.Vector3(), fov: FLY_FOV };
+  const releaseEnd = { pos: new THREE.Vector3(), fov: FLY_FOV };
+  const parkTarget = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
+  const UP = new THREE.Vector3(0, 1, 0);
+  const tmpM = new THREE.Matrix4();
+
+  function enterFly() {
+    mode = 'fly'; parked = false; parking = false; releasing = false;
+    layoutRing();
+    setVisibility();
+    perspCam.position.set(0, 0, 0);
+    const a = portraits[focusIndex]?.angle ?? 0;
+    fly.yaw = a + Math.PI; fly.pitch = 0;
+    fovTarget = FLY_FOV;
+    perspCam.fov = FLY_FOV; perspCam.updateProjectionMatrix();
+    setSpaceButtons(); updateSpaceUI();
+  }
+
+  // Fly to a far, on-axis, front-facing vantage of the nearest portrait and
+  // hold there with a telephoto lens (near-orthographic, so the face resolves)
+  // while staying in fly mode. Any move key or drag releases the park.
+  function goToNearest() {
+    if (!portraits.length) return;
+    let best = 0, bestD = Infinity;
+    portraits.forEach((p, i) => {
+      const d = perspCam.position.distanceTo(p.group.position);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    focusIndex = best;
+    const P = portraits[best].group.position.clone();
+    const R = ringRadius();
+    const dir = P.clone().multiplyScalar(1 / R); // outward unit
+    parkTarget.pos.copy(P).addScaledVector(dir, -PARK_DIST); // origin side, far
+    tmpM.lookAt(parkTarget.pos, P, UP);
+    parkTarget.quat.setFromRotationMatrix(tmpM);
+    parked = true; parking = true; releasing = false;
+    fovTarget = PARK_FOV;
+    setVisibility();
+    updateSpaceUI();
+  }
+
+  function releasePark() {
+    if (!parked && !parking) return;
+    parked = false; parking = false;
+    // Dolly-zoom out of the parked view: widen the lens AND travel in to a near
+    // standoff of the same face, matched so the face keeps its on-screen size the
+    // whole way. You end up genuinely close and looking at it, so the next move
+    // is local -- never the old "flung far away" reveal.
+    releaseStart.pos.copy(perspCam.position);
+    releaseStart.fov = perspCam.fov;
+    const p = portraits[focusIndex];
+    if (p) {
+      const P = p.group.position;
+      const dir = P.clone().multiplyScalar(1 / ringRadius()); // outward unit
+      const matched = PARK_DIST * Math.tan(PARK_FOV * Math.PI / 360) / Math.tan(FLY_FOV * Math.PI / 360);
+      const near = Math.max(3, matched); // never end inside the face
+      releaseEnd.pos.copy(P).addScaledVector(dir, -near); // front side, close
+    } else {
+      releaseEnd.pos.copy(perspCam.position);
+    }
+    releaseEnd.fov = FLY_FOV;
+    fovTarget = FLY_FOV;
+    releasing = true; releaseT = 0;
+    setVisibility();
+  }
+
+  // While parked on one portrait it is the only thing shown, so no other
+  // clouds haze the view; everywhere else in the space all are visible.
+  function setVisibility() {
+    portraits.forEach((p, i) => {
+      const showAll = (mode === 'fly' && !parked);
+      p.group.visible = showAll || ((mode === 'focus' || parked) && i === focusIndex);
+      p.sign.visible = (mode === 'fly' && !parked);
+    });
+    if (studioCloud) studioCloud.visible = (mode === 'studio');
+  }
+
+  function enterSpace() {
+    controls.enabled = false;
+    el('studio').style.display = 'none';
+    hintEl.style.display = 'block';
+    focusPortrait(focusIndex);
+  }
+  function enterStudio() {
+    mode = 'studio'; parked = false; parking = false; releasing = false;
+    controls.enabled = true; keys.clear();
+    layoutRing(); setVisibility();
+    el('studio').style.display = 'block';
+    hintEl.style.display = 'none';
+    setSpaceButtons(); updateSpaceUI();
+  }
+
+  function setSpaceButtons() {
+    const inStudio = mode === 'studio';
+    viewBtn.style.display = inStudio ? 'block' : 'none';
+    studioBtn.style.display = inStudio ? 'none' : 'block';
+    nearestBtn.style.display = (mode === 'fly') ? 'block' : 'none';
+    flyBtn.style.display = (mode === 'focus') ? 'block' : 'none';
+    deleteBtn.style.display = (mode === 'focus') ? 'block' : 'none';
+    if (mode === 'focus') hintEl.textContent = 'crisp view  /  free fly to roam  /  prev-next for another face  /  delete removes this one';
+    else if (mode === 'fly') hintEl.textContent = 'drag to look  /  arrows or WASD to move  /  shift + up-down to rise and fall  /  go to nearest, then any move key to leave';
+  }
+
+  viewBtn.addEventListener('click', enterSpace);
+  studioBtn.addEventListener('click', enterStudio);
+  flyBtn.addEventListener('click', enterFly);
+  nearestBtn.addEventListener('click', goToNearest);
+  prevBtn.addEventListener('click', () => focusPortrait(focusIndex - 1));
+  nextBtn.addEventListener('click', () => focusPortrait(focusIndex + 1));
+
+  const cv = renderer.domElement;
+  cv.addEventListener('pointerdown', (e) => {
+    if (mode !== 'fly') return;
+    // While parked (or flying to a park), a click must NOT yank you out of the
+    // view. You leave the parked spot by pressing a move key, which eases the
+    // lens back gently. So ignore clicks entirely until then.
+    if (parked || parking) return;
+    fly.dragging = true; fly.lastX = e.clientX; fly.lastY = e.clientY;
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (mode !== 'fly' || !fly.dragging) return;
+    fly.yaw -= (e.clientX - fly.lastX) * 0.003;
+    fly.pitch -= (e.clientY - fly.lastY) * 0.003;
+    fly.pitch = Math.max(-1.4, Math.min(1.4, fly.pitch));
+    fly.lastX = e.clientX; fly.lastY = e.clientY;
+  });
+  cv.addEventListener('pointerup', () => { fly.dragging = false; });
+  addEventListener('keydown', (e) => {
+    if (e.key === 'Shift') shiftHeld = true;
+    if (mode === 'studio') return;
+    const k = e.key.toLowerCase();
+    if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd', 'q', 'e', ' '].includes(k)) {
+      if (mode === 'focus') enterFly();
+      releasePark();
+      keys.add(k); e.preventDefault();
+    }
+  });
+  addEventListener('keyup', (e) => {
+    if (e.key === 'Shift') shiftHeld = false;
+    keys.delete(e.key.toLowerCase());
+  });
+
+  dlBtn.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(spacePayload())], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'space.json'; a.click();
+  });
+
+  // ---------------- persistence (survives reload) ----------------
+  const STORE_KEY = 'fuzzy-face-space';
+  function spacePayload() {
+    return {
+      mode: 'anamorphic-space',
+      portraits: portraits.map((p) => ({
+        pointSize: p.baked.pointSize,
+        positions: Array.from(p.baked.positions),
+        colors: Array.from(p.baked.colors),
+      })),
+    };
+  }
+  function saveSpace() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(spacePayload())); }
+    catch (err) { statusEl.textContent = 'could not save the space (storage full?). download space.json to keep it.'; }
+  }
+  function loadSpace() {
+    let raw;
+    try { raw = localStorage.getItem(STORE_KEY); } catch { return; }
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      (data.portraits || []).forEach((p) => {
+        addPortrait({ positions: new Float32Array(p.positions), colors: new Float32Array(p.colors), pointSize: p.pointSize || 4 }, false);
+      });
+      updateSpaceUI();
+    } catch { /* corrupt store: ignore */ }
+  }
+
+  // ---------------- studio input wiring ----------------
+  el('photoInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (mode !== 'studio') enterStudio();
+    statusEl.textContent = 'loading...';
+    imgEl = new Image();
+    imgEl.src = URL.createObjectURL(file);
+    await new Promise((res) => { imgEl.onload = res; });
+    imgW = imgEl.naturalWidth; imgH = imgEl.naturalHeight;
+    const off = document.createElement('canvas');
+    off.width = imgW; off.height = imgH;
+    const octx = off.getContext('2d', { willReadFrequently: true });
+    octx.drawImage(imgEl, 0, 0);
+    imgData = octx.getImageData(0, 0, imgW, imgH);
+    crop.cx = 0.5; crop.cy = 0.5; crop.size = Number(cropSizeInput.value);
+    cropWrap.style.display = 'block';
+    reprocess();
+  });
+
+  let cdrag = false;
+  function moveCropTo(ev) {
+    const rect = cropCanvas.getBoundingClientRect();
+    crop.cx = clamp01((ev.clientX - rect.left) / rect.width);
+    crop.cy = clamp01((ev.clientY - rect.top) / rect.height);
+    reprocess();
+  }
+  cropCanvas.addEventListener('pointerdown', (ev) => { cdrag = true; cropCanvas.setPointerCapture(ev.pointerId); moveCropTo(ev); });
+  cropCanvas.addEventListener('pointermove', (ev) => { if (cdrag) moveCropTo(ev); });
+  cropCanvas.addEventListener('pointerup', () => { cdrag = false; });
+
+  cropSizeInput.addEventListener('input', () => { crop.size = Number(cropSizeInput.value); reprocess(); });
+  pitchInput.addEventListener('input', reprocess);
+  cutBgInput.addEventListener('change', reprocess);
+  tolInput.addEventListener('input', () => { el('tolVal').textContent = tolInput.value; reprocess(); });
+  sizeInput.addEventListener('input', () => {
+    el('sizeVal').textContent = sizeInput.value;
+    if (studioCloud) studioCloud.material.size = Number(sizeInput.value);
+  });
+  scatterInput.addEventListener('input', rebuildStudio);
+  brightInput.addEventListener('input', rebuildStudio);
+  contrastInput.addEventListener('input', rebuildStudio);
+  satInput.addEventListener('input', rebuildStudio);
+
+  addEventListener('resize', () => {
+    aspect = innerWidth / innerHeight;
+    for (const c of [orthoCam, focusCam]) {
+      c.left = -frustum * aspect / 2; c.right = frustum * aspect / 2; c.updateProjectionMatrix();
+    }
+    perspCam.aspect = aspect; perspCam.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  let prevT = 0;
+  renderer.setAnimationLoop((t) => {
+    const dt = Math.min(0.05, (t - prevT) / 1000 || 0); prevT = t;
+
+    if (mode === 'studio') {
+      controls.update();
+      if (studioCloud) studioCloud.material.size = Number(sizeInput.value) * orthoCam.zoom;
+      renderer.render(scene, orthoCam);
+      return;
+    }
+
+    if (mode === 'focus') {
+      focusZoom += (1 - focusZoom) * 0.12;
+      focusCam.zoom = focusZoom; focusCam.updateProjectionMatrix();
+      const p = portraits[focusIndex];
+      if (p) p.points.material.size = p.baked.pointSize * focusZoom;
+      renderer.render(scene, focusCam);
+      return;
+    }
+
+    // fly
+    if (parking) {
+      perspCam.position.lerp(parkTarget.pos, 0.08);
+      perspCam.quaternion.slerp(parkTarget.quat, 0.08);
+      perspCam.fov += (PARK_FOV - perspCam.fov) * 0.08;
+      perspCam.updateProjectionMatrix();
+      if (perspCam.position.distanceTo(parkTarget.pos) < 0.05) parking = false;
+    } else if (releasing) {
+      releaseT = Math.min(1, releaseT + dt / 0.45);
+      const e = releaseT * releaseT * (3 - 2 * releaseT); // smoothstep
+      perspCam.position.lerpVectors(releaseStart.pos, releaseEnd.pos, e);
+      perspCam.fov = releaseStart.fov + (releaseEnd.fov - releaseStart.fov) * e;
+      perspCam.updateProjectionMatrix();
+      if (releaseT >= 1) {
+        releasing = false;
+        const eu = new THREE.Euler().setFromQuaternion(perspCam.quaternion, 'YXZ');
+        fly.yaw = eu.y; fly.pitch = eu.x;
+      }
+    } else if (!parked) {
+      // Ease the lens back toward the wide fly FOV (set on release), so leaving
+      // a parked view widens gently instead of snapping.
+      if (Math.abs(perspCam.fov - fovTarget) > 0.05) {
+        perspCam.fov += (fovTarget - perspCam.fov) * 0.12;
+        perspCam.updateProjectionMatrix();
+      }
+      perspCam.quaternion.setFromEuler(new THREE.Euler(fly.pitch, fly.yaw, 0, 'YXZ'));
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(perspCam.quaternion);
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(perspCam.quaternion);
+      const step = FLY_SPEED * dt;
+      // With shift held, the up/down arrows lift and drop instead of moving
+      // forward/back; W/S stay forward/back always.
+      const fwdKey = keys.has('w') || (!shiftHeld && keys.has('arrowup'));
+      const backKey = keys.has('s') || (!shiftHeld && keys.has('arrowdown'));
+      const upKey = keys.has('e') || keys.has(' ') || (shiftHeld && keys.has('arrowup'));
+      const downKey = keys.has('q') || (shiftHeld && keys.has('arrowdown'));
+      if (fwdKey) perspCam.position.addScaledVector(fwd, step);
+      if (backKey) perspCam.position.addScaledVector(fwd, -step);
+      if (keys.has('a') || keys.has('arrowleft')) perspCam.position.addScaledVector(right, -step);
+      if (keys.has('d') || keys.has('arrowright')) perspCam.position.addScaledVector(right, step);
+      if (upKey) perspCam.position.y += step;
+      if (downKey) perspCam.position.y -= step;
+    }
+    renderer.render(scene, perspCam);
+  });
+
+  loadSpace();
+</script>
+</body>
+</html>

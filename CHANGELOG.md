@@ -4,6 +4,19 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.3.0
+
+Jul 8, 2026
+
+**Tools**
+
+- Added "the space" (tools/space): a full-screen studio that turns any photo into an anamorphic portrait, plus a 3D space you can fly through where portraits sit in a ring. It runs on its own, separate from the main brain map, so the brain stays the default.
+- Fly with the arrow keys or WASD, and hold shift with up or down to rise and fall.
+- "Go to nearest portrait" now carries you all the way to a crisp head-on view of the closest face; leaving that view eases you right up to the face instead of dropping you far away.
+- Portraits can be deleted, each carries a numbered sign you can navigate to, and they are saved in the browser so they survive a reload.
+
+---
+
 ## v0.2.0
 
 Jul 8, 2026
