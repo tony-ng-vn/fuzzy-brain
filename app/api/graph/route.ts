@@ -6,7 +6,7 @@ import { pool } from "@/lib/db";
 export async function GET() {
   try {
     const [nodes, edges] = await Promise.all([
-      pool.query("select id, type, title, body, created_at from nodes order by created_at"),
+      pool.query("select id, type, title, body, raw, created_at from nodes order by created_at"),
       pool.query("select id, source, target, why, created_at from edges order by created_at"),
     ]);
     return NextResponse.json({ nodes: nodes.rows, edges: edges.rows });

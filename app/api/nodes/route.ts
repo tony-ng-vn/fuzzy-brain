@@ -5,22 +5,22 @@ import { validateNodeInput } from "@/lib/validation";
 // POST /api/nodes -- create a node and its connections in one transaction,
 // so a rejected edge (blank why, bad target) never leaves an orphan node.
 export async function POST(request: Request) {
-  let raw: unknown;
+  let payload: unknown;
   try {
-    raw = await request.json();
+    payload = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
   }
-  const parsed = validateNodeInput(raw);
+  const parsed = validateNodeInput(payload);
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
 
-  const { type, title, body, connections } = parsed.value;
+  const { type, title, body, raw, connections } = parsed.value;
   const client = await pool.connect();
   try {
     await client.query("begin");
     const { rows } = await client.query(
-      "insert into nodes (type, title, body) values ($1, $2, $3) returning id, type, title, body, created_at",
-      [type, title, body],
+      "insert into nodes (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, body, raw, created_at",
+      [type, title, body, raw],
     );
     const node = rows[0];
     const edges = [];

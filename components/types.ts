@@ -3,6 +3,7 @@ export type BrainNode = {
   type: string;
   title: string;
   body: string;
+  raw: string;
   created_at: string;
   x?: number;
   y?: number;

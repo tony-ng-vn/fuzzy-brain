@@ -15,7 +15,7 @@ export default function AddNodePanel({
   onCreated: (nodeId: string) => void;
 }) {
   const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
+  const [raw, setRaw] = useState("");
   const [connections, setConnections] = useState<ConnectionDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -35,7 +35,7 @@ export default function AddNodePanel({
       const res = await fetch("/api/nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, body, connections }),
+        body: JSON.stringify({ title, raw, connections }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
@@ -69,8 +69,8 @@ export default function AddNodePanel({
         Story
         <textarea
           style={{ ...styles.input, minHeight: 110, resize: "vertical" }}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
           placeholder="The full story, as long as it needs to be"
         />
       </label>
