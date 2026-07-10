@@ -4,6 +4,35 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.6.0
+
+Jul 9, 2026
+
+**Data**
+
+- Every node now keeps two layers: your raw words exactly as you gave them (never edited, not even typos, and no tool can change them), and a readable layer that guides you back into the thought. Existing nodes carried their stored text over as their raw.
+- Added a talks table: at the end of a talking session the companion drafts a short factual recap, you approve it, and the next session's greeting picks up exactly where you left off.
+- Added a brain_dev sandbox schema: tests, seeds, and experiments run there and are locked out of the real brain, and every migration rehearses on the sandbox before touching your real nodes.
+
+**API**
+
+- Creating a node now requires the raw words and treats the readable as optional; a deliberately typed thought counts as its own readable.
+
+**Tools**
+
+- brain.mjs learned the two layers and new verbs: set-readable (re-ratify a readable), add-talk (save an approved recap), and dump (a full JSON snapshot of the brain in your own hands). It still has no delete, clear, or set-raw on purpose.
+- The visual-QA seed script now refuses to run anywhere but the sandbox.
+
+**UI**
+
+- The node panel shows the readable first with a quiet "see the raw" toggle for the verbatim original.
+
+**Docs**
+
+- The ritual grew the meaning rule: the readable describes and quotes but never interprets; meaning enters the brain only through you. The structure pass retired in favor of the readable pass, and a new rule bans destructive SQL against the real brain.
+
+---
+
 ## v0.5.0
 
 Jul 9, 2026
