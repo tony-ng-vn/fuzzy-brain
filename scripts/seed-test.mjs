@@ -1,5 +1,6 @@
 // Temporary visual-QA seed: inserts clearly-marked test nodes/edges,
 // or deletes them all with --clean. Not part of the brain ritual.
+// Lives only in the brain_dev sandbox; never touches the real brain.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -8,8 +9,17 @@ import pg from "pg";
 const here = dirname(fileURLToPath(import.meta.url));
 loadEnvLocal();
 
-const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+// Seeds are visual-QA fixtures; they live only in the brain_dev sandbox.
+const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
+const client = new pg.Client({ connectionString });
 await client.connect();
+await client.query("set search_path to brain_dev");
+const schemaCheck = await client.query("select current_schema() as s");
+if (schemaCheck.rows[0].s !== "brain_dev") {
+  console.error("seed-test refuses to run outside the brain_dev schema; run npm run db:migrate first");
+  await client.end();
+  process.exit(1);
+}
 
 try {
   if (process.argv.includes("--clean")) {
@@ -27,7 +37,7 @@ try {
     const ids = [];
     for (const [type, title, body] of specs) {
       const { rows } = await client.query(
-        "insert into nodes (type, title, body) values ($1, $2, $3) returning id",
+        "insert into nodes (type, title, body, raw) values ($1, $2, $3, $3) returning id",
         [type, title, body],
       );
       ids.push(rows[0].id);

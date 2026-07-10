@@ -11,10 +11,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 loadEnvLocal();
 
 test("database schema and constraints", async (t) => {
-  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  // Tests always run in the brain_dev sandbox so the real brain is untouchable,
+  // on top of the per-test transactions that roll back.
+  const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
+  const client = new pg.Client({ connectionString });
   await client.connect();
+  await client.query("set search_path to brain_dev");
 
   try {
+    await t.test("the brain_dev sandbox exists", async () => {
+      const { rows } = await client.query("select current_schema() as s");
+      assert.equal(rows[0].s, "brain_dev", "run npm run db:migrate to create the sandbox schema");
+    });
+
     await t.test("connection is healthy", async () => {
       const { rows } = await client.query("select 1 as ok");
       assert.equal(rows[0].ok, 1);
