@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { colorFor } from "@/lib/node-colors";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
@@ -17,6 +18,8 @@ export default function NodeDetailPanel({
   edges: BrainEdge[];
   nodes: BrainNode[];
 }) {
+  const [showRaw, setShowRaw] = useState(false);
+
   const connections = edges
     .filter((e) => endpointId(e.source) === node.id || endpointId(e.target) === node.id)
     .map((e) => {
@@ -48,6 +51,12 @@ export default function NodeDetailPanel({
       <p style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", opacity: 0.85 }}>
         {node.body}
       </p>
+      <button style={styles.rawToggle} onClick={() => setShowRaw((v) => !v)}>
+        {showRaw ? "hide the raw" : "see the raw"}
+      </button>
+      {showRaw && (
+        <p style={styles.rawBlock}>{node.raw}</p>
+      )}
       {connections.length > 0 && (
         <>
           <h3 style={styles.subhead}>Connections</h3>
@@ -100,5 +109,25 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
     background: "rgba(120,150,220,0.06)",
     borderRadius: 8,
+  },
+  rawToggle: {
+    alignSelf: "flex-start",
+    padding: "3px 10px",
+    fontSize: 11,
+    letterSpacing: 1,
+    color: "#9fb4d8",
+    background: "transparent",
+    border: "1px solid rgba(120,150,220,0.25)",
+    borderRadius: 6,
+    cursor: "pointer",
+  },
+  rawBlock: {
+    fontSize: 12.5,
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+    opacity: 0.6,
+    margin: "10px 0 0",
+    paddingLeft: 10,
+    borderLeft: "2px solid rgba(120,150,220,0.25)",
   },
 };
