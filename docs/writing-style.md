@@ -1,49 +1,34 @@
-# Writing style: the structure pass
+# Writing style: the readable pass
 
-This file governs the one thing Claude is allowed to touch about Tony's raw node
-text: legibility. It is a living document. Every time Tony corrects a structured
-pass, the correction gets logged here as a rule, so the next pass needs fewer
-corrections. The goal is to approach zero corrections over time, not to get it
-right by guessing harder.
+This file governs the readable layer (`body`) that sits next to Tony's verbatim raw layer on every node.
+The structure pass retired on 2026-07-09 when the raw layer landed: raw is now stored exactly as Tony gave it, with zero edits, so legibility work moved entirely into the readable layer.
+It is a living document: every time Tony corrects a readable pass, the correction gets logged here as a rule, so the next pass needs fewer corrections.
 
 ## The loop
 
-1. Tony pastes a raw thought as a new node.
-2. Claude applies the structure pass below automatically and shows Tony the
-   result before saving anything to Polygres. The raw original is never lost --
-   it exists in the chat transcript even if not stored as a separate DB field.
-3. Tony reviews. If it's right, it gets saved as the node body.
-4. If Tony corrects something, Claude does not just fix that one instance --
-   it adds a rule (or a counter-example) to this file so the same mistake
-   doesn't happen on the next node.
+1. Tony gives a raw thought, in conversation or pasted.
+2. The raw is saved exactly as given: no typo fixes, no grammar fixes, no reordering, nothing.
+3. The agent drafts the readable per the rules below and shows Tony both layers before anything is saved.
+4. Tony reviews; only after his yes does the node get written (scripts/brain.mjs add-node, or POST /api/nodes).
+5. If Tony corrects something, the agent adds a rule or counter-example to this file so the same mistake doesn't happen on the next node.
 
-## Baseline rules (calibrated 2026-07-04)
+## The readable pass rules
 
 Do:
-- Fix spelling typos (peole -> people, cnanot -> cannot, iamge -> image).
-- Fix grammar: verb tense, subject-verb agreement, capitalization, apostrophes,
-  pronoun typos (he/she mix-ups that are clearly typos).
-- Break the wall of text into paragraphs at natural topic shifts. No headers,
-  no bullets, no bold labels.
-- Keep every sentence in its original order and its original words. A
-  structure pass reformats; it does not rewrite.
+- Write neutral narration that describes what the raw says: the moment, what happened, who was there.
+- Quote Tony's phrases verbatim, typos included, wherever the weight of the thought is; his words carry the meaning, the narration only carries the reader to them.
+- Keep it short; the readable is a way back into the thought, not a replacement for it.
+- Use plain paragraphs.
 
 Do not:
-- Paraphrase, reword, or "smooth" a sentence into different phrasing, even if
-  it's a run-on or hard to follow. If a sentence is confusing, it stays
-  confusing -- that confusion may be part of what Tony was actually feeling.
-- Add stylistic flourishes Tony didn't use: no em dashes, no rhetorical
-  question framing, no "it's not just X, it's Y" constructions invented to
-  sound polished.
-- Remove slang, swearing, self-deprecation, or emotional register (e.g. "pussy
-  ass", "tbh", ellipses used for pacing). These are voice, not noise.
-- Add a summary, interpretation, or "what this really means" framing anywhere
-  in the body. See AGENTS.md rule 6 -- nodes don't need to resolve their own
-  meaning.
-- Invent connections to other nodes during a structure pass. That's a
-  separate, explicit conversation (AGENTS.md rule 2).
+- Interpret: no summary of "what this really means", no lessons, no patterns, no meaning Tony did not state in the raw.
+- Add meaning-bearing labels or conclusions the raw does not contain; when Tony and the agent arrive at a meaning together in conversation and he approves it, it may be added then, and only then.
+- Mention or imply connections to other nodes inside the readable; connections live as edges with ratified whys and render live next to the readable, so baked-in mentions would go stale and bypass the ritual.
+- Add stylistic flourishes Tony didn't use: no em dashes, no rhetorical framing, no "it's not just X, it's Y" constructions.
+- Launder his register: slang, swearing, self-deprecation, and pacing ellipses inside quotes stay exactly as written.
+
+A node Tony types deliberately (the in-app form) is its own readable: the readable equals the raw, unchanged, until he ever asks to re-ratify it.
 
 ## Corrections log
 
-(Empty so far. Next entry: date, what was tried, what Tony corrected, the rule
-that follows from it.)
+(Empty so far. Next entry: date, what was tried, what Tony corrected, the rule that follows from it.)
