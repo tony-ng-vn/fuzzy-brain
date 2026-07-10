@@ -16,8 +16,22 @@ if (!connectionString) {
 const client = new pg.Client({ connectionString });
 await client.connect();
 try {
-  await client.query(readFileSync(join(here, "schema.sql"), "utf8"));
-  console.log("schema applied");
+  const schemaSql = readFileSync(join(here, "schema.sql"), "utf8");
+  // Rehearse every migration on the sandbox schema first, then apply for real.
+  await client.query("create schema if not exists brain_dev");
+  await client.query("set search_path to brain_dev");
+  await client.query(schemaSql);
+  await client.query("set search_path to public");
+  await client.query(schemaSql);
+  // Keep the restricted dev role usable after new tables appear, if it exists.
+  const role = await client.query("select 1 from pg_roles where rolname = 'brain_dev_role'");
+  if ((role.rowCount ?? 0) > 0) {
+    await client.query("grant usage on schema brain_dev to brain_dev_role");
+    await client.query(
+      "grant select, insert, update, delete on all tables in schema brain_dev to brain_dev_role",
+    );
+  }
+  console.log("schema applied to brain_dev (rehearsal) and public");
 } finally {
   await client.end();
 }

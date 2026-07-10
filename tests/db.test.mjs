@@ -24,10 +24,11 @@ test("database schema and constraints", async (t) => {
       await client.query("begin");
       try {
         const a = await client.query(
-          "insert into nodes (type, title, body) values ('story', 'test a', 'body a') returning id",
+          "insert into nodes (type, title, body, raw) values ('story', 'test a', 'body a', 'raw a') returning id, raw",
         );
+        assert.equal(a.rows[0].raw, "raw a");
         const b = await client.query(
-          "insert into nodes (type, title, body) values ('lesson', 'test b', 'body b') returning id",
+          "insert into nodes (type, title, body, raw) values ('lesson', 'test b', 'body b', 'raw b') returning id",
         );
         const edge = await client.query(
           "insert into edges (source, target, why) values ($1, $2, 'a taught b') returning why",
@@ -43,16 +44,52 @@ test("database schema and constraints", async (t) => {
       await client.query("begin");
       try {
         const a = await client.query(
-          "insert into nodes (type, title) values ('story', 'test a') returning id",
+          "insert into nodes (type, title, raw) values ('story', 'test a', 'raw a') returning id",
         );
         const b = await client.query(
-          "insert into nodes (type, title) values ('story', 'test b') returning id",
+          "insert into nodes (type, title, raw) values ('story', 'test b', 'raw b') returning id",
         );
         await assert.rejects(
           client.query("insert into edges (source, target, why) values ($1, $2, '   ')", [
             a.rows[0].id,
             b.rows[0].id,
           ]),
+          /check constraint/i,
+        );
+      } finally {
+        await client.query("rollback");
+      }
+    });
+
+    await t.test("node with blank raw is rejected", async () => {
+      await client.query("begin");
+      try {
+        await assert.rejects(
+          client.query("insert into nodes (type, title, raw) values ('story', 'test blank raw', '   ')"),
+          /check constraint/i,
+        );
+      } finally {
+        await client.query("rollback");
+      }
+    });
+
+    await t.test("talk recaps round-trip inside a transaction", async () => {
+      await client.query("begin");
+      try {
+        const { rows } = await client.query(
+          "insert into talks (recap) values ('shared the trip story; connected it to the split; left the bravery question open') returning recap",
+        );
+        assert.match(rows[0].recap, /bravery question open/);
+      } finally {
+        await client.query("rollback");
+      }
+    });
+
+    await t.test("talk with a blank recap is rejected", async () => {
+      await client.query("begin");
+      try {
+        await assert.rejects(
+          client.query("insert into talks (recap) values ('   ')"),
           /check constraint/i,
         );
       } finally {
