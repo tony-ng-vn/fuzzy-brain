@@ -1,9 +1,12 @@
 // The brain companion's read/write tool. One place so a talking session never
-// hand-rolls SQL or env loading. Reads: `index` (the whole brain, gist only)
-// and `show <id...>` (full node bodies). Writes: `add-node` and `add-edge`,
-// each reading one JSON object from stdin so bodies and whys keep their
-// newlines and quotes intact. The database CHECK on `why` is the final gate
-// (AGENTS.md rule 4); this tool never works around it.
+// hand-rolls SQL or env loading. Reads: `index` (the whole brain, gist only,
+// plus the latest talk recap) and `show <id...>` (both layers of a node).
+// Writes: `add-node`, `add-edge`, `set-readable <id>`, `add-talk`, each reading
+// one JSON object from stdin so bodies and whys keep their newlines and quotes.
+// `dump` prints the entire brain as JSON for a snapshot in Tony's own hands.
+// Deliberately absent, as protection by omission: no set-raw, no delete verbs.
+// The database CHECKs on raw, why, and recap are the final gates (AGENTS.md);
+// this tool never works around them. BRAIN_SCHEMA=brain_dev targets the sandbox.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -18,12 +21,16 @@ function isoDate(value) {
 }
 
 /** Compact whole-brain view: the gist Claude holds the entire session. */
-export function formatIndex(nodes, edges) {
+export function formatIndex(nodes, edges, latestTalk = null) {
   const lines = [`BRAIN INDEX  nodes=${nodes.length} edges=${edges.length}`, ""];
+  if (latestTalk) {
+    lines.push(`LAST TALK  ${isoDate(latestTalk.created_at)}`);
+    for (const l of String(latestTalk.recap).split("\n")) lines.push(`  ${l}`);
+    lines.push("");
+  }
   lines.push("NODES");
   for (const n of nodes) {
-    const date = isoDate(n.created_at);
-    lines.push(`  ${date}  ${n.type || "(untyped)"}  ${n.title}`);
+    lines.push(`  ${isoDate(n.created_at)}  ${n.type || "(untyped)"}  ${n.title}`);
     lines.push(`    ${n.id}`);
   }
   lines.push("");
@@ -36,12 +43,12 @@ export function formatIndex(nodes, edges) {
   return lines.join("\n");
 }
 
-/** Full text of specific nodes: the words, pulled only when a thought lands. */
+/** Both layers of specific nodes, readable first: the guide, then the truth. */
 export function formatShow(nodes) {
   return nodes
     .map((n) => {
-      const date = isoDate(n.created_at);
-      return `[${n.type || "(untyped)"}] ${n.title}  (${date})\n${n.id}\n\n${n.body}`;
+      const head = `[${n.type || "(untyped)"}] ${n.title}  (${isoDate(n.created_at)})\n${n.id}`;
+      return `${head}\n\nREADABLE\n${n.body}\n\nRAW\n${n.raw}`;
     })
     .join("\n\n----\n\n");
 }
@@ -67,9 +74,15 @@ async function readStdin() {
 async function main() {
   loadEnvLocal();
   const [command, ...args] = process.argv.slice(2);
+  const schema = process.env.BRAIN_SCHEMA || "public";
+  if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`invalid BRAIN_SCHEMA: ${schema}`);
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   try {
+    await client.query(`set search_path to ${schema}`);
+    const s = await client.query("select current_schema() as s");
+    if (s.rows[0].s !== schema) throw new Error(`schema ${schema} is missing; run npm run db:migrate`);
+
     if (!command || command === "index") {
       const nodes = (
         await client.query("select id, type, title, created_at from nodes order by created_at asc")
@@ -83,20 +96,26 @@ async function main() {
            order by e.created_at asc`,
         )
       ).rows;
-      console.log(formatIndex(nodes, edges));
+      const talk = (
+        await client.query("select recap, created_at from talks order by created_at desc limit 1")
+      ).rows[0] ?? null;
+      console.log(formatIndex(nodes, edges, talk));
     } else if (command === "show") {
       if (args.length === 0) throw new Error("show needs at least one node id");
       const { rows } = await client.query(
-        "select id, type, title, body, created_at from nodes where id = any($1::uuid[])",
+        "select id, type, title, body, raw, created_at from nodes where id = any($1::uuid[])",
         [args],
       );
       console.log(formatShow(rows));
     } else if (command === "add-node") {
-      const { type, title, body } = JSON.parse(await readStdin());
+      const { type, title, raw, body } = JSON.parse(await readStdin());
       if (!title) throw new Error("a node needs a title");
+      if (!raw || !raw.trim()) throw new Error("a node needs its raw: Tony's verbatim words");
+      // A deliberately written thought is its own readable; body falls back to raw.
+      const readable = body && body.trim() ? body : raw;
       const { rows } = await client.query(
-        "insert into nodes (type, title, body) values ($1, $2, $3) returning id, type, title, created_at",
-        [type ?? "", title, body ?? ""],
+        "insert into nodes (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, created_at",
+        [type ?? "", title, readable, raw],
       );
       console.log(JSON.stringify(rows[0], null, 2));
     } else if (command === "add-edge") {
@@ -107,6 +126,31 @@ async function main() {
         [source, target, why],
       );
       console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "set-readable") {
+      const [id] = args;
+      if (!id) throw new Error("set-readable needs a node id");
+      const { body } = JSON.parse(await readStdin());
+      if (!body || !body.trim()) throw new Error("set-readable needs a non-empty body: the ratified readable");
+      // Only the readable layer is writable; raw has no update path anywhere.
+      const { rows, rowCount } = await client.query(
+        "update nodes set body = $2 where id = $1 returning id, title, body",
+        [id, body],
+      );
+      if (rowCount === 0) throw new Error(`no node with id ${id}`);
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "add-talk") {
+      const { recap } = JSON.parse(await readStdin());
+      if (!recap || !recap.trim()) throw new Error("a talk needs a recap");
+      const { rows } = await client.query(
+        "insert into talks (recap) values ($1) returning id, recap, created_at",
+        [recap],
+      );
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "dump") {
+      const nodes = (await client.query("select * from nodes order by created_at asc")).rows;
+      const edges = (await client.query("select * from edges order by created_at asc")).rows;
+      const talks = (await client.query("select * from talks order by created_at asc")).rows;
+      console.log(JSON.stringify({ dumped_at: new Date().toISOString(), nodes, edges, talks }, null, 2));
     } else {
       throw new Error(`unknown command: ${command}`);
     }
