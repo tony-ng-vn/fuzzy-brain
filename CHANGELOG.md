@@ -4,6 +4,35 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.7.0
+
+Jul 10, 2026
+
+**Face**
+
+- Moved the "front" control to the left edge so it stays out of the way of the face while remaining easy to reach.
+
+**Data**
+
+- Added an isolated Polygres recall lab in `brain_dev` that models evidence, entities, typed claims, time, authority, search projections, resolution paths, and recall traces without changing the public brain.
+- Added synthetic sentence, graph, and hybrid fixtures that exercise full-text search, pgvector, HNSW, typed multi-hop traversal, and supported, missing, and conflicting knowledge states.
+- Added a disposable pgGraph 0.1.8 named-graph probe that verifies direct typed claim hops and returns each relationship's reason and evidence without registering sandbox tables in the real brain graph.
+- Made every sandbox test, seed, and companion table reference explicitly target `brain_dev`, so a pooled database connection cannot silently fall back to the public brain when it discards a session setting.
+
+**Tools**
+
+- Fixed the space so "go to nearest portrait" actually resolves the face. Portraits are now baked for the exact spot that button flies you to: every dot is placed along the line of sight from there, so the face snaps together at the viewing point and reads as scattered chaos from anywhere else -- the anamorphic effect the space was built for. Before, the depth scatter only lined up in the studio preview, and the parked view stayed a jumbled cloud.
+- Portraits already saved in the browser are upgraded automatically the next time the space loads; nothing needs to be re-added.
+- Made the Codex brain companion skill the single canonical copy and linked Claude to it, so both agents now follow the same raw, readable, recap, and brain-safety ritual without drifting apart.
+- Added a reusable recall policy and sandbox runner that diagnose why an answer is missing or contradictory, select only authorized next actions, and rerun comparisons without special-casing one life example.
+
+**Docs**
+
+- Added primary-source research on universal personal AI memory, Polygres retrieval and operational limits, and companion identity, separating what Fuzzy Brain can reuse from the human-ratified, cross-agent architecture it may uniquely contribute.
+- Added an interactive Recall Observatory playbook with the technical priority map, live Polygres readiness audit, failure-repair states, and a replayable node-traversal animation.
+
+---
+
 ## v0.6.0
 
 Jul 9, 2026
