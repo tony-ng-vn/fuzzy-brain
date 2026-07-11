@@ -4,6 +4,22 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.9.0
+
+Jul 11, 2026
+
+**Docs**
+
+- Ran the first recall eval (run 001): 24 questions against the live brain, a five-question three-way ablation, and a Sonnet 5 companion A/B, executed as a multi-agent workflow under the PRD #8 seat policy. Headline: 20/24 answers claimed the right footing, and only 2 of 165 claims about Tony survived adjudication as invented.
+- The ablation settled the knowledge-vs-harness question with data: every brain-specific reference (22 of them) disappears without the brain, while the voice, safety posture, and capture instinct survive with an empty brain. The tidy-theme interpretation reflex fired even with zero nodes, proving it lives in the harness, where it can be tuned.
+- Added the run record at docs/evals/runs/ with machine-readable front matter naming the model in every seat, plus the run-log entry in the eval set. Four verdict-flip proposals await Tony's ratification inside the record.
+
+**Data**
+
+- A new contract test freezes the run-record format (model per seat, single ablation-arms model, per-question expected-vs-claimed rows, never-empty skipped section), so future runs stay comparable and a silent model change in a seat is structurally impossible.
+
+---
+
 ## v0.8.0
 
 Jul 11, 2026
