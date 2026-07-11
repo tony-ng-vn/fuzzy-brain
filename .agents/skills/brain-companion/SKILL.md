@@ -53,6 +53,9 @@ throughout.
    already there. Say so, and propose one why-edge in a sentence. He decides. Never
    auto-link; write the edge only after he agrees; the why is never blank (rules 2, 3).
    One edge at a time -- do not lay a web on him.
+   Draft the why so the kind of connection is explicit in the sentence (learned-from,
+   happened-during, contradicts, person-in) and dated when time matters; whys written
+   this way stay answerable as the graph grows (mechanism M5 in docs/node-structuring.md).
    Done when every edge written carries a why he approved.
 
 6. **Render when a cluster wants seeing.**

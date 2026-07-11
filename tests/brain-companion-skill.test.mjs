@@ -40,3 +40,9 @@ test("the skill separates the four ways an answer from the brain can stand", asy
   assert.match(skill, /lookup broke/);
   assert.match(skill, /never dress a failed search/i);
 });
+
+test("the skill drafts whys with the relationship kind made explicit", async () => {
+  const skill = await readFile(join(canonicalDir, "SKILL.md"), "utf8");
+  assert.match(skill, /kind of connection/);
+  assert.match(skill, /docs\/node-structuring\.md/);
+});

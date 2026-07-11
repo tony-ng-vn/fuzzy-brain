@@ -56,6 +56,15 @@ testing, adopted, retired.
   is exactly the "how do we turn raw into structured" question he flagged. See trial
   T-004.
 
+- **M5 typed why** (adopted as a drafting convention, 2026-07-11). When drafting a
+  why for Tony to ratify, make the kind of connection explicit inside the sentence
+  (learned-from, happened-during, contradicts, person-in) and date it when time
+  matters. Hypothesis: whys written this way become traversable predicates for free
+  if a typed-edge column ever lands (an additive migration, tracked in the deferred
+  issues), so the graph gains structure now without any schema change. The three
+  existing whys already read close to this shape. Convention only: it guides how the
+  agent drafts, never what Tony ratifies.
+
 ## Retrieval trials
 
 The real measure. Each trial is a concrete question posed against the current graph:
