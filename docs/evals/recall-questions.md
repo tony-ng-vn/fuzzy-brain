@@ -123,4 +123,7 @@ Expected states reflect the brain as of 2026-07-11: 6 nodes, 3 edges, 0 talks.
 
 Format: date, question ids run, setup (companion / plain model), state accuracy, groundedness notes, verdicts flipped.
 
-(No runs yet.)
+- 2026-07-11, run 001 (docs/evals/runs/2026-07-11-run-001.md): Q01-Q21, Q23-Q25 plus a five-question three-way ablation and a Sonnet 5 companion A/B, under PRD #8 seats.
+  State accuracy 20/24; 165 grounded vs 6 invented claims first-pass, 2 durable after adjudication; Q03 and Q10 were output degeneracies, Q17 a label over-claim, Q23 an invented-meaning boundary failure.
+  Ablation: brain_refs 22 (full) vs 0 (plain) vs 0 (empty); the tidy-theme interpretation reflex fired even with an empty brain, so it is harness, not knowledge.
+  Verdicts flipped: none ratified; four proposals await Tony in the run record.
