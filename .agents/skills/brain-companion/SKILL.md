@@ -67,7 +67,7 @@ throughout.
 
 ## Writing
 
-Claude's write path is direct into the database (rule 4); the CHECK constraints are the
+The agent's write path is direct into the database (rule 4); the CHECK constraints are the
 final gate. Pass the payload as JSON on stdin so bodies and whys keep their line
 breaks and quotes. Write the JSON to a scratch file first, then pipe it -- do not
 fight shell quoting on a multi-paragraph body.
