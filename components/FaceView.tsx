@@ -576,9 +576,9 @@ const styles: Record<string, React.CSSProperties> = {
   frontWrap: {
     position: "absolute",
     zIndex: 2,
-    bottom: 20,
-    left: "50%",
-    transform: "translateX(-50%)",
+    top: "50%",
+    left: 24,
+    transform: "translateY(-50%)",
   },
   frontButton: {
     padding: "5px 14px",
