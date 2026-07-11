@@ -95,6 +95,7 @@
 <script type="module">
   import * as THREE from 'three';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { PARK_DIST, rayBakePositions } from './anamorphic.mjs';
 
   const el = (id) => document.getElementById(id);
   const statusEl = el('status'), spaceStatusEl = el('spaceStatus'), hintEl = el('hint');
@@ -113,16 +114,18 @@
   const frustum = 2.2;
   let aspect = innerWidth / innerHeight;
 
-  function makeOrtho() {
-    const c = new THREE.OrthographicCamera(-frustum * aspect / 2, frustum * aspect / 2, frustum / 2, -frustum / 2, 0.01, 100);
-    c.position.set(0, 0, 6);
-    return c;
-  }
-  const orthoCam = makeOrtho();
-  const focusCam = makeOrtho();
+  const orthoCam = new THREE.OrthographicCamera(-frustum * aspect / 2, frustum * aspect / 2, frustum / 2, -frustum / 2, 0.01, 100);
+  orthoCam.position.set(0, 0, 6);
 
-  const FLY_FOV = 60, PARK_FOV = 11, PARK_DIST = 14;
+  const FLY_FOV = 60, PARK_FOV = 11;
   const perspCam = new THREE.PerspectiveCamera(FLY_FOV, aspect, 0.05, 2000);
+
+  // Portraits in the space are ray-baked for a viewpoint PARK_DIST out on
+  // their axis, so focus must look from that same viewpoint (with a lens
+  // matched to the studio's ortho framing) or the depth scatter would smear.
+  const FOCUS_FOV = 2 * Math.atan((frustum / 2) / PARK_DIST) * 180 / Math.PI;
+  const focusCam = new THREE.PerspectiveCamera(FOCUS_FOV, aspect, 0.05, 2000);
+  focusCam.position.set(0, 0, PARK_DIST);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(innerWidth, innerHeight);
@@ -390,7 +393,9 @@
   }
 
   addBtn.addEventListener('click', () => {
-    addPortrait(bakePortrait(), true);
+    const baked = bakePortrait();
+    rayBakePositions(baked.positions);
+    addPortrait(baked, true);
     focusIndex = portraits.length - 1;
     updateSpaceUI();
   });
@@ -457,9 +462,9 @@
     setSpaceButtons(); updateSpaceUI();
   }
 
-  // Fly to a far, on-axis, front-facing vantage of the nearest portrait and
-  // hold there with a telephoto lens (near-orthographic, so the face resolves)
-  // while staying in fly mode. Any move key or drag releases the park.
+  // Fly to the nearest portrait's bake viewpoint (PARK_DIST out on its axis)
+  // and hold there with a telephoto lens. The dots are ray-baked for exactly
+  // this spot, so the face resolves. Any move key releases the park.
   function goToNearest() {
     if (!portraits.length) return;
     let best = 0, bestD = Infinity;
@@ -593,6 +598,7 @@
   function spacePayload() {
     return {
       mode: 'anamorphic-space',
+      version: 2, // v2 positions are ray-baked for the park viewpoint
       portraits: portraits.map((p) => ({
         pointSize: p.baked.pointSize,
         positions: Array.from(p.baked.positions),
@@ -610,9 +616,14 @@
     if (!raw) return;
     try {
       const data = JSON.parse(raw);
+      const legacy = data.version !== 2;
       (data.portraits || []).forEach((p) => {
-        addPortrait({ positions: new Float32Array(p.positions), colors: new Float32Array(p.colors), pointSize: p.pointSize || 4 }, false);
+        const positions = new Float32Array(p.positions);
+        // Older saves scattered straight along z; rebake for the park viewpoint.
+        if (legacy) rayBakePositions(positions);
+        addPortrait({ positions, colors: new Float32Array(p.colors), pointSize: p.pointSize || 4 }, false);
       });
+      if (legacy && portraits.length) saveSpace();
       updateSpaceUI();
     } catch { /* corrupt store: ignore */ }
   }
@@ -663,10 +674,8 @@
 
   addEventListener('resize', () => {
     aspect = innerWidth / innerHeight;
-    for (const c of [orthoCam, focusCam]) {
-      c.left = -frustum * aspect / 2; c.right = frustum * aspect / 2; c.updateProjectionMatrix();
-    }
-    perspCam.aspect = aspect; perspCam.updateProjectionMatrix();
+    orthoCam.left = -frustum * aspect / 2; orthoCam.right = frustum * aspect / 2; orthoCam.updateProjectionMatrix();
+    for (const c of [perspCam, focusCam]) { c.aspect = aspect; c.updateProjectionMatrix(); }
     renderer.setSize(innerWidth, innerHeight);
   });
 
