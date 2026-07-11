@@ -13,9 +13,8 @@ loadEnvLocal();
 const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
 const client = new pg.Client({ connectionString });
 await client.connect();
-await client.query("set search_path to brain_dev");
-const schemaCheck = await client.query("select current_schema() as s");
-if (schemaCheck.rows[0].s !== "brain_dev") {
+const schemaCheck = await client.query("select to_regnamespace('brain_dev') is not null as exists");
+if (!schemaCheck.rows[0].exists) {
   console.error("seed-test refuses to run outside the brain_dev schema; run npm run db:migrate first");
   await client.end();
   process.exit(1);
@@ -23,7 +22,7 @@ if (schemaCheck.rows[0].s !== "brain_dev") {
 
 try {
   if (process.argv.includes("--clean")) {
-    const res = await client.query("delete from nodes where title like '[test]%'");
+    const res = await client.query("delete from brain_dev.nodes where title like '[test]%'");
     console.log(`deleted ${res.rowCount} test nodes (edges cascade)`);
   } else {
     const specs = [
@@ -37,7 +36,7 @@ try {
     const ids = [];
     for (const [type, title, body] of specs) {
       const { rows } = await client.query(
-        "insert into nodes (type, title, body, raw) values ($1, $2, $3, $3) returning id",
+        "insert into brain_dev.nodes (type, title, body, raw) values ($1, $2, $3, $3) returning id",
         [type, title, body],
       );
       ids.push(rows[0].id);
@@ -50,7 +49,7 @@ try {
       [2, 5, "The call circled the same abstraction idea."],
     ];
     for (const [a, b, why] of edgeSpecs) {
-      await client.query("insert into edges (source, target, why) values ($1, $2, $3)", [
+      await client.query("insert into brain_dev.edges (source, target, why) values ($1, $2, $3)", [
         ids[a],
         ids[b],
         why,

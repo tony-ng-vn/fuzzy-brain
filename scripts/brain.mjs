@@ -20,6 +20,18 @@ function isoDate(value) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
+// Explicit qualification survives transaction-pooling proxies that discard
+// session-level search_path settings between statements.
+export function schemaTables(schema) {
+  if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`invalid BRAIN_SCHEMA: ${schema}`);
+  const prefix = `"${schema}".`;
+  return {
+    nodes: `${prefix}nodes`,
+    edges: `${prefix}edges`,
+    talks: `${prefix}talks`,
+  };
+}
+
 /** Compact whole-brain view: the gist Claude holds the entire session. */
 export function formatIndex(nodes, edges, latestTalk = null) {
   const lines = [`BRAIN INDEX  nodes=${nodes.length} edges=${edges.length}`, ""];
@@ -75,35 +87,34 @@ async function main() {
   loadEnvLocal();
   const [command, ...args] = process.argv.slice(2);
   const schema = process.env.BRAIN_SCHEMA || "public";
-  if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`invalid BRAIN_SCHEMA: ${schema}`);
+  const tables = schemaTables(schema);
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   try {
-    await client.query(`set search_path to ${schema}`);
-    const s = await client.query("select current_schema() as s");
-    if (s.rows[0].s !== schema) throw new Error(`schema ${schema} is missing; run npm run db:migrate`);
+    const s = await client.query("select to_regnamespace($1) is not null as exists", [schema]);
+    if (!s.rows[0].exists) throw new Error(`schema ${schema} is missing; run npm run db:migrate`);
 
     if (!command || command === "index") {
       const nodes = (
-        await client.query("select id, type, title, created_at from nodes order by created_at asc")
+        await client.query(`select id, type, title, created_at from ${tables.nodes} order by created_at asc`)
       ).rows;
       const edges = (
         await client.query(
           `select e.source, e.target, e.why, s.title as src_title, t.title as tgt_title
-           from edges e
-           join nodes s on s.id = e.source
-           join nodes t on t.id = e.target
+           from ${tables.edges} e
+           join ${tables.nodes} s on s.id = e.source
+           join ${tables.nodes} t on t.id = e.target
            order by e.created_at asc`,
         )
       ).rows;
       const talk = (
-        await client.query("select recap, created_at from talks order by created_at desc limit 1")
+        await client.query(`select recap, created_at from ${tables.talks} order by created_at desc limit 1`)
       ).rows[0] ?? null;
       console.log(formatIndex(nodes, edges, talk));
     } else if (command === "show") {
       if (args.length === 0) throw new Error("show needs at least one node id");
       const { rows } = await client.query(
-        "select id, type, title, body, raw, created_at from nodes where id = any($1::uuid[])",
+        `select id, type, title, body, raw, created_at from ${tables.nodes} where id = any($1::uuid[])`,
         [args],
       );
       console.log(formatShow(rows));
@@ -114,7 +125,7 @@ async function main() {
       // A deliberately written thought is its own readable; body falls back to raw.
       const readable = body && body.trim() ? body : raw;
       const { rows } = await client.query(
-        "insert into nodes (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, created_at",
+        `insert into ${tables.nodes} (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, created_at`,
         [type ?? "", title, readable, raw],
       );
       console.log(JSON.stringify(rows[0], null, 2));
@@ -122,7 +133,7 @@ async function main() {
       const { source, target, why } = JSON.parse(await readStdin());
       // No client-side why check: the CHECK constraint is the one true gate.
       const { rows } = await client.query(
-        "insert into edges (source, target, why) values ($1, $2, $3) returning id, source, target, why",
+        `insert into ${tables.edges} (source, target, why) values ($1, $2, $3) returning id, source, target, why`,
         [source, target, why],
       );
       console.log(JSON.stringify(rows[0], null, 2));
@@ -133,7 +144,7 @@ async function main() {
       if (!body || !body.trim()) throw new Error("set-readable needs a non-empty body: the ratified readable");
       // Only the readable layer is writable; raw has no update path anywhere.
       const { rows, rowCount } = await client.query(
-        "update nodes set body = $2 where id = $1 returning id, title, body",
+        `update ${tables.nodes} set body = $2 where id = $1 returning id, title, body`,
         [id, body],
       );
       if (rowCount === 0) throw new Error(`no node with id ${id}`);
@@ -142,14 +153,14 @@ async function main() {
       const { recap } = JSON.parse(await readStdin());
       if (!recap || !recap.trim()) throw new Error("a talk needs a recap");
       const { rows } = await client.query(
-        "insert into talks (recap) values ($1) returning id, recap, created_at",
+        `insert into ${tables.talks} (recap) values ($1) returning id, recap, created_at`,
         [recap],
       );
       console.log(JSON.stringify(rows[0], null, 2));
     } else if (command === "dump") {
-      const nodes = (await client.query("select * from nodes order by created_at asc")).rows;
-      const edges = (await client.query("select * from edges order by created_at asc")).rows;
-      const talks = (await client.query("select * from talks order by created_at asc")).rows;
+      const nodes = (await client.query(`select * from ${tables.nodes} order by created_at asc`)).rows;
+      const edges = (await client.query(`select * from ${tables.edges} order by created_at asc`)).rows;
+      const talks = (await client.query(`select * from ${tables.talks} order by created_at asc`)).rows;
       console.log(JSON.stringify({ dumped_at: new Date().toISOString(), nodes, edges, talks }, null, 2));
     } else {
       throw new Error(`unknown command: ${command}`);

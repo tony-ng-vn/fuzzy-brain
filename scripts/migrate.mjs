@@ -19,10 +19,8 @@ try {
   const schemaSql = readFileSync(join(here, "schema.sql"), "utf8");
   // Rehearse every migration on the sandbox schema first, then apply for real.
   await client.query("create schema if not exists brain_dev");
-  await client.query("set search_path to brain_dev");
-  await client.query(schemaSql);
-  await client.query("set search_path to public");
-  await client.query(schemaSql);
+  await applySchema("brain_dev", schemaSql);
+  await applySchema("public", schemaSql);
   // Keep the restricted dev role usable after new tables appear, if it exists.
   const role = await client.query("select 1 from pg_roles where rolname = 'brain_dev_role'");
   if ((role.rowCount ?? 0) > 0) {
@@ -34,6 +32,19 @@ try {
   console.log("schema applied to brain_dev (rehearsal) and public");
 } finally {
   await client.end();
+}
+
+async function applySchema(schema, schemaSql) {
+  await client.query("begin");
+  try {
+    // SET LOCAL stays bound to this transaction even through transaction poolers.
+    await client.query(`set local search_path to ${schema}, public`);
+    await client.query(schemaSql);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
 }
 
 // Minimal .env.local loader so scripts work without extra dependencies.
