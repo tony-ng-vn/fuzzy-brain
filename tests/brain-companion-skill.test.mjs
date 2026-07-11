@@ -25,3 +25,18 @@ test("Claude and Codex load one canonical brain companion skill", async () => {
   assert.match(canonicalSkill, /add-talk/);
   assert.match(canonicalSkill, /no set-raw and no delete/);
 });
+
+test("the skill separates the four ways an answer from the brain can stand", async () => {
+  const skill = await readFile(join(canonicalDir, "SKILL.md"), "utf8");
+  assert.match(skill, /## Answering from the brain/);
+  // Supported answers point at their evidence.
+  assert.match(skill, /name the node or edge it stands on/);
+  // Missing knowledge is admitted and turned into a question, not a guess.
+  assert.match(skill, /not in the brain/i);
+  assert.match(skill, /ask him/);
+  // Conflicts surface both sides and Tony decides.
+  assert.match(skill, /which is current/);
+  // A broken lookup is never passed off as absent knowledge.
+  assert.match(skill, /lookup broke/);
+  assert.match(skill, /never dress a failed search/i);
+});

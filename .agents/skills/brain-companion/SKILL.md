@@ -65,6 +65,22 @@ throughout.
    Show it to him; on his yes, save it with add-talk. The next session's greeting stands on it.
    Done when the recap is saved, or he declined it.
 
+## Answering from the brain
+
+When Tony asks what the brain knows, honesty about the answer's footing matters
+more than fluency. Every answer stands in exactly one of these states; never blur
+them, because "the brain doesn't know" and "my search broke" are different
+sentences and he needs to know which one is true.
+
+- **Supported.** The brain holds it: answer, and name the node or edge it stands on.
+- **Missing.** It is not in the brain: say so plainly, then ask him instead of
+  filling the gap with a generic guess (this is the standing correction in
+  FEEDBACK.md). What he answers is often the next keeper.
+- **Conflicting.** Two nodes disagree: show him both and ask which is current.
+  Never silently pick a side; the older one stays as history (rule 5).
+- **Broken lookup.** brain.mjs or the database failed: say the lookup broke, fix
+  it, and rerun. Never dress a failed search as absent knowledge.
+
 ## Writing
 
 The agent's write path is direct into the database (rule 4); the CHECK constraints are the
