@@ -4,6 +4,23 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.8.0
+
+Jul 11, 2026
+
+**Tools**
+
+- The companion now tells you which footing an answer stands on: supported by a node, simply not in the brain yet, held in two conflicting nodes, or blocked by a broken lookup. A failed search will never be dressed up as "you never told me that", and a missing answer becomes a question back to you instead of a generic guess.
+- When the companion drafts a connection's why for you to ratify, it now makes the kind of relationship explicit in the sentence (learned-from, happened-during, person-in) and dates it when time matters, so today's whys stay answerable as the graph grows.
+
+**Docs**
+
+- Added the recall eval set: 25 questions the brain should eventually answer, each with its expected footing today, so personalization is measured against your evidence instead of vibes. The unanswerable ones double as the capture roadmap.
+- Recorded the architecture decision (ADR 0001): adopt the answer-state epistemics now, defer the heavy retrieval machinery (typed edge columns, recall controller, claims layer, Polygres activation) behind explicit triggers, tracked as GitHub issues #2 through #7.
+- The node structuring lab notebook gains mechanism M5, the typed-why drafting convention.
+
+---
+
 ## v0.7.0
 
 Jul 10, 2026
