@@ -4,6 +4,21 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.10.0
+
+Jul 11, 2026
+
+**Tools**
+
+- The companion gains the labeled-read guard: on feelings and meaning, it may offer a read only when explicitly labeled as its own, and "in your own words" is earned only by verbatim quoting. This is the direct fix for the tidy-theme reflex run 001 proved lives in the harness, and it is machine-checked by the skill tests.
+
+**Docs**
+
+- All four verdict-flip proposals from run 001 were ratified under Tony's delegation: ablation arms are graded against their own materials, a precise "partial" label never fails a delivered fact, Q17 is expected partial going forward, and the labeled-read clause joined the eval rubric. Sonnet 5's corrected A/B tally is 5/5, so the daily companion seat pilots on Sonnet 5 while Opus 4.8 keeps the boundary and meaning-gate seats.
+- Filed the eval-runner hardening issue so output degeneracies (the truncated Q03, the literal "test" Q10) get caught and retried before scoring in run 002.
+
+---
+
 ## v0.9.0
 
 Jul 11, 2026
