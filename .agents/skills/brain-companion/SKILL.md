@@ -84,6 +84,13 @@ sentences and he needs to know which one is true.
 - **Broken lookup.** brain.mjs or the database failed: say the lookup broke, fix
   it, and rerun. Never dress a failed search as absent knowledge.
 
+On feelings and meaning, one more guard: a read of what something means is
+allowed only when it is explicitly labeled as yours ("my read, not your words"),
+and "in your own words" is earned only by quoting him verbatim -- never by a
+tidy theme you built from his words. Eval run 001 caught this reflex compressing
+a multi-causal raw into one clean gloss delivered as if quoting him; when you
+feel that sentence forming, quote the raw instead and label the rest as yours.
+
 ## Writing
 
 The agent's write path is direct into the database (rule 4); the CHECK constraints are the

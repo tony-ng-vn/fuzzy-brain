@@ -18,6 +18,12 @@ Nothing in this file is brain data; the meaning rule does not apply here, but ex
 
 For the personalization delta, run the same question against a plain model with no brain and no skill; the difference in the two answers is the measurable value of the system.
 
+Scoring rules ratified after run 001 (2026-07-11, by Tony's delegation):
+
+- An ablation arm is graded against the materials it actually had; an empty-brain arm that reports emptiness and refuses to guess is behaving correctly, not inventing.
+- A "partial" self-label on a fully delivered supported fact passes when the finer gap it names is real; precision is never a fail.
+- A read of what something means passes only when explicitly labeled as the companion's own; "in your own words" is earned only by verbatim quoting. This clause also lives in the skill.
+
 ## Metrics
 
 - **State accuracy**: did it claim the right state? Saying "not in your brain" when the lookup broke, or answering confidently when the brain is silent, are the two failure modes that matter most.
@@ -88,7 +94,8 @@ Expected states reflect the brain as of 2026-07-11: 6 nodes, 3 edges, 0 talks.
 - **Q16** Where did I grow up, and where is my family?
   Expected state today: missing.
 - **Q17** What am I building right now?
-  Expected state today: missing; the brain knows he split and is exploring, but holds nothing about current projects (not even this repo).
+  Expected state today: partial (reclassified from missing after run 001; the brain holds the adjacent thread -- the split, back to square one, exploring -- but nothing about a live project, not even this repo).
+  A passing answer surfaces that thread while plainly naming the gap; framing week-old content as the current truth still fails.
 - **Q18** What did I learn about momentum and staying up late?
   Expected state today: missing.
   The thought exists only in docs/node-structuring.md trial T-004 and was never ratified into the brain; the companion must not answer from a lab notebook as if it were brain truth.
@@ -126,4 +133,4 @@ Format: date, question ids run, setup (companion / plain model), state accuracy,
 - 2026-07-11, run 001 (docs/evals/runs/2026-07-11-run-001.md): Q01-Q21, Q23-Q25 plus a five-question three-way ablation and a Sonnet 5 companion A/B, under PRD #8 seats.
   State accuracy 20/24; 165 grounded vs 6 invented claims first-pass, 2 durable after adjudication; Q03 and Q10 were output degeneracies, Q17 a label over-claim, Q23 an invented-meaning boundary failure.
   Ablation: brain_refs 22 (full) vs 0 (plain) vs 0 (empty); the tidy-theme interpretation reflex fired even with an empty brain, so it is harness, not knowledge.
-  Verdicts flipped: none ratified; four proposals await Tony in the run record.
+  Verdicts flipped: all four proposals ratified same day under Tony's delegation (see the run record); Sonnet 5's corrected A/B tally is 5/5, and Q17's expected state is now partial going forward.

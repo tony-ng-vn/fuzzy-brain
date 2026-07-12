@@ -41,6 +41,12 @@ test("the skill separates the four ways an answer from the brain can stand", asy
   assert.match(skill, /never dress a failed search/i);
 });
 
+test("the skill guards the labeled-read boundary on feelings and meaning", async () => {
+  const skill = await readFile(join(canonicalDir, "SKILL.md"), "utf8");
+  assert.match(skill, /labeled as yours/);
+  assert.match(skill, /quoting him verbatim/);
+});
+
 test("the skill drafts whys with the relationship kind made explicit", async () => {
   const skill = await readFile(join(canonicalDir, "SKILL.md"), "utf8");
   assert.match(skill, /kind of connection/);
