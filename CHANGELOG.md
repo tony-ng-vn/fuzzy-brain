@@ -4,6 +4,18 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.10.1
+
+Jul 13, 2026
+
+**Docs**
+
+- Added the digital-brain master plan (docs/superpowers/specs/2026-07-13-digital-brain-master-plan.md): Tony's vision -- one brain that brings his whole life together -- turned into seven gated phases built on one rule: the evidence store scales mechanically and is never true, while the ratified core grows only at conversation speed through the meaning rule.
+- Added the internal audit (what already exists, layer by layer, verified live) and the external landscape research (17 adversarially verified claims plus locally confirmed facts; interruption and coverage gaps stated plainly). Highlights: a May 2026 paper independently derives the raw/readable/ratified split; no product anywhere ships human-ratified meaning; the Rewind/Roam/Recall graveyard supplies the failure modes the plan designs against.
+- Filed the plan into the tracker: umbrella #10, evidence store #11, agent-sessions ingestion skeleton #12, brain-as-MCP-server #13, privacy threat model #14, with dependencies wired to the existing #3-#9.
+
+---
+
 ## v0.10.0
 
 Jul 11, 2026
