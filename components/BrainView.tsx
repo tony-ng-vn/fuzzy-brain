@@ -24,6 +24,9 @@ export default function BrainView() {
   const [selectedNode, setSelectedNode] = useState<BrainNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<BrainEdge | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const [ingestResult, setIngestResult] = useState<string | null>(null);
+  const [ingestError, setIngestError] = useState<string | null>(null);
 
   const fetchGraph = useCallback(() => {
     return fetch("/api/graph")
@@ -63,6 +66,20 @@ export default function BrainView() {
   const switchMode = (next: Mode) => {
     setMode(next);
     clearSelection();
+  };
+
+  const runIngest = () => {
+    setIngesting(true);
+    setIngestResult(null);
+    setIngestError(null);
+    fetch("/api/ingest", { method: "POST" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.error) throw new Error(data.error);
+        setIngestResult(data.output as string);
+      })
+      .catch((err) => setIngestError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setIngesting(false));
   };
 
   return (
@@ -112,6 +129,9 @@ export default function BrainView() {
         >
           + add node
         </button>
+        <button style={styles.addButton} disabled={ingesting} onClick={runIngest}>
+          {ingesting ? "syncing sessions..." : "sync sessions"}
+        </button>
       </header>
 
       {loaded && !error && nodes.length === 0 && (
@@ -143,6 +163,41 @@ export default function BrainView() {
 
       {!showAdd && selectedNode && (
         <NodeDetailPanel node={selectedNode} edges={edges} nodes={nodes} />
+      )}
+
+      {(ingestResult || ingestError) && (
+        <aside style={styles.panel}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
+              Session sync
+            </span>
+            <button
+              style={{ ...styles.toggleButton, padding: "2px 8px" }}
+              onClick={() => {
+                setIngestResult(null);
+                setIngestError(null);
+              }}
+            >
+              close
+            </button>
+          </div>
+          {ingestError ? (
+            <p style={{ fontSize: 13, color: "#ff8a8a", marginTop: 12 }}>{ingestError}</p>
+          ) : (
+            <pre
+              style={{
+                fontSize: 12,
+                lineHeight: 1.6,
+                opacity: 0.85,
+                marginTop: 12,
+                whiteSpace: "pre-wrap",
+                fontFamily: "inherit",
+              }}
+            >
+              {ingestResult}
+            </pre>
+          )}
+        </aside>
       )}
 
       {!showAdd && selectedEdge && (
