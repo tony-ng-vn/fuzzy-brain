@@ -4,6 +4,31 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.13.0
+
+Jul 14, 2026
+
+**UI**
+
+- Added a "sync sessions" button in the app header, next to "+ add node": one click runs the same session ingester the terminal command runs, and the result -- what got pulled in, what got skipped and why -- shows in a dismissible panel. No new write path: the button, the API route, and the CLI all share one script.
+
+**Data**
+
+- Corrected a wrong claim from earlier the same day: the ChatGPT desktop app's "Codex" tab and the Codex CLI read the same underlying session store (`~/.codex/`), confirmed by finding an identical session title in both. Anything run through the desktop app's Codex surface was already being captured; no extra work needed there.
+
+---
+
+## v0.12.1
+
+Jul 14, 2026
+
+**Docs**
+
+- The companion learned to talk like a person from Tony's first real feedback session: it now greets with a plain hello instead of reciting what it remembers, keeps gently asking on heavy shares instead of closing early (Tony ends the digging, never the companion), proposes a breakdown of candidate keepers before drafting any node instead of one whole-day mega-node, and reads everything up front so no file chatter interrupts the talk.
+- The full correction is logged in FEEDBACK.md so the pattern is on record, same as the July 9 entry.
+
+---
+
 ## v0.12.0
 
 Jul 14, 2026
