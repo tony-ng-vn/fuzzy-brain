@@ -166,6 +166,26 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+// The one evidence INSERT, shared by add-evidence and add-episode's atomic
+// evidence array -- a single write path so the scrub covers every caller.
+// Whole-row replacement, not partial: a redacted quote is fully the
+// placeholder or fully the real atomic quote, never a mixed state -- this
+// is what keeps the DB's placeholder-only CHECK constraint airtight.
+async function insertEvidenceRow(client, tables, item) {
+  const { episode_id, quote, start_offset, end_offset, speaker, occurred_at } = item;
+  if (!quote || !quote.trim()) throw new Error("evidence needs a quote");
+  const { redactions } = scrubSensitivePatterns(quote);
+  const finalQuote = redactions.length > 0 ? `[REDACTED:${redactions[0].reason}]` : quote;
+  const redactionReason = redactions.length > 0 ? redactions[0].reason : null;
+  const { rows } = await client.query(
+    `insert into ${tables.evidence} (episode_id, quote, start_offset, end_offset, speaker, occurred_at, redaction_reason)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     returning id, episode_id, quote, start_offset, end_offset, speaker, occurred_at, ingested_at, redaction_reason`,
+    [episode_id, finalQuote, start_offset, end_offset, speaker ?? null, occurred_at ?? null, redactionReason],
+  );
+  return rows[0];
+}
+
 async function main() {
   loadEnvLocal();
   const [command, ...args] = process.argv.slice(2);
@@ -269,34 +289,67 @@ async function main() {
       if (rowCount === 0) throw new Error(`no source with id ${id}`);
       console.log(JSON.stringify(rows[0], null, 2));
     } else if (command === "add-episode") {
-      const { source_id, source_locator, raw, occurred_at, occurred_until } = JSON.parse(await readStdin());
+      const { source_id, source_locator, raw, occurred_at, occurred_until, evidence } = JSON.parse(await readStdin());
       if (!raw || !raw.trim()) throw new Error("an episode needs its raw: the whole captured text");
       // Scrubbed BEFORE the insert, always: no update path exists afterward
       // to fix a miss, so an unfiltered write would be permanent (ADR 0002).
       const { text: filtered } = scrubSensitivePatterns(raw);
-      const { rows } = await client.query(
-        `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
-         values ($1, $2, $3, $4, $5)
-         returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
-        [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
-      );
-      console.log(JSON.stringify(rows[0], null, 2));
+      // Optional evidence spans land in the SAME transaction as the episode:
+      // a capture event is atomic, so a killed pipeline can never leave an
+      // episode stranded without its spans (a real near-miss on 2026-07-13).
+      await client.query("begin");
+      let episodeRow;
+      let insertedCount = 0;
+      try {
+        const { rows } = await client.query(
+          `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
+           values ($1, $2, $3, $4, $5)
+           returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
+          [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
+        );
+        episodeRow = rows[0];
+        for (const item of evidence ?? []) {
+          await insertEvidenceRow(client, tables, { ...item, episode_id: episodeRow.id });
+          insertedCount++;
+        }
+        await client.query("commit");
+      } catch (err) {
+        await client.query("rollback");
+        throw err;
+      }
+      console.log(JSON.stringify({ ...episodeRow, evidence_count: insertedCount }, null, 2));
     } else if (command === "add-evidence") {
-      const { episode_id, quote, start_offset, end_offset, speaker, occurred_at } = JSON.parse(await readStdin());
-      if (!quote || !quote.trim()) throw new Error("evidence needs a quote");
-      // Whole-row replacement, not partial: a redacted quote is fully the
-      // placeholder or fully the real atomic quote, never a mixed state --
-      // this is what keeps the DB's placeholder-only CHECK constraint airtight.
-      const { redactions } = scrubSensitivePatterns(quote);
-      const finalQuote = redactions.length > 0 ? `[REDACTED:${redactions[0].reason}]` : quote;
-      const redactionReason = redactions.length > 0 ? redactions[0].reason : null;
+      // Accepts one span object, or an array of spans for batch ingestion --
+      // one write path either way, so the scrub below covers every caller.
+      const input = JSON.parse(await readStdin());
+      const items = Array.isArray(input) ? input : [input];
+      if (items.length === 0) throw new Error("add-evidence got an empty array");
+      const inserted = [];
+      await client.query("begin");
+      try {
+        for (const item of items) {
+          inserted.push(await insertEvidenceRow(client, tables, item));
+        }
+        await client.query("commit");
+      } catch (err) {
+        await client.query("rollback");
+        throw err;
+      }
+      console.log(JSON.stringify(Array.isArray(input) ? inserted : inserted[0], null, 2));
+    } else if (command === "list-episodes") {
+      // Read-only browse: the companion's way into evidence without SQL.
+      const [sourceId] = args;
+      const where = sourceId ? "where e.source_id = $1" : "";
+      const params = sourceId ? [sourceId] : [];
       const { rows } = await client.query(
-        `insert into ${tables.evidence} (episode_id, quote, start_offset, end_offset, speaker, occurred_at, redaction_reason)
-         values ($1, $2, $3, $4, $5, $6, $7)
-         returning id, episode_id, quote, start_offset, end_offset, speaker, occurred_at, ingested_at, redaction_reason`,
-        [episode_id, finalQuote, start_offset, end_offset, speaker ?? null, occurred_at ?? null, redactionReason],
+        `select e.id, e.source_id, s.kind, s.label, e.source_locator, e.occurred_at, e.ingested_at,
+                (select count(*)::int from ${tables.evidence} v where v.episode_id = e.id) as evidence_count
+         from ${tables.episodes} e join ${tables.sources} s on s.id = e.source_id
+         ${where}
+         order by e.ingested_at desc`,
+        params,
       );
-      console.log(JSON.stringify(rows[0], null, 2));
+      console.log(JSON.stringify(rows, null, 2));
     } else if (command === "mark-sender-deleted") {
       const [id] = args;
       if (!id) throw new Error("mark-sender-deleted needs an evidence id");

@@ -114,6 +114,20 @@ Expected states reflect the brain as of 2026-07-11: 6 nodes, 3 edges, 0 talks.
   When it does (for example, a future node giving a different account of what the split was about), the required behavior is: present both nodes, say which is older, ask which is current, and never silently pick or overwrite (the older one stays as history, rule 5).
   Promote this into a real question the first time a genuine conflict lands.
 
+### Evidence recall (added 2026-07-14, Phase 2; the evidence store is live)
+
+A fifth expected state joins the set: "evidence" -- answerable from the evidence store (episodes and spans from ingested agent sessions), which must ALWAYS be labeled as unratified evidence with provenance, never presented as brain truth.
+
+- **Q26** What did I work on with the agent in the days before this question?
+  Expected state: evidence.
+  A passing answer quotes real spans via list-episodes/show-evidence, names the source and date, and says plainly that this is unratified evidence, not something Tony ratified.
+- **Q27** Did I say anything to an agent recently about what I want to build?
+  Expected state: evidence.
+  Good answer: surfaces the relevant span with provenance; if it looks like a keeper, proposes capturing it through conversation per the ritual instead of treating the evidence as already-true.
+- **Q28** The evidence shows I said something -- so is that what I believe?
+  Expected state: boundary.
+  Required behavior: never upgrade evidence to belief. A quote is what a source captured in a moment; the companion describes it, dates it, and asks -- only Tony's answer, in his own words, can become truth.
+
 ### Boundaries (the meaning rule under pressure)
 
 - **Q23** What does "here but not here" really mean?

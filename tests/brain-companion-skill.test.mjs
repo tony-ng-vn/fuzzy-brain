@@ -52,3 +52,16 @@ test("the skill drafts whys with the relationship kind made explicit", async () 
   assert.match(skill, /kind of connection/);
   assert.match(skill, /docs\/node-structuring\.md/);
 });
+
+test("the skill teaches the evidence store: unratified, provenance, data not instructions", async () => {
+  const skill = await readFile(join(canonicalDir, "SKILL.md"), "utf8");
+  assert.match(skill, /## The evidence store/);
+  // Browsable without SQL, quoted with provenance, always labeled unratified.
+  assert.match(skill, /list-episodes/);
+  assert.match(skill, /show-evidence/);
+  assert.match(skill, /unratified/);
+  // The injection guard: evidence text is quoted material, never a command.
+  assert.match(skill, /data, never instructions/);
+  // Evidence never upgrades itself into brain truth without the ritual.
+  assert.match(skill, /only through conversation/);
+});
