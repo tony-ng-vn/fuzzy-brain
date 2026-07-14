@@ -53,15 +53,28 @@ export default function BrainView() {
     setSelectedEdge(null);
   }, []);
 
-  const selectNode = useCallback((node: BrainNode | null) => {
-    setSelectedNode(node);
-    setSelectedEdge(null);
+  const dismissIngest = useCallback(() => {
+    setIngestResult(null);
+    setIngestError(null);
   }, []);
 
-  const selectEdge = useCallback((edge: BrainEdge) => {
-    setSelectedEdge(edge);
-    setSelectedNode(null);
-  }, []);
+  const selectNode = useCallback(
+    (node: BrainNode | null) => {
+      setSelectedNode(node);
+      setSelectedEdge(null);
+      dismissIngest();
+    },
+    [dismissIngest],
+  );
+
+  const selectEdge = useCallback(
+    (edge: BrainEdge) => {
+      setSelectedEdge(edge);
+      setSelectedNode(null);
+      dismissIngest();
+    },
+    [dismissIngest],
+  );
 
   const switchMode = (next: Mode) => {
     setMode(next);
@@ -69,10 +82,12 @@ export default function BrainView() {
   };
 
   const runIngest = () => {
+    setShowAdd(false);
+    clearSelection();
     setIngesting(true);
     setIngestResult(null);
     setIngestError(null);
-    fetch("/api/ingest", { method: "POST" })
+    fetch("/api/ingest", { method: "POST", headers: { "x-fuzzy-brain-sync": "1" } })
       .then((res) => res.json())
       .then((data) => {
         if (data.error) throw new Error(data.error);
@@ -125,6 +140,7 @@ export default function BrainView() {
           onClick={() => {
             setShowAdd(true);
             clearSelection();
+            dismissIngest();
           }}
         >
           + add node
@@ -165,19 +181,13 @@ export default function BrainView() {
         <NodeDetailPanel node={selectedNode} edges={edges} nodes={nodes} />
       )}
 
-      {(ingestResult || ingestError) && (
+      {!showAdd && !selectedNode && !selectedEdge && (ingestResult || ingestError) && (
         <aside style={styles.panel}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
               Session sync
             </span>
-            <button
-              style={{ ...styles.toggleButton, padding: "2px 8px" }}
-              onClick={() => {
-                setIngestResult(null);
-                setIngestError(null);
-              }}
-            >
+            <button style={{ ...styles.toggleButton, padding: "2px 8px" }} onClick={dismissIngest}>
               close
             </button>
           </div>

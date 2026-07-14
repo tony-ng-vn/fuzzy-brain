@@ -4,6 +4,22 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.13.1
+
+Jul 14, 2026
+
+**API**
+
+- The sync-sessions route no longer freezes the whole app while it runs. It used to block every other request for up to ten minutes per click; it now runs the ingest without blocking, and a second click (or a terminal import running at the same time) is safely turned away instead of racing the database.
+- Error messages shown after a failed sync are safe to display now. File paths, database details, and quoted session text used to be able to leak into the browser; the full detail goes to the server log instead, and the button shows a plain explanation of what went wrong.
+- The route now requires a small custom header on its request, so another browser tab or page can't silently trigger a sync just by loading in the background.
+
+**UI**
+
+- Fixed the sync result panel hiding other panels underneath it. Opening "+ add node" or selecting a node/connection while a sync result was showing now closes the sync panel first, matching how those panels already behaved with each other.
+
+---
+
 ## v0.13.0
 
 Jul 14, 2026
