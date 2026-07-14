@@ -46,7 +46,7 @@ The deferral was "until the data demands it"; ingestion is the data demanding it
 
 ## Phases
 
-### Phase 0: decisions only Tony can make (entry: now)
+### Phase 0: decisions only Tony can make (entry: now) -- RESOLVED 2026-07-13
 
 Four decisions gate everything; each is a conversation, not code:
 
@@ -59,6 +59,10 @@ Four decisions gate everything; each is a conversation, not code:
 4. Evidence retention and exclusion: what never enters the evidence store at all (people, threads, tags), accepting that capture-time filters are provably unreliable (Recall's CVV failure) and exclusion rules are the honest tool.
 
 Done when: all four are ratified and written down (M4 in the lab notebook; the rest as short ADRs).
+
+**Resolved.** M4: no fixed mechanism, discuss live each time (docs/node-structuring.md).
+Companion-memory isolation, deleted-content ethic, and evidence exclusion rules: docs/adr/0002-digital-brain-phase-0-decisions.md.
+Phase 1's entry condition is now met.
 
 ### Phase 1: the evidence store (entry: Phase 0 done)
 

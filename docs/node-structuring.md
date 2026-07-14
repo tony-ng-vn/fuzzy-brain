@@ -47,14 +47,13 @@ testing, adopted, retired.
   column (scripts/schema.sql), so this needs a tags/labels table or a type array
   before it can be tested.
 
-- **M4 raw slicing** (open, undecided). When one flowing message from Tony contains
-  several atoms, do we slice that one utterance so each node gets its own fragment as
-  its verbatim raw, or keep the whole message as raw in a single node and express the
-  atomic structure only through the readable layer plus separate connected nodes?
-  Rule 7 requires a non-blank verbatim raw on every node, so an atomic node cannot
-  borrow another node's words. This is the precedent Tony has not settled yet, and it
-  is exactly the "how do we turn raw into structured" question he flagged. See trial
-  T-004.
+- **M4 raw slicing** (resolved 2026-07-13, no mechanism adopted). When one flowing
+  message from Tony contains several atoms, there is no fixed rule for whether it
+  becomes one node or several. Tony's answer: handle it the same way edges already
+  work (rule 2) -- discuss it live, case by case, whenever it comes up. If a piece is
+  worth its own node later, it can be pulled out with a verbatim excerpt as its raw
+  (a real substring of what he said, never a paraphrase); nothing is decided in
+  advance. See ADR docs/adr/0002-digital-brain-phase-0-decisions.md and trial T-004.
 
 - **M5 typed why** (adopted as a drafting convention, 2026-07-11). When drafting a
   why for Tony to ratify, make the kind of connection explicit inside the sentence
@@ -94,9 +93,11 @@ graph, note.
 - **T-004** 2026-07-10. Meta-trial for M4. Tony's message on 2026-07-10 held at least
   two atoms in one breath: the trait ("i am an emotional person, and my feeling and
   thought change alot based on my emotion") and last night's momentum lesson (stayed
-  up to 2am, woke with no drive, learned it is "a long game"). Open question: is the
-  right structure one whole-raw node, or several sliced-raw nodes? Verdict: UNDECIDED,
-  pending Tony. Whatever he picks becomes the first real data point for M4.
+  up to 2am, woke with no drive, learned it is "a long game"). Verdict: RESOLVED
+  2026-07-13 -- no fixed mechanism; this specific message was never itself captured
+  as a node, and whether to capture it now (as one node or several) is exactly the
+  kind of thing to raise live with Tony next time it is relevant, per M4's
+  resolution.
 
 ## Effectiveness reflection log
 
@@ -106,6 +107,11 @@ made a trial pass gets retired here.
 
 - 2026-07-10. File created. M1 has one passing trial (T-003). M2 and M3 are proposed
   with failing trials waiting on them (T-002, T-001). M4 is the live decision.
+
+- 2026-07-13. M4 resolved: no fixed slicing mechanism. Decided in conversation as
+  part of the digital-brain Phase 0 decisions (docs/adr/0002); the notebook's job for
+  M4 was never to pick a rule, it turns out, but to notice that the ritual's own
+  discipline (discuss live, never auto-anything) already covers node structuring too.
 
 ## Staying wired in
 
