@@ -4,6 +4,19 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.11.0
+
+Jul 13, 2026
+
+**Data**
+
+- Added the evidence store: a second, separate layer alongside the ratified brain (nodes/edges/talks) for ingested life-data (agent sessions, texts, meetings, email). It holds sources (a registry of where evidence comes from), episodes (one captured unit, whole), and evidence (atomic verbatim spans inside an episode). Nothing here is ever treated as true -- meaning only ever arrives later as a ratified node or edge from conversation, exactly as the digital-brain master plan's two-store law requires.
+- Sensitive data with an exact, checkable shape (SSNs, Luhn-validated credit card numbers) is caught by a local, deterministic filter before anything is ever written, so it can never leave the machine and never becomes a permanent unfixable row. Deleted messages from other people are kept, never dropped, and always flagged, set once, never reversed. A redacted span always shows its placeholder and reason on read; a deleted-by-sender span always stays visible with an explicit marker -- neither state can be silently hidden.
+- Seven new `scripts/brain.mjs` verbs: `add-source`, `list-sources`, `set-exclusions`, `add-episode`, `add-evidence`, `mark-sender-deleted`, `show-evidence`. Same no-delete discipline as the rest of the brain: episodes and evidence are immutable once written, with exactly one narrow exception (the sender-deletion flag), machine-checked by a new test that audits the source code itself for any update or delete statement outside the allowed set.
+- This work was drafted, adversarially reviewed, and specified end to end by Fable 5 as the authoritative reviewer -- the review caught a real bug (a copy-pasted cascading delete that would have let a single command silently destroy every verbatim quote in the store) before it ever reached the database.
+
+---
+
 ## v0.10.2
 
 Jul 13, 2026
