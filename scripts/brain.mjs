@@ -29,7 +29,49 @@ export function schemaTables(schema) {
     nodes: `${prefix}nodes`,
     edges: `${prefix}edges`,
     talks: `${prefix}talks`,
+    sources: `${prefix}sources`,
+    episodes: `${prefix}episodes`,
+    evidence: `${prefix}evidence`,
   };
+}
+
+// Deterministic, local, no network calls -- runs before ANY AI model ever
+// sees this text (ADR 0002 decision 3), and before this text is ever
+// written to a row, because no update path exists afterward to fix a miss.
+// Catches SSN-shaped (strict dashed format, to hold down false positives on
+// arbitrary 9-digit runs) and credit-card-shaped (Luhn-validated, to hold
+// down false positives on arbitrary long digit runs) spans only -- the
+// exact-shape class ADR 0002 assigns to a deterministic filter, not to AI
+// judgment. Returns { text, redactions }: text has every match replaced
+// in-place by "[REDACTED:<reason>]"; redactions is [{ reason, match }].
+export function scrubSensitivePatterns(text) {
+  const redactions = [];
+  let result = text.replace(/\b\d{3}-\d{2}-\d{4}\b/g, (match) => {
+    redactions.push({ reason: "ssn_pattern", match });
+    return "[REDACTED:ssn_pattern]";
+  });
+  result = result.replace(/\b(?:\d[ -]?){13,19}\b/g, (match) => {
+    const digits = match.replace(/[ -]/g, "");
+    if (digits.length < 13 || digits.length > 19 || !luhnValid(digits)) return match;
+    redactions.push({ reason: "credit_card_pattern", match });
+    return "[REDACTED:credit_card_pattern]";
+  });
+  return { text: result, redactions };
+}
+
+function luhnValid(digits) {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = Number(digits[i]);
+    if (double) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    double = !double;
+  }
+  return sum % 10 === 0;
 }
 
 /** Compact whole-brain view: the gist Claude holds the entire session. */
@@ -63,6 +105,47 @@ export function formatShow(nodes) {
       return `${head}\n\nREADABLE\n${n.body}\n\nRAW\n${n.raw}`;
     })
     .join("\n\n----\n\n");
+}
+
+/** One episode plus its evidence spans: source context, then each span in
+ *  offset order. Redacted spans render their placeholder and reason, never
+ *  the real value. Sender-deleted spans stay visible with an explicit
+ *  marker -- ADR 0002 decision 2 forbids silently hiding either state. */
+export function formatEvidence(episode, source, evidenceList) {
+  const lines = [
+    `EPISODE  ${episode.id}`,
+    `source   ${source.label} (${source.kind})`,
+  ];
+  if (episode.source_locator) lines.push(`locator  ${episode.source_locator}`);
+  if (episode.occurred_at) {
+    const span = episode.occurred_until ? `${isoDate(episode.occurred_at)} .. ${isoDate(episode.occurred_until)}` : isoDate(episode.occurred_at);
+    lines.push(`occurred ${span}`);
+  }
+  lines.push("", "RAW", episode.raw, "");
+  lines.push(`EVIDENCE (${evidenceList.length})`);
+  for (const e of evidenceList) {
+    const who = e.speaker ? `  ${e.speaker}` : "";
+    lines.push(`  [${e.start_offset}-${e.end_offset}]${who}`);
+    lines.push(`    ${e.quote}`);
+    if (e.redaction_reason) lines.push(`    (redacted: ${e.redaction_reason})`);
+    if (e.sender_deleted_at) lines.push(`    (deleted by sender, observed ${isoDate(e.sender_deleted_at)})`);
+  }
+  return lines.join("\n");
+}
+
+// exclusions shape: [{ kind: 'person'|'thread'|'topic', value, added_at?, note? }]
+// Prospective only: naming an exclusion cannot retroactively remove
+// anything already ingested before it existed (ADR 0002).
+function validateExclusion(x) {
+  if (!x || typeof x !== "object") throw new Error("each exclusion needs kind and value");
+  if (!["person", "thread", "topic"].includes(x.kind)) {
+    throw new Error(`exclusion kind must be person, thread, or topic: got ${x.kind}`);
+  }
+  if (!x.value || !String(x.value).trim()) throw new Error("each exclusion needs a non-blank value");
+}
+
+function stampExclusions(list) {
+  return list.map((x) => ({ ...x, added_at: x.added_at ?? new Date().toISOString() }));
 }
 
 function loadEnvLocal() {
@@ -157,6 +240,94 @@ async function main() {
         [recap],
       );
       console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "add-source") {
+      const { kind, label, exclusions } = JSON.parse(await readStdin());
+      const list = exclusions ?? [];
+      for (const x of list) validateExclusion(x);
+      const { rows } = await client.query(
+        `insert into ${tables.sources} (kind, label, exclusions) values ($1, $2, $3) returning id, kind, label, exclusions, created_at`,
+        [kind, label, JSON.stringify(stampExclusions(list))],
+      );
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "list-sources") {
+      const { rows } = await client.query(
+        `select id, kind, label, sync_cursor, last_synced_at, exclusions, created_at from ${tables.sources} order by created_at asc`,
+      );
+      console.log(JSON.stringify(rows, null, 2));
+    } else if (command === "set-exclusions") {
+      const [id] = args;
+      if (!id) throw new Error("set-exclusions needs a source id");
+      const { exclusions } = JSON.parse(await readStdin());
+      const list = exclusions ?? [];
+      for (const x of list) validateExclusion(x);
+      // Full replace, not merge: an ordinary, repeatable config update --
+      // not a set-once exception, unlike mark-sender-deleted below.
+      const { rows, rowCount } = await client.query(
+        `update ${tables.sources} set exclusions = $2 where id = $1 returning id, kind, label, exclusions`,
+        [id, JSON.stringify(stampExclusions(list))],
+      );
+      if (rowCount === 0) throw new Error(`no source with id ${id}`);
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "add-episode") {
+      const { source_id, source_locator, raw, occurred_at, occurred_until } = JSON.parse(await readStdin());
+      if (!raw || !raw.trim()) throw new Error("an episode needs its raw: the whole captured text");
+      // Scrubbed BEFORE the insert, always: no update path exists afterward
+      // to fix a miss, so an unfiltered write would be permanent (ADR 0002).
+      const { text: filtered } = scrubSensitivePatterns(raw);
+      const { rows } = await client.query(
+        `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
+         values ($1, $2, $3, $4, $5)
+         returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
+        [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
+      );
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "add-evidence") {
+      const { episode_id, quote, start_offset, end_offset, speaker, occurred_at } = JSON.parse(await readStdin());
+      if (!quote || !quote.trim()) throw new Error("evidence needs a quote");
+      // Whole-row replacement, not partial: a redacted quote is fully the
+      // placeholder or fully the real atomic quote, never a mixed state --
+      // this is what keeps the DB's placeholder-only CHECK constraint airtight.
+      const { redactions } = scrubSensitivePatterns(quote);
+      const finalQuote = redactions.length > 0 ? `[REDACTED:${redactions[0].reason}]` : quote;
+      const redactionReason = redactions.length > 0 ? redactions[0].reason : null;
+      const { rows } = await client.query(
+        `insert into ${tables.evidence} (episode_id, quote, start_offset, end_offset, speaker, occurred_at, redaction_reason)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         returning id, episode_id, quote, start_offset, end_offset, speaker, occurred_at, ingested_at, redaction_reason`,
+        [episode_id, finalQuote, start_offset, end_offset, speaker ?? null, occurred_at ?? null, redactionReason],
+      );
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "mark-sender-deleted") {
+      const [id] = args;
+      if (!id) throw new Error("mark-sender-deleted needs an evidence id");
+      // The one set-once exception in this whole store: guarded by "is
+      // null" so it can only ever fire once per row, and the timestamp is
+      // always server-generated -- it records when WE observed the
+      // deletion, never a caller-supplied value.
+      const { rows, rowCount } = await client.query(
+        `update ${tables.evidence} set sender_deleted_at = now() where id = $1 and sender_deleted_at is null returning id, sender_deleted_at`,
+        [id],
+      );
+      if (rowCount === 0) throw new Error(`no evidence with id ${id}, or it was already marked deleted`);
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "show-evidence") {
+      const [episodeId] = args;
+      if (!episodeId) throw new Error("show-evidence needs an episode id");
+      const ep = await client.query(
+        `select e.id, e.source_locator, e.raw, e.occurred_at, e.occurred_until, s.kind, s.label
+         from ${tables.episodes} e join ${tables.sources} s on s.id = e.source_id
+         where e.id = $1`,
+        [episodeId],
+      );
+      if (ep.rowCount === 0) throw new Error(`no episode with id ${episodeId}`);
+      const spans = (
+        await client.query(
+          `select id, quote, start_offset, end_offset, speaker, occurred_at, sender_deleted_at, redaction_reason
+           from ${tables.evidence} where episode_id = $1 order by start_offset asc`,
+          [episodeId],
+        )
+      ).rows;
+      console.log(formatEvidence(ep.rows[0], { label: ep.rows[0].label, kind: ep.rows[0].kind }, spans));
     } else if (command === "dump") {
       const nodes = (await client.query(`select * from ${tables.nodes} order by created_at asc`)).rows;
       const edges = (await client.query(`select * from ${tables.edges} order by created_at asc`)).rows;

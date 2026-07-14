@@ -45,3 +45,82 @@ create table if not exists talks (
   recap text not null check (length(trim(recap)) > 0),
   created_at timestamptz not null default now()
 );
+
+-- === Evidence store (Phase 1) ===
+-- A second, separate layer alongside nodes/edges/talks above: ingested life
+-- data that is mechanical, high-volume, and NEVER treated as true. Zero
+-- foreign keys point from here into nodes or edges, in either direction --
+-- meaning only ever arrives later as a ratified node/edge from conversation
+-- with Tony. See AGENTS.md and docs/adr/0002-digital-brain-phase-0-decisions.md.
+
+-- sources: registry of where ingested evidence comes from. One row per
+-- configured source (not per ingested item). This table is CONFIGURATION,
+-- not record: unlike episodes/evidence below, a narrow, named set of its
+-- columns may be updated after creation (see scripts/brain.mjs) -- kind and
+-- label never change once written, but exclusions is operational state.
+create table if not exists sources (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (length(trim(kind)) > 0),
+  label text not null check (length(trim(label)) > 0),
+  sync_cursor text,
+  last_synced_at timestamptz,
+  exclusions jsonb not null default '[]'
+    check (jsonb_typeof(exclusions) = 'array'),
+  created_at timestamptz not null default now(),
+  constraint sources_kind_label_unique unique (kind, label)
+);
+
+-- episodes: one ingested unit (a session, a meeting, a thread window),
+-- captured whole. raw has already passed through the local sensitive-
+-- pattern filter before this row is ever written (scripts/brain.mjs's
+-- add-episode) -- "lands... untouched" (the master plan's Phase 2) means
+-- unedited for meaning, not unfiltered for SSN/credit-card-shaped spans.
+-- Immutable once written: no verb ever updates any column here, ever.
+--
+-- Deferred, named but not built: whole-episode deletion tracking (an entire
+-- thread or meeting removed at the source after ingestion, as opposed to a
+-- single message inside one -- that is evidence.sender_deleted_at below).
+-- No column exists yet; it is a single additive nullable timestamptz when
+-- the first source that can produce this signal ships (candidate: Phase 5
+-- iMessage). Not building it now is ADR-0001 discipline: no Phase 1 source
+-- can produce this signal.
+create table if not exists episodes (
+  id uuid primary key default gen_random_uuid(),
+  source_id uuid not null references sources(id) on delete restrict,
+  source_locator text,
+  raw text not null check (length(trim(raw)) > 0),
+  occurred_at timestamptz,
+  occurred_until timestamptz,
+  ingested_at timestamptz not null default now(),
+  constraint episodes_occurred_span_ordered
+    check (occurred_until is null or occurred_at is null or occurred_until >= occurred_at)
+);
+
+create index if not exists episodes_source_idx on episodes (source_id);
+create unique index if not exists episodes_source_locator_idx
+  on episodes (source_id, source_locator)
+  where source_locator is not null;
+
+-- evidence: atomic verbatim spans inside an episode. Immutable once
+-- written, with exactly one deliberate exception: sender_deleted_at,
+-- set-once via scripts/brain.mjs's mark-sender-deleted -- the only update
+-- statement this store's tooling ever issues against a record column.
+-- quote, once written, never changes: same discipline as nodes.raw.
+create table if not exists evidence (
+  id uuid primary key default gen_random_uuid(),
+  episode_id uuid not null references episodes(id) on delete restrict,
+  quote text not null check (length(trim(quote)) > 0),
+  start_offset integer not null check (start_offset >= 0),
+  end_offset integer not null,
+  speaker text check (speaker is null or length(trim(speaker)) > 0),
+  occurred_at timestamptz,
+  ingested_at timestamptz not null default now(),
+  sender_deleted_at timestamptz,
+  redaction_reason text check (redaction_reason is null or length(trim(redaction_reason)) > 0),
+  constraint evidence_offsets_ordered check (end_offset > start_offset),
+  constraint evidence_unique_span unique (episode_id, start_offset, end_offset),
+  constraint evidence_redaction_is_placeholder_only
+    check (redaction_reason is null or quote = ('[REDACTED:' || redaction_reason || ']'))
+);
+
+create index if not exists evidence_episode_idx on evidence (episode_id);
