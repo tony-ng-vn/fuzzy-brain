@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.10.2
+
+Jul 13, 2026
+
+**Docs**
+
+- Ratified the digital-brain plan's Phase 0 decisions, walked through and decided in conversation with Tony: no fixed rule for splitting a message into multiple nodes (discuss it live each time, same as edges already work); the companion's own notes live in a separate schema in the same database, isolated by Postgres itself, and an AI's own guess about Tony never becomes true about him until he says it in his own words; deleted messages from other people are kept but flagged as deleted, never silently dropped or silently kept looking intact; sensitive data with an exact shape (SSN, credit cards) gets caught by a local filter before it ever reaches an AI, while anything fuzzier is excluded by Tony naming it ahead of time.
+- Recorded the three non-M4 decisions as ADR 0002; M4 is resolved directly in the node-structuring notebook. Phase 0 of the master plan is complete, so Phase 1 (the evidence store) can begin.
+
+---
+
 ## v0.10.1
 
 Jul 13, 2026
