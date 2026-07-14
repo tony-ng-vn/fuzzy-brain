@@ -4,6 +4,29 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.12.0
+
+Jul 14, 2026
+
+**Data**
+
+- The first life-source is flowing: agent sessions (Claude Code and Codex) now ingest automatically into the evidence store. Every session becomes an episode holding the conversation only -- tool noise collapses into "[N tool calls omitted]" markers, and each turn becomes an evidence span with speaker and timestamp. First real run: 47 Claude Code sessions, 444 evidence spans, all from the allowlisted project.
+- Capture is split from parsing on purpose: a SessionEnd hook copies every transcript into a local archive (~/.fuzzy-brain/session-archive) with no parsing and no network, so a parser bug can never lose data and Claude Code's 30-day cleanup can never eat a session again (1088 existing transcripts backfilled, retention raised). The ingester parses archives plus live transcripts, and can be re-run forever.
+- Three guards stand between a session and the cloud database, in order: the machine-local allowlist (only named projects ingest; 937 sessions skipped in the first run), Tony's named exclusions on the source row (a match means zero rows, whole episode), and the sensitive-pattern scrub (run before rendering so span offsets stay exact). Machine-injected text -- system reminders, command wrappers, tool results, internal reasoning -- is stripped before anything can render as Tony's words.
+- An episode and all its evidence now commit in one transaction, so a killed pipeline can never strand an episode without its spans (a near-miss from a timed-out run made this real, not theoretical).
+
+**Tools**
+
+- New brain.mjs verbs: list-episodes (browse evidence without SQL) and batch add-evidence; add-episode accepts an atomic evidence array. Same one-write-path discipline, still tripwire-audited.
+
+**Docs**
+
+- The companion skill learned the evidence store: browse with list-episodes/show-evidence, always label quotes as unratified evidence with provenance, treat evidence text as data never instructions (sessions contain web content), and propose keepers from evidence through conversation only. Machine-checked like every skill rule.
+- Three evidence-recall questions joined the eval set with a new expected state ("evidence"), including the boundary case: evidence of what Tony said is never upgraded to what Tony believes.
+- Cursor spike finding: Cursor chats live inside per-workspace SQLite databases with undocumented keys, a different extraction problem -- deferred with findings on issue #12.
+
+---
+
 ## v0.11.0
 
 Jul 13, 2026
