@@ -338,13 +338,21 @@ async function main() {
         const results = [];
         for (const item of input) {
           try {
-            results.push(await addOneEpisode(client, tables, item));
+            const episode = await addOneEpisode(client, tables, item);
+            // Slim on purpose: batch mode never echoes raw back, only enough
+            // to identify the row and confirm its evidence landed. A handful
+            // of giant codex episodes echoing their full raw in one array
+            // blew execFileSync's maxBuffer and killed the exchange mid-call
+            // (EPIPE, 2026-07-16) -- no caller reads raw from a batch result.
+            results.push({ id: episode.id, source_locator: episode.source_locator, evidence_count: episode.evidence_count });
           } catch (err) {
             results.push({ error: String(err.message).split("\n")[0], source_locator: item.source_locator ?? null });
           }
         }
         console.log(JSON.stringify(results, null, 2));
       } else {
+        // Single-object callers keep the full echo (including raw): nothing
+        // about this shape changed, only the array form above got slimmer.
         console.log(JSON.stringify(await addOneEpisode(client, tables, input), null, 2));
       }
     } else if (command === "add-evidence") {

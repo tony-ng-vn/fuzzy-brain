@@ -30,6 +30,16 @@ const brainCli = join(here, "brain.mjs");
 // degraded link (2026-07-16, ~512 episodes in, hours left at that rate).
 const EPISODE_CHUNK_SIZE = 8;
 
+// Even 8-per-chunk can still overwhelm one call: a handful of giant codex
+// episodes together blew execFileSync's maxBuffer and the child died
+// mid-exchange (EPIPE, 2026-07-16). Flush early once pending raw bytes
+// would cross this, so giant episodes travel 1-2 per call instead of 8.
+const CHUNK_MAX_RAW_BYTES = 4 * 1024 * 1024;
+
+function chunkRawBytes(buffer) {
+  return buffer.reduce((total, p) => total + Buffer.byteLength(p.raw, "utf8"), 0);
+}
+
 export function loadConfig() {
   const path = process.env.FUZZY_BRAIN_INGEST_CONFIG || join(homedir(), ".fuzzy-brain", "ingest.json");
   let cfg;
@@ -290,7 +300,9 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
     }
     if (payload) {
       buffer.push(payload);
-      if (buffer.length >= EPISODE_CHUNK_SIZE) flushChunk(buffer, submitChunk, counts);
+      if (buffer.length >= EPISODE_CHUNK_SIZE || chunkRawBytes(buffer) >= CHUNK_MAX_RAW_BYTES) {
+        flushChunk(buffer, submitChunk, counts);
+      }
     }
   }
   flushChunk(buffer, submitChunk, counts); // the trailing partial chunk
@@ -342,7 +354,9 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
     }
     if (payload) {
       buffer.push(payload);
-      if (buffer.length >= EPISODE_CHUNK_SIZE) flushChunk(buffer, submitChunk, counts);
+      if (buffer.length >= EPISODE_CHUNK_SIZE || chunkRawBytes(buffer) >= CHUNK_MAX_RAW_BYTES) {
+        flushChunk(buffer, submitChunk, counts);
+      }
     }
   }
   flushChunk(buffer, submitChunk, counts);

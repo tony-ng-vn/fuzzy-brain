@@ -418,6 +418,64 @@ test("sessions are submitted in one chunked call; one bad slot fails only itself
   }
 });
 
+test("a chunk flushes early once its pending raw bytes cross the size cap, even under the count cap", async () => {
+  const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
+
+  const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-bigchunk-"));
+  const archive = join(home, "session-archive", "claude-code");
+  const slug = "-Users-tony-Desktop-fuzzy-brain";
+  mkdirSync(join(archive, slug), { recursive: true });
+  // Real, tiny, valid sessions -- gathering and parsing still run for real;
+  // only `prepare` is faked, to stand in for a giant rendered episode
+  // without needing a multi-megabyte fixture file on disk.
+  for (const n of [1, 2, 3]) {
+    writeFileSync(
+      join(archive, slug, `sess-big-${n}.jsonl`),
+      makeSession(`sess-big-${n}`, "/Users/tony/Desktop/fuzzy-brain", [`thought ${n}`]),
+    );
+  }
+
+  try {
+    const chunksSeen = [];
+    // 2.5MB per episode: two of them cross the ~4MB cap, so the pending
+    // chunk must flush after the 2nd (not wait for the count cap of 8) --
+    // giant codex episodes blowing execFileSync's maxBuffer inside one
+    // call (EPIPE, 2026-07-16) is exactly what this cap exists to prevent.
+    const bigRaw = "x".repeat(2.5 * 1024 * 1024);
+    const counts = mod.processClaudeSessions(
+      {
+        allowlist: "*",
+        sourceKind: "claude_code_session",
+        sourceLabel: "big-chunk-test",
+        archiveRoot: join(home, "session-archive"),
+        liveProjectsDir: join(home, "no-live"),
+        codexSessionsDir: join(home, "no-codex"),
+      },
+      Date.now() + 24 * 3600 * 1000,
+      {
+        ensureSource: () => ({ id: "src-big-test", exclusions: [] }),
+        listExisting: () => [],
+        prepare: (source, exclusions, locator) => ({
+          source_id: source.id,
+          source_locator: locator,
+          raw: bigRaw,
+          evidence: [],
+        }),
+        submitChunk: (chunk) => {
+          chunksSeen.push(chunk.length);
+          return chunk.map((payload) => ({ id: `ep-${payload.source_locator}`, source_locator: payload.source_locator, evidence_count: 0 }));
+        },
+      },
+    );
+    assert.deepEqual(chunksSeen, [2, 1], "the size cap must split 3 giant episodes into a 2-item chunk then a trailing 1-item chunk");
+    assert.equal(counts.ingested, 3);
+    assert.equal(counts.failed, 0);
+    assert.equal(counts.scanned, 3);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 function loadEnvLocal() {
   try {
     const text = readFileSync(join(here, "..", ".env.local"), "utf8");

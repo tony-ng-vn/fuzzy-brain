@@ -438,11 +438,17 @@ test("add-episode CLI: the array form commits each episode in its own transactio
       assert.equal(results[2].source_locator, locators[2]);
     });
 
-    await t.test("the two valid episodes commit and echo their row", () => {
-      assert.ok(results[0].id, "successful entries echo the inserted episode");
+    await t.test("the two valid episodes commit and echo a slim result, never the raw", () => {
+      assert.ok(results[0].id, "successful entries echo the inserted episode's id");
       assert.ok(results[2].id);
       assert.equal(results[0].error, undefined);
       assert.equal(results[2].error, undefined);
+      // Batch mode must never echo raw back: a handful of giant episodes
+      // doing so in one array blew execFileSync's maxBuffer and killed the
+      // exchange mid-call (EPIPE, 2026-07-16) -- no caller reads raw from a
+      // batch result, so the array form's success shape is deliberately slim.
+      assert.deepEqual(Object.keys(results[0]).sort(), ["evidence_count", "id", "source_locator"]);
+      assert.equal(results[0].raw, undefined);
     });
 
     await t.test("the mid-array invalid episode errors in its own slot, not its neighbors'", () => {
@@ -460,6 +466,17 @@ test("add-episode CLI: the array form commits each episode in its own transactio
         rows.map((r) => r.source_locator).sort(),
         [locators[0], locators[2]].sort(),
       );
+    });
+
+    await t.test("the single-object form is unchanged: still echoes the full row, including raw", () => {
+      const singleOut = execFileSync("node", [brainCli, "add-episode"], {
+        encoding: "utf8",
+        input: JSON.stringify({ source_id: sourceId, source_locator: "batch-single-echo", raw: "single object raw text" }),
+        env,
+      });
+      const single = JSON.parse(singleOut);
+      assert.equal(single.raw, "single object raw text", "single-object callers still get the full echo back (compatibility)");
+      assert.ok(single.id);
     });
   } finally {
     if (sourceId) {
