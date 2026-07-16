@@ -25,7 +25,7 @@ import { scrubSensitivePatterns } from "./brain.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const brainCli = join(here, "brain.mjs");
 
-function loadConfig() {
+export function loadConfig() {
   const path = process.env.FUZZY_BRAIN_INGEST_CONFIG || join(homedir(), ".fuzzy-brain", "ingest.json");
   let cfg;
   try {
@@ -34,9 +34,12 @@ function loadConfig() {
     throw new Error(`no ingest config at ${path}; create it with at least {"allowlist": [...]}`);
   }
   // No allowlist means no cloud writes, full stop -- refusing is the safe
-  // default, never "ingest everything because config was missing".
-  if (!Array.isArray(cfg.allowlist) || cfg.allowlist.length === 0) {
-    throw new Error("ingest config needs a non-empty allowlist; nothing ingests without one");
+  // default, never "ingest everything because config was missing". The one
+  // way to open the gate wide is the exact string "*": a deliberate,
+  // human-written wildcard, never an inferred or defaulted one.
+  const wildcard = cfg.allowlist === "*";
+  if (!wildcard && (!Array.isArray(cfg.allowlist) || cfg.allowlist.length === 0)) {
+    throw new Error('ingest config needs a non-empty allowlist (or the explicit wildcard "*"); nothing ingests without one');
   }
   return {
     allowlist: cfg.allowlist,
@@ -50,11 +53,21 @@ function loadConfig() {
   };
 }
 
+// One admission predicate for every source's gate, so the wildcard and the
+// substring form can never drift apart between pipelines.
+export function admits(allowlist, value) {
+  if (allowlist === "*") return true;
+  return allowlist.some((a) => value.includes(a));
+}
+
 function cli(verb, extraArgs = [], input) {
   const out = execFileSync("node", [brainCli, verb, ...extraArgs], {
     encoding: "utf8",
     input: input === undefined ? undefined : JSON.stringify(input),
     env: process.env,
+    // add-episode echoes the whole stored raw back; a pasted meeting
+    // transcript already blew the 1MB default and killed a real backfill.
+    maxBuffer: 64 * 1024 * 1024,
   });
   return JSON.parse(out);
 }
@@ -208,7 +221,7 @@ function processClaudeSessions(cfg, settledBefore) {
     // the slug encodes the session's working directory, and reading plus
     // parsing hundreds of megabytes of non-allowlisted transcripts every
     // run is pure waste (found the hard way: the first live run timed out).
-    if (!cfg.allowlist.some((a) => cand.slug.includes(a))) {
+    if (!admits(cfg.allowlist, cand.slug)) {
       counts.allowlistSkipped++;
       continue;
     }
@@ -256,7 +269,7 @@ function processCodexSessions(cfg, settledBefore) {
       continue;
     }
     // No project slug in codex paths: the allowlist gate is the parsed cwd.
-    if (!cfg.allowlist.some((a) => (parsed.cwd ?? "").includes(a))) {
+    if (!admits(cfg.allowlist, parsed.cwd ?? "")) {
       counts.allowlistSkipped++;
       continue;
     }
@@ -290,4 +303,7 @@ function main() {
   printSummary(cfg.codexSourceLabel, processCodexSessions(cfg, settledBefore));
 }
 
-main();
+// Only ingest when run directly; importing for tests must not (brain.mjs pattern).
+if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

@@ -8,13 +8,69 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 loadEnvLocal();
+
+// Unit tests for the allowlist gate: the wildcard is the ONE way to open it
+// wide, and every fail-closed refusal stays a refusal. Import happens with
+// the config env pointed at a scratch dir so no real config is ever read.
+test("loadConfig and admits: wildcard opens, everything else stays fail-closed", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-config-"));
+  const configPath = join(home, "ingest.json");
+  const savedEnv = process.env.FUZZY_BRAIN_INGEST_CONFIG;
+  process.env.FUZZY_BRAIN_INGEST_CONFIG = configPath;
+  const { loadConfig, admits } = await import(
+    pathToFileURL(join(root, "scripts", "ingest-sessions.mjs"))
+  );
+
+  try {
+    await t.test("the explicit wildcard admits any project slug or cwd", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: "*", settledHours: 24 }));
+      const cfg = loadConfig();
+      assert.equal(cfg.allowlist, "*");
+      assert.ok(admits(cfg.allowlist, "-Users-tony-Desktop-fuzzy-brain"));
+      assert.ok(admits(cfg.allowlist, "-Users-tony-Desktop-some-new-project"));
+      assert.ok(admits(cfg.allowlist, ""));
+    });
+
+    await t.test("an array allowlist still admits by substring and refuses the rest", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: ["fuzzy-brain"] }));
+      const cfg = loadConfig();
+      assert.ok(admits(cfg.allowlist, "-Users-tony-Desktop-fuzzy-brain"));
+      assert.ok(!admits(cfg.allowlist, "-Users-tony-Desktop-work-repo"));
+    });
+
+    await t.test("missing config still refuses", () => {
+      process.env.FUZZY_BRAIN_INGEST_CONFIG = join(home, "does-not-exist.json");
+      assert.throws(loadConfig, /no ingest config/);
+      process.env.FUZZY_BRAIN_INGEST_CONFIG = configPath;
+    });
+
+    await t.test("missing allowlist still refuses", () => {
+      writeFileSync(configPath, JSON.stringify({ settledHours: 24 }));
+      assert.throws(loadConfig, /allowlist/);
+    });
+
+    await t.test("an empty array allowlist still refuses", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: [] }));
+      assert.throws(loadConfig, /allowlist/);
+    });
+
+    await t.test("only the exact string '*' is a wildcard; other strings refuse", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: "fuzzy-brain" }));
+      assert.throws(loadConfig, /allowlist/);
+    });
+  } finally {
+    if (savedEnv === undefined) delete process.env.FUZZY_BRAIN_INGEST_CONFIG;
+    else process.env.FUZZY_BRAIN_INGEST_CONFIG = savedEnv;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 const TEST_LABEL = "claude-code-ingest-test";
 const CODEX_TEST_LABEL = "codex-ingest-test";
@@ -23,6 +79,7 @@ const SESSION_B = "22222222-bbbb-4bbb-8bbb-222222222222"; // not allowlisted
 const SESSION_C = "33333333-cccc-4ccc-8ccc-333333333333"; // allowlisted, mentions an excluded person
 const CODEX_A = "44444444-dddd-4ddd-8ddd-444444444444"; // codex, fuzzy-brain cwd
 const CODEX_B = "55555555-eeee-4eee-8eee-555555555555"; // codex, other cwd
+const SESSION_D = "66666666-ffff-4fff-8fff-666666666666"; // allowlisted, one giant turn
 
 function codexSession(sessionId, cwd, userText) {
   return [
@@ -94,6 +151,15 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
   writeFileSync(
     join(archive, allowedSlug, `${SESSION_C}.jsonl`),
     makeSession(SESSION_C, "/Users/tony/Desktop/fuzzy-brain", ["talked with Jane Doe about something private"]),
+  );
+  // A pasted-transcript-sized turn: the episode raw echoed back by
+  // add-episode exceeds execFileSync's default 1MB maxBuffer (the exact
+  // crash the first wildcard backfill hit on a real Granola paste).
+  writeFileSync(
+    join(archive, allowedSlug, `${SESSION_D}.jsonl`),
+    makeSession(SESSION_D, "/Users/tony/Desktop/fuzzy-brain", [
+      "here is the whole meeting transcript " + "so many words were said in that room ".repeat(35000),
+    ]),
   );
 
   const codexDir = join(home, "codex-sessions", "2026", "07", "10");
@@ -185,16 +251,27 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
       }
     });
 
+    await t.test("a giant-turn session still ingests whole (no cli buffer crash)", async () => {
+      const { rows } = await client.query(
+        `select count(*)::int as n from brain_dev.episodes e
+         join brain_dev.sources s on s.id = e.source_id
+         where s.label = $1 and e.source_locator = $2`,
+        [TEST_LABEL, SESSION_D],
+      );
+      assert.equal(rows[0].n, 1, "an episode raw over 1MB must not kill the pipeline");
+    });
+
     await t.test("the SSN never reached the database, in raw or in any span", async () => {
       const { rows } = await client.query(
         `select e.raw, string_agg(v.quote, ' ') as quotes
          from brain_dev.episodes e
          join brain_dev.sources s on s.id = e.source_id
          left join brain_dev.evidence v on v.episode_id = e.id
-         where s.label = $1
+         where s.label = $1 and e.source_locator = $2
          group by e.raw`,
-        [TEST_LABEL],
+        [TEST_LABEL, SESSION_A],
       );
+      assert.equal(rows.length, 1);
       for (const r of rows) {
         assert.ok(!r.raw.includes("123-45-6789"));
         assert.ok(!(r.quotes ?? "").includes("123-45-6789"));
