@@ -3,6 +3,7 @@
 // only, every test wrapped in a transaction that always rolls back.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -385,6 +386,91 @@ test("evidence store schema and constraints", async (t) => {
       raw,
     ]);
     return ep.rows[0].id;
+  }
+});
+
+// The wildcard backfill shells out to brain.mjs once per episode, and every
+// spawn opens a fresh TLS connection to the cloud DB -- on a degraded
+// network that dominated per-episode cost (2026-07-16). This is the array
+// form's own contract test, direct against the CLI verb (not through
+// ingest-sessions.mjs): one process, one connection, many episodes, but
+// each episode still commits (or rolls back) entirely on its own.
+test("add-episode CLI: the array form commits each episode in its own transaction", async (t) => {
+  const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+
+  const brainCli = join(here, "..", "scripts", "brain.mjs");
+  const env = { ...process.env, BRAIN_SCHEMA: "brain_dev" };
+  let sourceId;
+
+  try {
+    const src = await client.query(
+      "insert into brain_dev.sources (kind, label) values ('x', gen_random_uuid()::text) returning id",
+    );
+    sourceId = src.rows[0].id;
+
+    const locators = ["batch-a", "batch-bad-offsets", "batch-c"];
+    const episodes = [
+      { source_id: sourceId, source_locator: locators[0], raw: "first episode raw text" },
+      {
+        source_id: sourceId,
+        source_locator: locators[1],
+        raw: "second episode, whose evidence span is invalid",
+        // end_offset before start_offset: violates evidence_offsets_ordered,
+        // so this episode's own transaction must roll back whole.
+        evidence: [{ quote: "bad span", start_offset: 5, end_offset: 2 }],
+      },
+      { source_id: sourceId, source_locator: locators[2], raw: "third episode raw text" },
+    ];
+
+    const out = execFileSync("node", [brainCli, "add-episode"], {
+      encoding: "utf8",
+      input: JSON.stringify(episodes),
+      env,
+    });
+    const results = JSON.parse(out);
+
+    await t.test("returns one ordered result per input episode", () => {
+      assert.equal(results.length, 3);
+      assert.equal(results[0].source_locator, locators[0]);
+      assert.equal(results[1].source_locator, locators[1]);
+      assert.equal(results[2].source_locator, locators[2]);
+    });
+
+    await t.test("the two valid episodes commit and echo their row", () => {
+      assert.ok(results[0].id, "successful entries echo the inserted episode");
+      assert.ok(results[2].id);
+      assert.equal(results[0].error, undefined);
+      assert.equal(results[2].error, undefined);
+    });
+
+    await t.test("the mid-array invalid episode errors in its own slot, not its neighbors'", () => {
+      assert.ok(results[1].error, "the invalid episode must report an error, not a row");
+      assert.equal(results[1].error.split("\n").length, 1, "error must be first-line-only");
+      assert.equal(results[1].id, undefined);
+    });
+
+    await t.test("the invalid episode never landed a row -- its own transaction rolled back whole", async () => {
+      const { rows } = await client.query(
+        "select source_locator from brain_dev.episodes where source_id = $1 order by source_locator",
+        [sourceId],
+      );
+      assert.deepEqual(
+        rows.map((r) => r.source_locator).sort(),
+        [locators[0], locators[2]].sort(),
+      );
+    });
+  } finally {
+    if (sourceId) {
+      await client.query(
+        "delete from brain_dev.evidence v using brain_dev.episodes e where v.episode_id = e.id and e.source_id = $1",
+        [sourceId],
+      );
+      await client.query("delete from brain_dev.episodes where source_id = $1", [sourceId]);
+      await client.query("delete from brain_dev.sources where id = $1", [sourceId]);
+    }
+    await client.end();
   }
 });
 

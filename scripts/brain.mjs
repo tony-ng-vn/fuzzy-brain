@@ -186,6 +186,42 @@ async function insertEvidenceRow(client, tables, item) {
   return rows[0];
 }
 
+// One episode plus its evidence spans, atomic: shared by add-episode's
+// single-object and array forms so both take on exactly one commit
+// boundary per episode -- a capture event is atomic (a killed pipeline
+// must never strand an episode without its spans, a real near-miss on
+// 2026-07-13), and in the array form a bad episode must never roll back
+// its already-settled neighbors, so this begin/commit never widens beyond
+// one episode no matter how it's called.
+async function addOneEpisode(client, tables, input) {
+  const { source_id, source_locator, raw, occurred_at, occurred_until, evidence } = input;
+  if (!raw || !raw.trim()) throw new Error("an episode needs its raw: the whole captured text");
+  // Scrubbed BEFORE the insert, always: no update path exists afterward
+  // to fix a miss, so an unfiltered write would be permanent (ADR 0002).
+  const { text: filtered } = scrubSensitivePatterns(raw);
+  await client.query("begin");
+  let episodeRow;
+  let insertedCount = 0;
+  try {
+    const { rows } = await client.query(
+      `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
+       values ($1, $2, $3, $4, $5)
+       returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
+      [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
+    );
+    episodeRow = rows[0];
+    for (const item of evidence ?? []) {
+      await insertEvidenceRow(client, tables, { ...item, episode_id: episodeRow.id });
+      insertedCount++;
+    }
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  }
+  return { ...episodeRow, evidence_count: insertedCount };
+}
+
 async function main() {
   loadEnvLocal();
   const [command, ...args] = process.argv.slice(2);
@@ -289,35 +325,28 @@ async function main() {
       if (rowCount === 0) throw new Error(`no source with id ${id}`);
       console.log(JSON.stringify(rows[0], null, 2));
     } else if (command === "add-episode") {
-      const { source_id, source_locator, raw, occurred_at, occurred_until, evidence } = JSON.parse(await readStdin());
-      if (!raw || !raw.trim()) throw new Error("an episode needs its raw: the whole captured text");
-      // Scrubbed BEFORE the insert, always: no update path exists afterward
-      // to fix a miss, so an unfiltered write would be permanent (ADR 0002).
-      const { text: filtered } = scrubSensitivePatterns(raw);
-      // Optional evidence spans land in the SAME transaction as the episode:
-      // a capture event is atomic, so a killed pipeline can never leave an
-      // episode stranded without its spans (a real near-miss on 2026-07-13).
-      await client.query("begin");
-      let episodeRow;
-      let insertedCount = 0;
-      try {
-        const { rows } = await client.query(
-          `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
-           values ($1, $2, $3, $4, $5)
-           returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
-          [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
-        );
-        episodeRow = rows[0];
-        for (const item of evidence ?? []) {
-          await insertEvidenceRow(client, tables, { ...item, episode_id: episodeRow.id });
-          insertedCount++;
+      // Accepts one episode object (unchanged), or an array for batch
+      // ingestion -- the wildcard backfill shelled out once per episode,
+      // and every spawn paid a fresh TLS handshake on a degraded link
+      // (2026-07-16); one process, one connection, many episodes is the
+      // whole point. Unlike add-evidence's array form below, each episode
+      // here gets its OWN begin/commit (addOneEpisode does this): a bad
+      // episode must never roll back its already-settled neighbors, so
+      // there is no single all-or-nothing transaction for the batch.
+      const input = JSON.parse(await readStdin());
+      if (Array.isArray(input)) {
+        const results = [];
+        for (const item of input) {
+          try {
+            results.push(await addOneEpisode(client, tables, item));
+          } catch (err) {
+            results.push({ error: String(err.message).split("\n")[0], source_locator: item.source_locator ?? null });
+          }
         }
-        await client.query("commit");
-      } catch (err) {
-        await client.query("rollback");
-        throw err;
+        console.log(JSON.stringify(results, null, 2));
+      } else {
+        console.log(JSON.stringify(await addOneEpisode(client, tables, input), null, 2));
       }
-      console.log(JSON.stringify({ ...episodeRow, evidence_count: insertedCount }, null, 2));
     } else if (command === "add-evidence") {
       // Accepts one span object, or an array of spans for batch ingestion --
       // one write path either way, so the scrub below covers every caller.

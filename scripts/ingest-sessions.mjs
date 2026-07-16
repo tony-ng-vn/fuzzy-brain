@@ -25,6 +25,11 @@ import { scrubSensitivePatterns } from "./brain.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const brainCli = join(here, "brain.mjs");
 
+// One brain.mjs call per this many episodes, not one call per session: a
+// fresh spawn pays a fresh TLS handshake, which dominated cost on a
+// degraded link (2026-07-16, ~512 episodes in, hours left at that rate).
+const EPISODE_CHUNK_SIZE = 8;
+
 export function loadConfig() {
   const path = process.env.FUZZY_BRAIN_INGEST_CONFIG || join(homedir(), ".fuzzy-brain", "ingest.json");
   let cfg;
@@ -169,11 +174,12 @@ function listExistingLocators(sourceId) {
 
 // The shared tail of every source's pipeline: scrub each turn BEFORE
 // rendering (so offsets are computed against the exact text that gets
-// stored), enforce DB exclusions (a match means ZERO rows -- conservative
-// whole-episode skip, never a partial ingest of an excluded subject), then
-// one atomic call so the episode and every span commit together and a
-// killed run can never strand an episode without its evidence.
-function ingestParsed(source, exclusions, locator, parsed, threadHaystack, counts) {
+// stored), then enforce DB exclusions (a match means ZERO rows --
+// conservative whole-episode skip, never a partial ingest of an excluded
+// subject). Pure and local: no cli() call here -- the actual write is
+// batched, later, in flushChunk, so this is the one place that decides
+// whether an episode is submitted at all.
+function prepareEpisode(source, exclusions, locator, parsed, threadHaystack, counts) {
   const scrubbedTurns = parsed.turns.map((t) => ({ ...t, text: scrubSensitivePatterns(t.text).text }));
   const { raw, spans } = renderEpisode(scrubbedTurns);
 
@@ -185,10 +191,10 @@ function ingestParsed(source, exclusions, locator, parsed, threadHaystack, count
   );
   if (hit) {
     counts.excluded++;
-    return;
+    return null;
   }
 
-  const episode = cli("add-episode", [], {
+  return {
     source_id: source.id,
     source_locator: locator,
     raw,
@@ -201,17 +207,47 @@ function ingestParsed(source, exclusions, locator, parsed, threadHaystack, count
       speaker: s.speaker,
       occurred_at: s.ts,
     })),
-  });
-  counts.ingested++;
-  counts.evidenceRows += episode.evidence_count;
+  };
+}
+
+// Submits one full chunk in a single brain.mjs call -- one process, one
+// connection, many episodes. brain.mjs commits each episode in its own
+// transaction, so a mid-chunk failure only ever costs its own slot; it
+// lands in the same `failed` counter a per-session failure always used.
+// A crash of the CALL itself (the connection died before any per-episode
+// result came back) leaves every episode in the chunk unresolved -- all
+// count as failed, and source_locator's uniqueness makes the next run's
+// idempotency safe to retry every one of them.
+function flushChunk(buffer, submitChunk, counts) {
+  if (buffer.length === 0) return;
+  const chunk = buffer.splice(0, buffer.length);
+  let results;
+  try {
+    results = submitChunk(chunk);
+  } catch (err) {
+    counts.failed += chunk.length;
+    console.error(`  failed chunk of ${chunk.length}: ${String(err.message).split("\n")[0]}`);
+    return;
+  }
+  for (const r of results) {
+    if (r && r.error) {
+      counts.failed++;
+      console.error(`  failed ${r.source_locator}: ${r.error}`);
+    } else {
+      counts.ingested++;
+      counts.evidenceRows += r.evidence_count;
+    }
+  }
 }
 
 export function processClaudeSessions(cfg, settledBefore, deps = {}) {
   const source = (deps.ensureSource ?? ensureSource)(cfg.sourceKind, cfg.sourceLabel);
   const exclusions = source.exclusions ?? [];
   const existing = new Set((deps.listExisting ?? listExistingLocators)(source.id));
-  const ingest = deps.ingest ?? ingestParsed;
+  const prepare = deps.prepare ?? prepareEpisode;
+  const submitChunk = deps.submitChunk ?? ((chunk) => cli("add-episode", [], chunk));
   const counts = newCounts();
+  const buffer = [];
 
   for (const [sessionId, cand] of gatherCandidates(cfg)) {
     counts.scanned++;
@@ -242,17 +278,22 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
       counts.noTonyTurns++;
       continue;
     }
-    // One session's transient failure (a network blip to the cloud database
-    // killed a whole 1,400-session backfill on 2026-07-16) costs that session
-    // only: add-episode is atomic, so a caught failure strands nothing and
-    // the next run's idempotency picks the session back up.
+    // A session's own preparation failing (e.g. a parser edge case) costs
+    // only that session, same as a submission failure below.
+    let payload;
     try {
-      ingest(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
+      payload = prepare(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
     } catch (err) {
       counts.failed++;
       console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
+      continue;
+    }
+    if (payload) {
+      buffer.push(payload);
+      if (buffer.length >= EPISODE_CHUNK_SIZE) flushChunk(buffer, submitChunk, counts);
     }
   }
+  flushChunk(buffer, submitChunk, counts); // the trailing partial chunk
   return counts;
 }
 
@@ -260,8 +301,10 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
   const source = (deps.ensureSource ?? ensureSource)("codex_session", cfg.codexSourceLabel);
   const exclusions = source.exclusions ?? [];
   const existing = new Set((deps.listExisting ?? listExistingLocators)(source.id));
-  const ingest = deps.ingest ?? ingestParsed;
+  const prepare = deps.prepare ?? prepareEpisode;
+  const submitChunk = deps.submitChunk ?? ((chunk) => cli("add-episode", [], chunk));
   const counts = newCounts();
+  const buffer = [];
 
   for (const [sessionId, cand] of gatherCodexCandidates(cfg)) {
     counts.scanned++;
@@ -289,13 +332,20 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
       counts.allowlistSkipped++;
       continue;
     }
+    let payload;
     try {
-      ingest(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
+      payload = prepare(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
     } catch (err) {
       counts.failed++;
       console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
+      continue;
+    }
+    if (payload) {
+      buffer.push(payload);
+      if (buffer.length >= EPISODE_CHUNK_SIZE) flushChunk(buffer, submitChunk, counts);
     }
   }
+  flushChunk(buffer, submitChunk, counts);
   return counts;
 }
 

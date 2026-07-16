@@ -352,7 +352,7 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
   }
 });
 
-test("one failing session never kills the batch: counted, batch continues", async () => {
+test("sessions are submitted in one chunked call; one bad slot fails only itself", async () => {
   const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
   assert.equal(
     typeof mod.processClaudeSessions,
@@ -374,10 +374,14 @@ test("one failing session never kills the batch: counted, batch continues", asyn
   );
 
   try {
-    const attempted = [];
+    const chunksSeen = [];
     // Injected seams: no database, no subprocesses -- this tests ONLY the
-    // loop's failure tolerance (a real backfill died whole on 2026-07-16
-    // when one pg connection blipped mid-batch).
+    // chunk boundary (a real backfill died whole on 2026-07-16 when one pg
+    // connection blipped mid-batch; the fix batches many episodes per
+    // brain.mjs call, so submitChunk must see the WHOLE chunk at once, and
+    // a bad slot inside it must fail only that slot). `ingest` is a
+    // safety-net fake for the legacy per-session seam: it must never fire
+    // once chunking is wired, and never touches a real connection if it did.
     const counts = mod.processClaudeSessions(
       {
         allowlist: "*",
@@ -391,16 +395,23 @@ test("one failing session never kills the batch: counted, batch continues", asyn
       {
         ensureSource: () => ({ id: "src-fail-test", exclusions: [] }),
         listExisting: () => [],
-        ingest: (source, exclusions, locator, parsed, haystack, cts) => {
-          attempted.push(locator);
-          if (attempted.length === 1) throw new Error("Command failed: node brain.mjs add-episode\nError: read ETIMEDOUT");
-          cts.ingested++;
+        ingest: () => {
+          throw new Error("legacy per-session ingest seam must not run once chunking lands");
+        },
+        submitChunk: (chunk) => {
+          chunksSeen.push(chunk);
+          return chunk.map((payload, i) =>
+            i === 0
+              ? { error: "read ETIMEDOUT", source_locator: payload.source_locator }
+              : { id: `ep-${i}`, source_locator: payload.source_locator, evidence_count: 1 },
+          );
         },
       },
     );
-    assert.equal(attempted.length, 2, "the session after the failure must still be attempted");
-    assert.equal(counts.failed, 1);
-    assert.equal(counts.ingested, 1);
+    assert.equal(chunksSeen.length, 1, "both sessions must land in a single chunk (chunk size 8 > 2 sessions)");
+    assert.equal(chunksSeen[0].length, 2, "submitChunk must see both episodes at once, not one session at a time");
+    assert.equal(counts.failed, 1, "the one erroring slot counts as failed exactly once");
+    assert.equal(counts.ingested, 1, "its neighbor in the same chunk still counts as ingested");
     assert.equal(counts.scanned, 2);
   } finally {
     rmSync(home, { recursive: true, force: true });
