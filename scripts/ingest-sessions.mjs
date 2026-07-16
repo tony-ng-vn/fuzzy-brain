@@ -157,9 +157,14 @@ function newCounts() {
     noTonyTurns: 0,
     alreadyIngested: 0,
     unparseable: 0,
+    failed: 0,
     ingested: 0,
     evidenceRows: 0,
   };
+}
+
+function listExistingLocators(sourceId) {
+  return cli("list-episodes", [sourceId]).map((e) => e.source_locator).filter(Boolean);
 }
 
 // The shared tail of every source's pipeline: scrub each turn BEFORE
@@ -201,10 +206,11 @@ function ingestParsed(source, exclusions, locator, parsed, threadHaystack, count
   counts.evidenceRows += episode.evidence_count;
 }
 
-function processClaudeSessions(cfg, settledBefore) {
-  const source = ensureSource(cfg.sourceKind, cfg.sourceLabel);
+export function processClaudeSessions(cfg, settledBefore, deps = {}) {
+  const source = (deps.ensureSource ?? ensureSource)(cfg.sourceKind, cfg.sourceLabel);
   const exclusions = source.exclusions ?? [];
-  const existing = new Set(cli("list-episodes", [source.id]).map((e) => e.source_locator).filter(Boolean));
+  const existing = new Set((deps.listExisting ?? listExistingLocators)(source.id));
+  const ingest = deps.ingest ?? ingestParsed;
   const counts = newCounts();
 
   for (const [sessionId, cand] of gatherCandidates(cfg)) {
@@ -236,15 +242,25 @@ function processClaudeSessions(cfg, settledBefore) {
       counts.noTonyTurns++;
       continue;
     }
-    ingestParsed(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
+    // One session's transient failure (a network blip to the cloud database
+    // killed a whole 1,400-session backfill on 2026-07-16) costs that session
+    // only: add-episode is atomic, so a caught failure strands nothing and
+    // the next run's idempotency picks the session back up.
+    try {
+      ingest(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
+    } catch (err) {
+      counts.failed++;
+      console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
+    }
   }
   return counts;
 }
 
-function processCodexSessions(cfg, settledBefore) {
-  const source = ensureSource("codex_session", cfg.codexSourceLabel);
+export function processCodexSessions(cfg, settledBefore, deps = {}) {
+  const source = (deps.ensureSource ?? ensureSource)("codex_session", cfg.codexSourceLabel);
   const exclusions = source.exclusions ?? [];
-  const existing = new Set(cli("list-episodes", [source.id]).map((e) => e.source_locator).filter(Boolean));
+  const existing = new Set((deps.listExisting ?? listExistingLocators)(source.id));
+  const ingest = deps.ingest ?? ingestParsed;
   const counts = newCounts();
 
   for (const [sessionId, cand] of gatherCodexCandidates(cfg)) {
@@ -273,7 +289,12 @@ function processCodexSessions(cfg, settledBefore) {
       counts.allowlistSkipped++;
       continue;
     }
-    ingestParsed(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
+    try {
+      ingest(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
+    } catch (err) {
+      counts.failed++;
+      console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
+    }
   }
   return counts;
 }
@@ -292,6 +313,7 @@ function printSummary(label, counts) {
       `  excluded         ${counts.excluded}`,
       `  no tony turns    ${counts.noTonyTurns}`,
       `  unparseable      ${counts.unparseable}`,
+      `  failed           ${counts.failed}`,
     ].join("\n"),
   );
 }

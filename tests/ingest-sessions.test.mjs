@@ -352,6 +352,61 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
   }
 });
 
+test("one failing session never kills the batch: counted, batch continues", async () => {
+  const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
+  assert.equal(
+    typeof mod.processClaudeSessions,
+    "function",
+    "processClaudeSessions must be exported for the failure-path test",
+  );
+
+  const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-fail-"));
+  const archive = join(home, "session-archive", "claude-code");
+  const slug = "-Users-tony-Desktop-fuzzy-brain";
+  mkdirSync(join(archive, slug), { recursive: true });
+  writeFileSync(
+    join(archive, slug, "sess-fail-1.jsonl"),
+    makeSession("sess-fail-1", "/Users/tony/Desktop/fuzzy-brain", ["first thought"]),
+  );
+  writeFileSync(
+    join(archive, slug, "sess-fail-2.jsonl"),
+    makeSession("sess-fail-2", "/Users/tony/Desktop/fuzzy-brain", ["second thought"]),
+  );
+
+  try {
+    const attempted = [];
+    // Injected seams: no database, no subprocesses -- this tests ONLY the
+    // loop's failure tolerance (a real backfill died whole on 2026-07-16
+    // when one pg connection blipped mid-batch).
+    const counts = mod.processClaudeSessions(
+      {
+        allowlist: "*",
+        sourceKind: "claude_code_session",
+        sourceLabel: "fail-test",
+        archiveRoot: join(home, "session-archive"),
+        liveProjectsDir: join(home, "no-live"),
+        codexSessionsDir: join(home, "no-codex"),
+      },
+      Date.now() + 24 * 3600 * 1000,
+      {
+        ensureSource: () => ({ id: "src-fail-test", exclusions: [] }),
+        listExisting: () => [],
+        ingest: (source, exclusions, locator, parsed, haystack, cts) => {
+          attempted.push(locator);
+          if (attempted.length === 1) throw new Error("Command failed: node brain.mjs add-episode\nError: read ETIMEDOUT");
+          cts.ingested++;
+        },
+      },
+    );
+    assert.equal(attempted.length, 2, "the session after the failure must still be attempted");
+    assert.equal(counts.failed, 1);
+    assert.equal(counts.ingested, 1);
+    assert.equal(counts.scanned, 2);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 function loadEnvLocal() {
   try {
     const text = readFileSync(join(here, "..", ".env.local"), "utf8");
