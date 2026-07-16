@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.13.2
+
+Jul 16, 2026
+
+**Docs**
+
+- The core open question -- how raw data becomes ratified node knowledge -- now has a written development plan: hand-cut real cases with Tony first, then retrieval over evidence, then the proposer, then typed claims once reality actually needs them. Full ladder: docs/superpowers/specs/2026-07-16-processing-layer-development.md.
+- Phase 3 was reviewed and rescoped to evidence-first retrieval, since the ratified brain is still far too small to need its own retrieval yet; the corrections are recorded on issues #4 and #10.
+
+---
+
 ## v0.13.1
 
 Jul 14, 2026
