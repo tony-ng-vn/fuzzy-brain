@@ -61,6 +61,33 @@ test("evidence-store tables have no delete path, and only one named update path 
   );
 });
 
+test("the embed sweep only ever fills null embeddings, nothing else", () => {
+  const source = readFileSync(join(root, "scripts", "embed-sweep.mjs"), "utf8");
+
+  // The sweep derives; it never creates or removes rows.
+  assert.doesNotMatch(source, /insert\s+into/i);
+  assert.doesNotMatch(source, /delete\s+from/i);
+
+  // The one allowed update shape is the deliberate derived-data exception
+  // to "evidence is immutable": embedding is computed FROM the stored text,
+  // so filling it rewrites no content -- and the "embedding is null" guard
+  // means a filled row can never be touched again. Anything else is a bug.
+  const updates = [...source.matchAll(/update\s+\$\{[^}]+\}\s+set\s+([\s\S]*?)\s+where\s+([\s\S]*?)`/gi)];
+  assert.ok(updates.length >= 2, "expected the evidence and nodes embedding-fill updates");
+  for (const [, setClause, whereClause] of updates) {
+    assert.match(
+      setClause.trim(),
+      /^embedding\s*=\s*\$1$/i,
+      `the sweep may only set embedding; found: set ${setClause}`,
+    );
+    assert.match(
+      whereClause.trim(),
+      /^id\s*=\s*\$2\s+and\s+embedding\s+is\s+null$/i,
+      `the sweep may only fill nulls by id; found: where ${whereClause}`,
+    );
+  }
+});
+
 test("migrations bind search_path inside a transaction for pooled connections", () => {
   const source = readFileSync(join(root, "scripts", "migrate.mjs"), "utf8");
   assert.match(source, /begin/);
