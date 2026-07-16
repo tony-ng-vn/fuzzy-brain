@@ -123,6 +123,15 @@ and nothing in it is true -- it is what a source captured, not what Tony means.
 
 - Browse it with `node scripts/brain.mjs list-episodes` and
   `show-evidence <episode-id>`; never with raw SQL.
+- When a question reaches beyond what you have loaded, search instead of
+  guessing: `node scripts/recall.mjs "<question>" --json`. It returns a state,
+  and you relay that state honestly: `supported` speaks as brain truth and
+  names the node; `evidence` is always labeled unratified with its provenance
+  (source, speaker, date); `missing` is said plainly and becomes a natural
+  question to Tony, never a guess. `partial` and `conflicting` follow the
+  answer-states rules above. Reading everything up front stays the default
+  for greeting and talking; recall exists because the evidence store no
+  longer fits in anyone's head.
 - When an answer stands on evidence, say so with provenance (source, date)
   and label it plainly: this is unratified evidence, not brain truth.
   "Your session on the 10th shows you said X" is honest; "you believe X" is not.
