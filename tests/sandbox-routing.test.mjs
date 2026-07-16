@@ -88,6 +88,16 @@ test("the embed sweep only ever fills null embeddings, nothing else", () => {
   }
 });
 
+test("recall is read-only: not one write statement in its source", () => {
+  const source = readFileSync(join(root, "scripts", "recall.mjs"), "utf8");
+  // Recall reads; it never writes (the processing-layer spec's last line).
+  assert.doesNotMatch(source, /insert\s+into/i);
+  assert.doesNotMatch(source, /update\s+[\s\S]{0,80}?\bset\b/i);
+  assert.doesNotMatch(source, /delete\s+from/i);
+  assert.doesNotMatch(source, /\btruncate\b/i);
+  assert.doesNotMatch(source, /\bdrop\s+(table|schema|index|column)\b/i);
+});
+
 test("migrations bind search_path inside a transaction for pooled connections", () => {
   const source = readFileSync(join(root, "scripts", "migrate.mjs"), "utf8");
   assert.match(source, /begin/);
