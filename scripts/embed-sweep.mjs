@@ -44,19 +44,16 @@ async function sweepTable(client, { label, selectSql, updateSql, toText, limit }
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
       const vectors = await embedDocuments(batch.map(toText));
-      await client.query("begin");
-      try {
-        for (let j = 0; j < batch.length; j++) {
-          // The null guard also makes concurrent sweeps safe: whoever
-          // lands second becomes a no-op instead of an overwrite.
-          const res = await client.query(updateSql, [vectorLiteral(vectors[j]), batch[j].id]);
-          filled += res.rowCount;
-        }
-        await client.query("commit");
-      } catch (err) {
-        await client.query("rollback");
-        throw err;
-      }
+      // One statement per batch: per-row updates cost a network round trip
+      // each, and a degraded link turned the first real sweep into hours
+      // (2026-07-16). Single statement = atomic, no transaction needed; the
+      // null guard still makes concurrent sweeps safe -- whoever lands
+      // second is a no-op instead of an overwrite.
+      const res = await client.query(updateSql, [
+        batch.map((r) => r.id),
+        vectors.map(vectorLiteral),
+      ]);
+      filled += res.rowCount;
     }
     console.log(`  ${label}: ${filled} filled so far`);
   }
@@ -83,14 +80,14 @@ async function main() {
     const evidenceFilled = await sweepTable(client, {
       label: "evidence",
       selectSql: `select id, quote from ${tables.evidence} where embedding is null order by ingested_at desc limit $1`,
-      updateSql: `update ${tables.evidence} set embedding = $1 where id = $2 and embedding is null`,
+      updateSql: `update ${tables.evidence} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
       toText: (r) => r.quote,
       limit,
     });
     const nodesFilled = await sweepTable(client, {
       label: "nodes",
       selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc limit $1`,
-      updateSql: `update ${tables.nodes} set embedding = $1 where id = $2 and embedding is null`,
+      updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
       toText: nodeText,
       limit,
     });

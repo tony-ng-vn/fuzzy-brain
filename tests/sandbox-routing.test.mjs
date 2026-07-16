@@ -71,21 +71,21 @@ test("the embed sweep only ever fills null embeddings, nothing else", () => {
   // The one allowed update shape is the deliberate derived-data exception
   // to "evidence is immutable": embedding is computed FROM the stored text,
   // so filling it rewrites no content -- and the "embedding is null" guard
-  // means a filled row can never be touched again. Anything else is a bug.
-  const updates = [...source.matchAll(/update\s+\$\{[^}]+\}\s+set\s+([\s\S]*?)\s+where\s+([\s\S]*?)`/gi)];
-  assert.ok(updates.length >= 2, "expected the evidence and nodes embedding-fill updates");
-  for (const [, setClause, whereClause] of updates) {
-    assert.match(
-      setClause.trim(),
-      /^embedding\s*=\s*\$1$/i,
-      `the sweep may only set embedding; found: set ${setClause}`,
-    );
-    assert.match(
-      whereClause.trim(),
-      /^id\s*=\s*\$2\s+and\s+embedding\s+is\s+null$/i,
-      `the sweep may only fill nulls by id; found: where ${whereClause}`,
-    );
-  }
+  // means a filled row can never be touched again. One statement per batch
+  // (unnest of ids + vectors) because per-row round-trips turned the first
+  // real sweep into hours on a degraded link. Anything else is a bug.
+  const fillShape =
+    /update\s+\$\{[^}]+\}\s+t\s+set\s+embedding\s*=\s*v\.vec::vector\s+from\s+\(select\s+unnest\(\$1::uuid\[\]\)\s+as\s+id,\s+unnest\(\$2::text\[\]\)\s+as\s+vec\)\s+v\s+where\s+t\.id\s*=\s*v\.id\s+and\s+t\.embedding\s+is\s+null/gi;
+  assert.equal(
+    [...source.matchAll(fillShape)].length,
+    2,
+    "expected exactly the evidence and nodes batched embedding fills",
+  );
+  assert.equal(
+    [...source.matchAll(/update\s+\$\{/gi)].length,
+    2,
+    "no update may exist beyond the two embedding fills",
+  );
 });
 
 test("recall is read-only: not one write statement in its source", () => {
