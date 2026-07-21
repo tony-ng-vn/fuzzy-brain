@@ -4,6 +4,20 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.14.0
+
+Jul 21, 2026
+
+**Tools**
+
+- New capture path from phone and Mac, no terminal needed. Share or highlight anything, tap the "Brain" Shortcut, and it lands in the evidence store as a `clipping` episode. A new sweeper (`npm run clippings:sweep`) moves clips from an iCloud Drive inbox folder into the brain through the existing `add-episode` verb, so the sensitive-pattern scrub, source exclusions, and dedupe-by-content guards all apply automatically. Nothing captures on its own: a clip exists only because Tony shared it. Processed clips are archived, never deleted, and failed clips stay in the inbox and retry on the next run.
+
+**Docs**
+
+- Step-by-step guide for building the two share-sheet Shortcuts ("Brain" and "Brain + note"), the clip format, and scheduling the sweeper with launchd: docs/capture-shortcut.md.
+
+---
+
 ## v0.13.2
 
 Jul 16, 2026
