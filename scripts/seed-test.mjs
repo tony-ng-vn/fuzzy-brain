@@ -4,14 +4,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import pg from "pg";
+import { makeClient } from "./brain.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadEnvLocal();
 
 // Seeds are visual-QA fixtures; they live only in the brain_dev sandbox.
 const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
-const client = new pg.Client({ connectionString });
+const client = makeClient({ connectionString });
 await client.connect();
 const schemaCheck = await client.query("select to_regnamespace('brain_dev') is not null as exists");
 if (!schemaCheck.rows[0].exists) {

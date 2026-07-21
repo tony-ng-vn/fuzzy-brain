@@ -4,6 +4,18 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.14.1
+
+Jul 21, 2026
+
+**Tools**
+
+- No script can silently run forever anymore. Every database connection now gives up loudly instead of hanging on a bad link (15s to connect, 2 minutes per query), and every sweeper's call into brain.mjs now has a 5-minute cap. This closes the class of failure where an ingest run once stalled for hours with no output; a failed call now lands in the run's counters and retries safely on the next run.
+- The embedding sweep now runs at the lowest CPU priority, so a long backfill can no longer starve the whole machine the way the first one did. It also stops itself if it detects it is making no progress (for example when a second sweep is filling the same rows), instead of looping.
+- The session and clipping sweepers now share one helper for talking to brain.mjs, so their safety limits can never drift apart.
+
+---
+
 ## v0.14.0
 
 Jul 21, 2026

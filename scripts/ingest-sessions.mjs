@@ -14,16 +14,13 @@
 //   3. the sensitive-pattern scrub (inside the verbs, and pre-render here
 //      so span offsets stay exact -- placeholder length differs from the
 //      matched text, so scrubbing after rendering would drift offsets).
-import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, basename } from "node:path";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode } from "./lib/session-parser.mjs";
 import { scrubSensitivePatterns } from "./brain.mjs";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const brainCli = join(here, "brain.mjs");
+import { cli, ensureSource, listExistingLocators } from "./lib/brain-cli.mjs";
 
 // One brain.mjs call per this many episodes, not one call per session: a
 // fresh spawn pays a fresh TLS handshake, which dominated cost on a
@@ -73,18 +70,6 @@ export function loadConfig() {
 export function admits(allowlist, value) {
   if (allowlist === "*") return true;
   return allowlist.some((a) => value.includes(a));
-}
-
-function cli(verb, extraArgs = [], input) {
-  const out = execFileSync("node", [brainCli, verb, ...extraArgs], {
-    encoding: "utf8",
-    input: input === undefined ? undefined : JSON.stringify(input),
-    env: process.env,
-    // add-episode echoes the whole stored raw back; a pasted meeting
-    // transcript already blew the 1MB default and killed a real backfill.
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return JSON.parse(out);
 }
 
 // Candidate session files by session id; on duplicates (archived AND still
@@ -156,13 +141,6 @@ function gatherCodexCandidates(cfg) {
   return candidates;
 }
 
-function ensureSource(kind, label) {
-  const sources = cli("list-sources");
-  const found = sources.find((s) => s.kind === kind && s.label === label);
-  if (found) return found;
-  return cli("add-source", [], { kind, label });
-}
-
 function newCounts() {
   return {
     scanned: 0,
@@ -176,10 +154,6 @@ function newCounts() {
     ingested: 0,
     evidenceRows: 0,
   };
-}
-
-function listExistingLocators(sourceId) {
-  return cli("list-episodes", [sourceId]).map((e) => e.source_locator).filter(Boolean);
 }
 
 // The shared tail of every source's pipeline: scrub each turn BEFORE
