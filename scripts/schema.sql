@@ -124,3 +124,41 @@ create table if not exists evidence (
 );
 
 create index if not exists evidence_episode_idx on evidence (episode_id);
+
+-- === Retrieval columns (Phase 3) ===
+-- Embeddings + full-text over evidence (and nodes, nearly free) so recall
+-- can find spans across everything ingested. Additive only: no existing
+-- column, row, or constraint above changes.
+
+-- pgvector; WITH SCHEMA public so the vector type resolves from both
+-- public and brain_dev through the migration's search_path.
+create extension if not exists vector with schema public;
+
+-- embedding is DERIVED data: nullable on purpose, filled after the fact by
+-- scripts/embed-sweep.mjs so every write path stays lean and model-free.
+-- Recall tolerates nulls -- full-text still finds unswept rows.
+alter table evidence add column if not exists embedding vector(768);
+alter table nodes add column if not exists embedding vector(768);
+
+-- Generated full-text projections. left() caps the indexed text because
+-- tsvector has a 1MB hard limit and real spans already reach 365k chars
+-- (pasted transcripts); a pathological span must never be able to fail an
+-- insert or a migration rewrite. Search sees the capped prefix only.
+alter table evidence add column if not exists fts tsvector
+  generated always as (to_tsvector('english', left(quote, 200000))) stored;
+
+-- Node weights: a title hit outranks the same word buried in raw or body.
+alter table nodes add column if not exists fts tsvector
+  generated always as (
+    setweight(to_tsvector('english', left(title, 10000)), 'A')
+    || setweight(to_tsvector('english', left(raw, 100000)), 'B')
+    || setweight(to_tsvector('english', left(body, 100000)), 'C')
+  ) stored;
+
+create index if not exists evidence_fts_idx on evidence using gin (fts);
+create index if not exists nodes_fts_idx on nodes using gin (fts);
+
+-- HNSW cosine indexes for the vector lane; null embeddings simply never
+-- enter the index, which is how unswept rows stay invisible to it.
+create index if not exists evidence_embedding_idx on evidence using hnsw (embedding vector_cosine_ops);
+create index if not exists nodes_embedding_idx on nodes using hnsw (embedding vector_cosine_ops);

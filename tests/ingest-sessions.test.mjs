@@ -8,13 +8,69 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 loadEnvLocal();
+
+// Unit tests for the allowlist gate: the wildcard is the ONE way to open it
+// wide, and every fail-closed refusal stays a refusal. Import happens with
+// the config env pointed at a scratch dir so no real config is ever read.
+test("loadConfig and admits: wildcard opens, everything else stays fail-closed", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-config-"));
+  const configPath = join(home, "ingest.json");
+  const savedEnv = process.env.FUZZY_BRAIN_INGEST_CONFIG;
+  process.env.FUZZY_BRAIN_INGEST_CONFIG = configPath;
+  const { loadConfig, admits } = await import(
+    pathToFileURL(join(root, "scripts", "ingest-sessions.mjs"))
+  );
+
+  try {
+    await t.test("the explicit wildcard admits any project slug or cwd", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: "*", settledHours: 24 }));
+      const cfg = loadConfig();
+      assert.equal(cfg.allowlist, "*");
+      assert.ok(admits(cfg.allowlist, "-Users-tony-Desktop-fuzzy-brain"));
+      assert.ok(admits(cfg.allowlist, "-Users-tony-Desktop-some-new-project"));
+      assert.ok(admits(cfg.allowlist, ""));
+    });
+
+    await t.test("an array allowlist still admits by substring and refuses the rest", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: ["fuzzy-brain"] }));
+      const cfg = loadConfig();
+      assert.ok(admits(cfg.allowlist, "-Users-tony-Desktop-fuzzy-brain"));
+      assert.ok(!admits(cfg.allowlist, "-Users-tony-Desktop-work-repo"));
+    });
+
+    await t.test("missing config still refuses", () => {
+      process.env.FUZZY_BRAIN_INGEST_CONFIG = join(home, "does-not-exist.json");
+      assert.throws(loadConfig, /no ingest config/);
+      process.env.FUZZY_BRAIN_INGEST_CONFIG = configPath;
+    });
+
+    await t.test("missing allowlist still refuses", () => {
+      writeFileSync(configPath, JSON.stringify({ settledHours: 24 }));
+      assert.throws(loadConfig, /allowlist/);
+    });
+
+    await t.test("an empty array allowlist still refuses", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: [] }));
+      assert.throws(loadConfig, /allowlist/);
+    });
+
+    await t.test("only the exact string '*' is a wildcard; other strings refuse", () => {
+      writeFileSync(configPath, JSON.stringify({ allowlist: "fuzzy-brain" }));
+      assert.throws(loadConfig, /allowlist/);
+    });
+  } finally {
+    if (savedEnv === undefined) delete process.env.FUZZY_BRAIN_INGEST_CONFIG;
+    else process.env.FUZZY_BRAIN_INGEST_CONFIG = savedEnv;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 const TEST_LABEL = "claude-code-ingest-test";
 const CODEX_TEST_LABEL = "codex-ingest-test";
@@ -23,6 +79,7 @@ const SESSION_B = "22222222-bbbb-4bbb-8bbb-222222222222"; // not allowlisted
 const SESSION_C = "33333333-cccc-4ccc-8ccc-333333333333"; // allowlisted, mentions an excluded person
 const CODEX_A = "44444444-dddd-4ddd-8ddd-444444444444"; // codex, fuzzy-brain cwd
 const CODEX_B = "55555555-eeee-4eee-8eee-555555555555"; // codex, other cwd
+const SESSION_D = "66666666-ffff-4fff-8fff-666666666666"; // allowlisted, one giant turn
 
 function codexSession(sessionId, cwd, userText) {
   return [
@@ -94,6 +151,15 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
   writeFileSync(
     join(archive, allowedSlug, `${SESSION_C}.jsonl`),
     makeSession(SESSION_C, "/Users/tony/Desktop/fuzzy-brain", ["talked with Jane Doe about something private"]),
+  );
+  // A pasted-transcript-sized turn: the episode raw echoed back by
+  // add-episode exceeds execFileSync's default 1MB maxBuffer (the exact
+  // crash the first wildcard backfill hit on a real Granola paste).
+  writeFileSync(
+    join(archive, allowedSlug, `${SESSION_D}.jsonl`),
+    makeSession(SESSION_D, "/Users/tony/Desktop/fuzzy-brain", [
+      "here is the whole meeting transcript " + "so many words were said in that room ".repeat(35000),
+    ]),
   );
 
   const codexDir = join(home, "codex-sessions", "2026", "07", "10");
@@ -185,16 +251,27 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
       }
     });
 
+    await t.test("a giant-turn session still ingests whole (no cli buffer crash)", async () => {
+      const { rows } = await client.query(
+        `select count(*)::int as n from brain_dev.episodes e
+         join brain_dev.sources s on s.id = e.source_id
+         where s.label = $1 and e.source_locator = $2`,
+        [TEST_LABEL, SESSION_D],
+      );
+      assert.equal(rows[0].n, 1, "an episode raw over 1MB must not kill the pipeline");
+    });
+
     await t.test("the SSN never reached the database, in raw or in any span", async () => {
       const { rows } = await client.query(
         `select e.raw, string_agg(v.quote, ' ') as quotes
          from brain_dev.episodes e
          join brain_dev.sources s on s.id = e.source_id
          left join brain_dev.evidence v on v.episode_id = e.id
-         where s.label = $1
+         where s.label = $1 and e.source_locator = $2
          group by e.raw`,
-        [TEST_LABEL],
+        [TEST_LABEL, SESSION_A],
       );
+      assert.equal(rows.length, 1);
       for (const r of rows) {
         assert.ok(!r.raw.includes("123-45-6789"));
         assert.ok(!(r.quotes ?? "").includes("123-45-6789"));
@@ -271,6 +348,130 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
       await client.query(`delete from brain_dev.sources where label = $1`, [label]);
     }
     await client.end();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("sessions are submitted in one chunked call; one bad slot fails only itself", async () => {
+  const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
+  assert.equal(
+    typeof mod.processClaudeSessions,
+    "function",
+    "processClaudeSessions must be exported for the failure-path test",
+  );
+
+  const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-fail-"));
+  const archive = join(home, "session-archive", "claude-code");
+  const slug = "-Users-tony-Desktop-fuzzy-brain";
+  mkdirSync(join(archive, slug), { recursive: true });
+  writeFileSync(
+    join(archive, slug, "sess-fail-1.jsonl"),
+    makeSession("sess-fail-1", "/Users/tony/Desktop/fuzzy-brain", ["first thought"]),
+  );
+  writeFileSync(
+    join(archive, slug, "sess-fail-2.jsonl"),
+    makeSession("sess-fail-2", "/Users/tony/Desktop/fuzzy-brain", ["second thought"]),
+  );
+
+  try {
+    const chunksSeen = [];
+    // Injected seams: no database, no subprocesses -- this tests ONLY the
+    // chunk boundary (a real backfill died whole on 2026-07-16 when one pg
+    // connection blipped mid-batch; the fix batches many episodes per
+    // brain.mjs call, so submitChunk must see the WHOLE chunk at once, and
+    // a bad slot inside it must fail only that slot). `ingest` is a
+    // safety-net fake for the legacy per-session seam: it must never fire
+    // once chunking is wired, and never touches a real connection if it did.
+    const counts = mod.processClaudeSessions(
+      {
+        allowlist: "*",
+        sourceKind: "claude_code_session",
+        sourceLabel: "fail-test",
+        archiveRoot: join(home, "session-archive"),
+        liveProjectsDir: join(home, "no-live"),
+        codexSessionsDir: join(home, "no-codex"),
+      },
+      Date.now() + 24 * 3600 * 1000,
+      {
+        ensureSource: () => ({ id: "src-fail-test", exclusions: [] }),
+        listExisting: () => [],
+        ingest: () => {
+          throw new Error("legacy per-session ingest seam must not run once chunking lands");
+        },
+        submitChunk: (chunk) => {
+          chunksSeen.push(chunk);
+          return chunk.map((payload, i) =>
+            i === 0
+              ? { error: "read ETIMEDOUT", source_locator: payload.source_locator }
+              : { id: `ep-${i}`, source_locator: payload.source_locator, evidence_count: 1 },
+          );
+        },
+      },
+    );
+    assert.equal(chunksSeen.length, 1, "both sessions must land in a single chunk (chunk size 8 > 2 sessions)");
+    assert.equal(chunksSeen[0].length, 2, "submitChunk must see both episodes at once, not one session at a time");
+    assert.equal(counts.failed, 1, "the one erroring slot counts as failed exactly once");
+    assert.equal(counts.ingested, 1, "its neighbor in the same chunk still counts as ingested");
+    assert.equal(counts.scanned, 2);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a chunk flushes early once its pending raw bytes cross the size cap, even under the count cap", async () => {
+  const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
+
+  const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-bigchunk-"));
+  const archive = join(home, "session-archive", "claude-code");
+  const slug = "-Users-tony-Desktop-fuzzy-brain";
+  mkdirSync(join(archive, slug), { recursive: true });
+  // Real, tiny, valid sessions -- gathering and parsing still run for real;
+  // only `prepare` is faked, to stand in for a giant rendered episode
+  // without needing a multi-megabyte fixture file on disk.
+  for (const n of [1, 2, 3]) {
+    writeFileSync(
+      join(archive, slug, `sess-big-${n}.jsonl`),
+      makeSession(`sess-big-${n}`, "/Users/tony/Desktop/fuzzy-brain", [`thought ${n}`]),
+    );
+  }
+
+  try {
+    const chunksSeen = [];
+    // 2.5MB per episode: two of them cross the ~4MB cap, so the pending
+    // chunk must flush after the 2nd (not wait for the count cap of 8) --
+    // giant codex episodes blowing execFileSync's maxBuffer inside one
+    // call (EPIPE, 2026-07-16) is exactly what this cap exists to prevent.
+    const bigRaw = "x".repeat(2.5 * 1024 * 1024);
+    const counts = mod.processClaudeSessions(
+      {
+        allowlist: "*",
+        sourceKind: "claude_code_session",
+        sourceLabel: "big-chunk-test",
+        archiveRoot: join(home, "session-archive"),
+        liveProjectsDir: join(home, "no-live"),
+        codexSessionsDir: join(home, "no-codex"),
+      },
+      Date.now() + 24 * 3600 * 1000,
+      {
+        ensureSource: () => ({ id: "src-big-test", exclusions: [] }),
+        listExisting: () => [],
+        prepare: (source, exclusions, locator) => ({
+          source_id: source.id,
+          source_locator: locator,
+          raw: bigRaw,
+          evidence: [],
+        }),
+        submitChunk: (chunk) => {
+          chunksSeen.push(chunk.length);
+          return chunk.map((payload) => ({ id: `ep-${payload.source_locator}`, source_locator: payload.source_locator, evidence_count: 0 }));
+        },
+      },
+    );
+    assert.deepEqual(chunksSeen, [2, 1], "the size cap must split 3 giant episodes into a 2-item chunk then a trailing 1-item chunk");
+    assert.equal(counts.ingested, 3);
+    assert.equal(counts.failed, 0);
+    assert.equal(counts.scanned, 3);
+  } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });

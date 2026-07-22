@@ -61,6 +61,43 @@ test("evidence-store tables have no delete path, and only one named update path 
   );
 });
 
+test("the embed sweep only ever fills null embeddings, nothing else", () => {
+  const source = readFileSync(join(root, "scripts", "embed-sweep.mjs"), "utf8");
+
+  // The sweep derives; it never creates or removes rows.
+  assert.doesNotMatch(source, /insert\s+into/i);
+  assert.doesNotMatch(source, /delete\s+from/i);
+
+  // The one allowed update shape is the deliberate derived-data exception
+  // to "evidence is immutable": embedding is computed FROM the stored text,
+  // so filling it rewrites no content -- and the "embedding is null" guard
+  // means a filled row can never be touched again. One statement per batch
+  // (unnest of ids + vectors) because per-row round-trips turned the first
+  // real sweep into hours on a degraded link. Anything else is a bug.
+  const fillShape =
+    /update\s+\$\{[^}]+\}\s+t\s+set\s+embedding\s*=\s*v\.vec::vector\s+from\s+\(select\s+unnest\(\$1::uuid\[\]\)\s+as\s+id,\s+unnest\(\$2::text\[\]\)\s+as\s+vec\)\s+v\s+where\s+t\.id\s*=\s*v\.id\s+and\s+t\.embedding\s+is\s+null/gi;
+  assert.equal(
+    [...source.matchAll(fillShape)].length,
+    2,
+    "expected exactly the evidence and nodes batched embedding fills",
+  );
+  assert.equal(
+    [...source.matchAll(/update\s+\$\{/gi)].length,
+    2,
+    "no update may exist beyond the two embedding fills",
+  );
+});
+
+test("recall is read-only: not one write statement in its source", () => {
+  const source = readFileSync(join(root, "scripts", "recall.mjs"), "utf8");
+  // Recall reads; it never writes (the processing-layer spec's last line).
+  assert.doesNotMatch(source, /insert\s+into/i);
+  assert.doesNotMatch(source, /update\s+[\s\S]{0,80}?\bset\b/i);
+  assert.doesNotMatch(source, /delete\s+from/i);
+  assert.doesNotMatch(source, /\btruncate\b/i);
+  assert.doesNotMatch(source, /\bdrop\s+(table|schema|index|column)\b/i);
+});
+
 test("migrations bind search_path inside a transaction for pooled connections", () => {
   const source = readFileSync(join(root, "scripts", "migrate.mjs"), "utf8");
   assert.match(source, /begin/);

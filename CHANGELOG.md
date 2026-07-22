@@ -4,6 +4,31 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.14.0
+
+Jul 21, 2026
+
+**Tools**
+
+- New capture path from phone and Mac, no terminal needed. Share or highlight anything, tap the "Brain" Shortcut, and it lands in the evidence store as a `clipping` episode. A new sweeper (`npm run clippings:sweep`) moves clips from an iCloud Drive inbox folder into the brain through the existing `add-episode` verb, so the sensitive-pattern scrub, source exclusions, and dedupe-by-content guards all apply automatically. Nothing captures on its own: a clip exists only because Tony shared it. Processed clips are archived, never deleted, and failed clips stay in the inbox and retry on the next run.
+
+**Docs**
+
+- Step-by-step guide for building the two share-sheet Shortcuts ("Brain" and "Brain + note"), the clip format, and scheduling the sweeper with launchd: docs/capture-shortcut.md.
+
+---
+
+## v0.13.2
+
+Jul 16, 2026
+
+**Docs**
+
+- The core open question -- how raw data becomes ratified node knowledge -- now has a written development plan: hand-cut real cases with Tony first, then retrieval over evidence, then the proposer, then typed claims once reality actually needs them. Full ladder: docs/superpowers/specs/2026-07-16-processing-layer-development.md.
+- Phase 3 was reviewed and rescoped to evidence-first retrieval, since the ratified brain is still far too small to need its own retrieval yet; the corrections are recorded on issues #4 and #10.
+
+---
+
 ## v0.13.1
 
 Jul 14, 2026
