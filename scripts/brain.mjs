@@ -20,6 +20,27 @@ function isoDate(value) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
+// Every silent multi-minute hang this store has seen traced to a bare
+// pg.Client on a degraded link: connect, query, and idle-death all wait
+// forever by default. These guardrails turn a hang into a loud failure,
+// which the idempotent pipelines (locator dedupe, null-guard sweeps)
+// already know how to retry. query_timeout is enforced client-side --
+// the only kind that can work here, since the Polygres pooler rejects
+// statement_timeout as a startup parameter outright (2026-07-21).
+export const CLIENT_GUARDRAILS = Object.freeze({
+  connectionTimeoutMillis: 15_000,
+  query_timeout: 120_000,
+  keepAlive: true,
+});
+
+export function makeClient(overrides = {}) {
+  return new pg.Client({
+    connectionString: process.env.DATABASE_URL,
+    ...CLIENT_GUARDRAILS,
+    ...overrides,
+  });
+}
+
 // Explicit qualification survives transaction-pooling proxies that discard
 // session-level search_path settings between statements.
 export function schemaTables(schema) {
@@ -227,7 +248,7 @@ async function main() {
   const [command, ...args] = process.argv.slice(2);
   const schema = process.env.BRAIN_SCHEMA || "public";
   const tables = schemaTables(schema);
-  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  const client = makeClient();
   await client.connect();
   try {
     const s = await client.query("select to_regnamespace($1) is not null as exists", [schema]);
