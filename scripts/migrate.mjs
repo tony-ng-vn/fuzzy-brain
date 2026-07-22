@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import pg from "pg";
+import { makeClient } from "./brain.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadEnvLocal();
@@ -13,7 +13,9 @@ if (!connectionString) {
   process.exit(1);
 }
 
-const client = new pg.Client({ connectionString });
+// No query cap here: a fresh HNSW index build over the whole store is
+// legitimately slow and must not be killed mid-DDL.
+const client = makeClient({ connectionString, query_timeout: 0 });
 await client.connect();
 try {
   const schemaSql = readFileSync(join(here, "schema.sql"), "utf8");

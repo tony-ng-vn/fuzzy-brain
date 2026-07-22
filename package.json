@@ -1,6 +1,6 @@
 {
   "name": "fuzzy-brain",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,8 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test tests/*.test.mjs",
-    "db:migrate": "node scripts/migrate.mjs"
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "clippings:sweep": "node scripts/sweep-clippings.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

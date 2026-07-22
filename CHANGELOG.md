@@ -4,13 +4,39 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
-## v0.14.0
+## v0.15.0
 
 Jul 21, 2026
 
 **Docs**
 
 - New `digest-article` skill: hand it a URL and it lands the article whole in the evidence store, teaches it back to you live so you actually learn it, and lets takeaways precipitate into the brain in your own words. The brain stores what reading did to you, with a pointer back to what you read -- never the article's text as brain truth. Zero takeaways is a normal outcome; the article just sits in evidence.
+
+---
+
+## v0.14.1
+
+Jul 21, 2026
+
+**Tools**
+
+- No script can silently run forever anymore. Every database connection now gives up loudly instead of hanging on a bad link (15s to connect, 2 minutes per query), and every sweeper's call into brain.mjs now has a 5-minute cap. This closes the class of failure where an ingest run once stalled for hours with no output; a failed call now lands in the run's counters and retries safely on the next run.
+- The embedding sweep now runs at the lowest CPU priority, so a long backfill can no longer starve the whole machine the way the first one did. It also stops itself if it detects it is making no progress (for example when a second sweep is filling the same rows), instead of looping.
+- The session and clipping sweepers now share one helper for talking to brain.mjs, so their safety limits can never drift apart.
+
+---
+
+## v0.14.0
+
+Jul 21, 2026
+
+**Tools**
+
+- New capture path from phone and Mac, no terminal needed. Share or highlight anything, tap the "Brain" Shortcut, and it lands in the evidence store as a `clipping` episode. A new sweeper (`npm run clippings:sweep`) moves clips from an iCloud Drive inbox folder into the brain through the existing `add-episode` verb, so the sensitive-pattern scrub, source exclusions, and dedupe-by-content guards all apply automatically. Nothing captures on its own: a clip exists only because Tony shared it. Processed clips are archived, never deleted, and failed clips stay in the inbox and retry on the next run.
+
+**Docs**
+
+- Step-by-step guide for building the two share-sheet Shortcuts ("Brain" and "Brain + note"), the clip format, and scheduling the sweeper with launchd: docs/capture-shortcut.md.
 
 ---
 
