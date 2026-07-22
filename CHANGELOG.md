@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.14.0
+
+Jul 21, 2026
+
+**Docs**
+
+- New `digest-article` skill: hand it a URL and it lands the article whole in the evidence store, teaches it back to you live so you actually learn it, and lets takeaways precipitate into the brain in your own words. The brain stores what reading did to you, with a pointer back to what you read -- never the article's text as brain truth. Zero takeaways is a normal outcome; the article just sits in evidence.
+
+---
+
 ## v0.13.2
 
 Jul 16, 2026
