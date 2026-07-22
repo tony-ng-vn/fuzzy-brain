@@ -6,16 +6,13 @@
 // decision. Writes go through scripts/brain.mjs's own verbs, so the
 // sensitive-pattern scrub and the no-delete tripwire cover this pipeline
 // automatically (one write path, always).
-import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync, mkdirSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { scrubSensitivePatterns } from "./brain.mjs";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const brainCli = join(here, "brain.mjs");
+import { cli, ensureSource, listExistingLocators } from "./lib/brain-cli.mjs";
 
 // Clips are share-sheet sized, so unlike ingest-sessions there is no
 // byte-cap flush -- but batching still saves a TLS handshake per clip.
@@ -82,27 +79,6 @@ export function renderClipping(payload) {
   if (selection && selection.trim()) appendSpan("selection", selection, null);
   if (note && note.trim()) appendSpan("note", note, "Tony");
   return { raw, occurred_at: captured_at ?? null, evidence };
-}
-
-function cli(verb, extraArgs = [], input) {
-  const out = execFileSync("node", [brainCli, verb, ...extraArgs], {
-    encoding: "utf8",
-    input: input === undefined ? undefined : JSON.stringify(input),
-    env: process.env,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return JSON.parse(out);
-}
-
-function ensureSource(kind, label) {
-  const sources = cli("list-sources");
-  const found = sources.find((s) => s.kind === kind && s.label === label);
-  if (found) return found;
-  return cli("add-source", [], { kind, label });
-}
-
-function listExistingLocators(sourceId) {
-  return cli("list-episodes", [sourceId]).map((e) => e.source_locator).filter(Boolean);
 }
 
 // Archive under a locator-prefixed name so identical basenames from

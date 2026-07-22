@@ -22,8 +22,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import pg from "pg";
-import { schemaTables } from "./brain.mjs";
+import { schemaTables, makeClient } from "./brain.mjs";
 import { embedQuery } from "./lib/embeddings.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -312,7 +311,7 @@ async function main() {
     vectorNote = ` (vector lane unavailable: ${err.message}; text lanes only)`;
   }
 
-  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  const client = makeClient();
   await client.connect();
   try {
     const candidates = await findCandidates(client, tables, question, queryVec);

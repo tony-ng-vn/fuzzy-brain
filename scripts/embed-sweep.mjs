@@ -9,8 +9,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import pg from "pg";
-import { schemaTables } from "./brain.mjs";
+import os from "node:os";
+import { schemaTables, makeClient } from "./brain.mjs";
 import { embedDocuments } from "./lib/embeddings.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -31,19 +31,21 @@ function nodeText(row) {
   return [row.title, row.raw, body].filter(Boolean).join("\n");
 }
 
-async function sweepTable(client, { label, selectSql, updateSql, toText, limit }) {
+export async function sweepTable(client, { label, selectSql, updateSql, toText, limit, embed = embedDocuments }) {
   let filled = 0;
+  let stalledPages = 0;
   for (;;) {
     const remaining = limit === null ? PAGE : Math.min(PAGE, limit - filled);
     if (remaining <= 0) break;
     const { rows } = await client.query(selectSql, [remaining]);
     if (rows.length === 0) break;
+    const pageStart = filled;
 
     // Length-sorted batches waste less padding inside the model.
     rows.sort((a, b) => toText(a).length - toText(b).length);
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
-      const vectors = await embedDocuments(batch.map(toText));
+      const vectors = await embed(batch.map(toText));
       // One statement per batch: per-row updates cost a network round trip
       // each, and a degraded link turned the first real sweep into hours
       // (2026-07-16). Single statement = atomic, no transaction needed; the
@@ -54,6 +56,19 @@ async function sweepTable(client, { label, selectSql, updateSql, toText, limit }
         vectors.map(vectorLiteral),
       ]);
       filled += res.rowCount;
+    }
+    // A page that selects rows but fills none means the null guard is
+    // no-oping every update -- e.g. a concurrent sweep owns these rows.
+    // Selecting the same page forever would spin without progress, so two
+    // strikes and this sweep bows out; whoever is filling keeps going.
+    if (filled === pageStart) {
+      stalledPages++;
+      if (stalledPages >= 2) {
+        console.log(`  ${label}: two pages with no progress -- another sweep is filling these rows, stopping`);
+        break;
+      }
+    } else {
+      stalledPages = 0;
     }
     console.log(`  ${label}: ${filled} filled so far`);
   }
@@ -69,9 +84,19 @@ async function main() {
     throw new Error("--limit needs a positive integer");
   }
 
+  // Lowest CPU priority, set before the model loads so the inference
+  // threads inherit it: the fp32 backfill once saturated every core for
+  // days and starved the whole machine. The sweep takes as long as it
+  // takes either way; the machine stays usable meanwhile.
+  try {
+    os.setPriority(19);
+  } catch {
+    // not permitted on some platforms; the sweep still runs
+  }
+
   const schema = process.env.BRAIN_SCHEMA || "public";
   const tables = schemaTables(schema);
-  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  const client = makeClient();
   await client.connect();
   const started = Date.now();
   try {
