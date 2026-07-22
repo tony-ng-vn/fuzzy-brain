@@ -40,9 +40,12 @@ wins.
      multi-paragraph, so do not fight shell quoting), then
      `node scripts/brain.mjs add-episode < episode.json` where episode.json is
      `{"source_id": "<id>", "source_locator": "<url>", "raw": "<full article text>", "occurred_at": "<article date or null>"}`.
-     `raw` is the article's whole text; brain.mjs scrubs it and dedupes on
-     (source_id, source_locator), so re-running the same URL is safe. Keep the
-     returned episode id -- the takeaways cite it.
+     `raw` is the article's whole text; brain.mjs scrubs it before the write. A
+     `(source_id, source_locator)` unique index guards against duplicates: a URL
+     already ingested fails the insert with a duplicate-key error. That is "already
+     captured," not a real failure -- find the existing episode with
+     `node scripts/brain.mjs list-episodes <source_id>` and reuse its id instead of
+     re-ingesting. Keep the episode id, new or existing -- the takeaways cite it.
    Chunking the article into retrievable spans is the ingest pipeline's job
    (lib/ingest, the clippings sweep), not this skill's; capturing the episode whole
    is enough, and the takeaways carry the quotes that matter.
