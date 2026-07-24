@@ -50,7 +50,7 @@ How it works:
 
 Core SQL API (signatures pulled from a live install; the README documents fewer parameters):
 
-```
+```sql
 graph.add_table(table_name oid, id_column text, columns text[], tenant_column text) -> void
 graph.add_table(table_name oid, id_columns text[], columns text[], tenant_column text) -> void
 graph.add_edge(from_table oid, from_column text, to_table oid, to_column text, label text,
@@ -95,7 +95,7 @@ Capabilities:
 
 Core SQL API:
 
-```
+```sql
 pgcontext.create_collection(name, table)
 pgcontext.register_vector(collection, vector_name, column, dims, metric)
 pgcontext.register_filter_column(...)
