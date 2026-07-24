@@ -50,3 +50,6 @@ next-env.d.ts
 # local teaching workspace (teach skill)
 .teach/
 .worktrees/
+
+# local tool runtime state (entire)
+.entire/

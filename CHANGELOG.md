@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.14.2
+
+Jul 22, 2026
+
+**Docs**
+
+- There is now a single living Polygres knowledge base at docs/reference/polygres.md. It gathers what we know about the Polygres platform and the Evokoa extensions (pgGraph, pgContext, and the new Pocket product) into one place that other AI sessions and other projects can reference, records that pgGraph is already pre-registered on the live brain tables but not yet built, notes that pgContext cannot yet coexist with pgvector, and holds the standing decisions about when to adopt each.
+- Added a BACKLOG.md at the repo root for capturing fuzzy, half-formed thoughts before they get lost -- things to come back to later, no structure or polish required.
+
+---
+
 ## v0.14.1
 
 Jul 21, 2026
