@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useState } from "react";
 import AddNodePanel from "@/components/AddNodePanel";
+import CompanionPanel from "@/components/CompanionPanel";
 import NodeDetailPanel from "@/components/NodeDetailPanel";
 import type { BrainEdge, BrainNode } from "@/components/types";
 
@@ -24,6 +25,7 @@ export default function BrainView() {
   const [selectedNode, setSelectedNode] = useState<BrainNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<BrainEdge | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showTalk, setShowTalk] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
@@ -83,6 +85,7 @@ export default function BrainView() {
 
   const runIngest = () => {
     setShowAdd(false);
+    setShowTalk(false);
     clearSelection();
     setIngesting(true);
     setIngestResult(null);
@@ -139,11 +142,23 @@ export default function BrainView() {
           style={styles.addButton}
           onClick={() => {
             setShowAdd(true);
+            setShowTalk(false);
             clearSelection();
             dismissIngest();
           }}
         >
           + add node
+        </button>
+        <button
+          style={styles.addButton}
+          onClick={() => {
+            setShowTalk(true);
+            setShowAdd(false);
+            clearSelection();
+            dismissIngest();
+          }}
+        >
+          talk
         </button>
         <button style={styles.addButton} disabled={ingesting} onClick={runIngest}>
           {ingesting ? "syncing sessions..." : "sync sessions"}
@@ -177,11 +192,21 @@ export default function BrainView() {
         />
       )}
 
-      {!showAdd && selectedNode && (
+      {!showAdd && showTalk && (
+        <CompanionPanel
+          nodes={nodes}
+          onClose={() => setShowTalk(false)}
+          // The talk stays open after a save: refresh the graph so the new
+          // node appears in the views, but do not steal focus from the chat.
+          onSaved={() => fetchGraph()}
+        />
+      )}
+
+      {!showAdd && !showTalk && selectedNode && (
         <NodeDetailPanel node={selectedNode} edges={edges} nodes={nodes} />
       )}
 
-      {!showAdd && !selectedNode && !selectedEdge && (ingestResult || ingestError) && (
+      {!showAdd && !showTalk && !selectedNode && !selectedEdge && (ingestResult || ingestError) && (
         <aside style={styles.panel}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
@@ -210,7 +235,7 @@ export default function BrainView() {
         </aside>
       )}
 
-      {!showAdd && selectedEdge && (
+      {!showAdd && !showTalk && selectedEdge && (
         <aside style={styles.panel}>
           <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 2, opacity: 0.6 }}>
             Connection

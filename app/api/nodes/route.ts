@@ -35,9 +35,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ node, edges }, { status: 201 });
   } catch (err) {
     await client.query("rollback");
+    // Never forward the raw driver error: it carries table and constraint
+    // names. Full detail to the server log; a fixed, cause-shaped message to
+    // the client. Same discipline as lib/ingest.ts and lib/companion.ts.
+    console.error("[nodes] insert failed:", err);
     const message = err instanceof Error ? err.message : String(err);
-    const clientFault = /foreign key|check constraint|invalid input syntax/i.test(message);
-    return NextResponse.json({ error: message }, { status: clientFault ? 400 : 503 });
+    // A bad targetId (e.g. one the companion proposed) is a foreign-key
+    // violation: the client's fault, and worth naming without leaking schema.
+    if (/foreign key/i.test(message)) {
+      return NextResponse.json(
+        { error: "a connection points at a node that does not exist" },
+        { status: 400 },
+      );
+    }
+    if (/check constraint|invalid input syntax/i.test(message)) {
+      return NextResponse.json({ error: "the node or a connection was rejected" }, { status: 400 });
+    }
+    return NextResponse.json({ error: "could not save the node" }, { status: 503 });
   } finally {
     client.release();
   }
