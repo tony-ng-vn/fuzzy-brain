@@ -12,7 +12,7 @@
 //   omitted because we keep the native 768 dims.
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pipeline, layer_norm, env } from "@huggingface/transformers";
+import { pipeline, layer_norm, mean_pooling, env } from "@huggingface/transformers";
 
 // Machine-local cache outside node_modules so a reinstall never re-downloads.
 env.cacheDir = join(homedir(), ".fuzzy-brain", "models");
@@ -36,10 +36,67 @@ function loadExtractor() {
 
 async function embed(prefix, texts) {
   const extractor = await loadExtractor();
+  return embedWithExtractor(extractor, prefix, texts);
+}
+
+function disposeTensors(...containers) {
+  const tensors = new Set();
+  const visited = new Set();
+  const collect = (value) => {
+    if (!value || typeof value !== "object" || visited.has(value)) return;
+    visited.add(value);
+    if (typeof value.dispose === "function" && Array.isArray(value.dims)) {
+      tensors.add(value);
+      return;
+    }
+    for (const child of Object.values(value)) collect(child);
+  };
+  for (const container of containers) collect(container);
+  for (const tensor of tensors) tensor.dispose();
+}
+
+export async function embedWithExtractor(extractor, prefix, texts) {
   const inputs = texts.map((t) => `${prefix}: ${String(t).slice(0, EMBED_CHAR_CAP)}`);
-  const pooled = await extractor(inputs, { pooling: "mean" });
-  const normalized = layer_norm(pooled, [pooled.dims[1]]).normalize(2, -1);
-  return normalized.tolist();
+  let modelInputs;
+  let outputs;
+  let pooled;
+  let layerNormalized;
+  let normalized;
+  try {
+    modelInputs = extractor.tokenizer(inputs, { padding: true, truncation: true });
+    outputs = await extractor.model(modelInputs);
+    const hidden = outputs.last_hidden_state ?? outputs.logits ?? outputs.token_embeddings;
+    if (!hidden) throw new Error("embedding model returned no hidden state");
+    pooled = mean_pooling(hidden, modelInputs.attention_mask);
+    layerNormalized = layer_norm(pooled, [pooled.dims[1]]);
+    normalized = layerNormalized.normalize(2, -1);
+    return normalized.tolist();
+  } finally {
+    disposeTensors(normalized, layerNormalized, pooled, outputs, modelInputs);
+  }
+}
+
+export async function disposeEmbeddingModel() {
+  const pending = extractorPromise;
+  extractorPromise = null;
+  await disposeExtractorPromise(pending);
+}
+
+export async function disposeExtractorPromise(pending) {
+  if (!pending) return;
+  let extractor;
+  try {
+    extractor = await pending;
+  } catch {
+    // A failed model load has nothing to dispose. Cleanup must not replay
+    // that failure after recall has deliberately fallen back to text search.
+    return;
+  }
+  try {
+    await extractor.dispose();
+  } catch {
+    // Disposal is best-effort cleanup and must not replace the real result.
+  }
 }
 
 /** Embed stored texts (evidence quotes, node text). Returns 768-float arrays. */

@@ -4,6 +4,35 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.16.0
+
+Aug 6, 2026
+
+**Data**
+
+- Deadlines and completion status now live in an append-only temporal event ledger, so the brain can know what is overdue, upcoming, or finished without rewriting old nodes or their raw words.
+- Automatic deadlines now require explicit deadline language and a current or future date, can be cleared through another append-only event, and render with the correct Los Angeles calendar date.
+- The two completed August goals are recorded as finished, and the Stripe Atlas offer remains active through August 5, 2027.
+
+**API**
+
+- A local MCP server now gives Codex and other compatible agents five guarded tools for recall, reminders, node reads, explicit memory capture, and explicit completion.
+- MCP writes now require matching explicit user command language in addition to the trusted local-client boundary.
+- The in-app and command-line node paths now recognize clear deadline language and create temporal metadata in the same transaction as the node.
+
+**Tools**
+
+- A macOS LaunchAgent can now ingest settled Claude Code and Codex sessions every hour into the unratified evidence store, then fill a bounded number of local embeddings; absolute executable paths and a cross-process lock keep scheduled and manual runs reliable.
+- Resumed sessions now append only their unseen turns, and malformed allowlists or settlement windows fail closed before any cloud write.
+- Embedding sweeps now process one document at a time, release native tensors, and refuse overlapping runs so unattended sync cannot exhaust the Mac.
+
+**Docs**
+
+- The companion ritual now distinguishes an explicit remember or completion command from ordinary conversation, and documents the fusion bridge's truth, privacy, reminder, and operating boundaries.
+- The fusion guide now includes a reproducible Codex registration command for a stable checkout.
+
+---
+
 ## v0.15.0
 
 Jul 21, 2026

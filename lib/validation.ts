@@ -1,3 +1,5 @@
+import { inferDeadline } from "../scripts/lib/temporal.mjs";
+
 export type ConnectionInput = { targetId: string; why: string };
 export type NodeInput = {
   type: string;
@@ -5,6 +7,8 @@ export type NodeInput = {
   body: string;
   raw: string;
   connections: ConnectionInput[];
+  deadlineAt: string | null;
+  deadlineOrigin: "derived" | null;
 };
 
 type Result = { ok: true; value: NodeInput } | { ok: false; error: string };
@@ -12,7 +16,7 @@ type Result = { ok: true; value: NodeInput } | { ok: false; error: string };
 // Shared by the API route and tests. The why rule lives here as well as in the
 // database CHECK constraint: a connection without a reason is rejected early.
 // Same for the raw rule: a node without its verbatim words is rejected early.
-export function validateNodeInput(input: unknown): Result {
+export function validateNodeInput(input: unknown, referenceDate = new Date()): Result {
   if (typeof input !== "object" || input === null) return { ok: false, error: "body must be a JSON object" };
   const r = input as Record<string, unknown>;
   const type = typeof r.type === "string" ? r.type.trim() : "";
@@ -35,5 +39,17 @@ export function validateNodeInput(input: unknown): Result {
     if (!why) return { ok: false, error: "every connection needs a why sentence" };
     connections.push({ targetId, why });
   }
-  return { ok: true, value: { type, title, body, raw, connections } };
+  const deadline = inferDeadline({ type, title, text: raw, referenceDate });
+  return {
+    ok: true,
+    value: {
+      type,
+      title,
+      body,
+      raw,
+      connections,
+      deadlineAt: deadline?.dueAt ?? null,
+      deadlineOrigin: deadline ? "derived" : null,
+    },
+  };
 }
