@@ -4,6 +4,18 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.17.1
+
+Aug 12, 2026
+
+**Tools**
+
+- Notes captured through the share sheet are now attributed the same way notes from every other source are, so recall treats them as Tony's own words and weighs them accordingly.
+  They were labelled with a capital T, which recall did not recognise, so those notes had been quietly missing the boost since the clippings sweep was written.
+  Notes already stored keep their old label, since evidence is never rewritten; anything captured from now on gets the boost.
+
+---
+
 ## v0.17.0
 
 Aug 12, 2026
