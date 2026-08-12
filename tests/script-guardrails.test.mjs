@@ -53,6 +53,17 @@ test("brain-cli uses the absolute current Node executable for launchd", async ()
   assert.doesNotMatch(source, /execFileSync\(["']node["']/);
 });
 
+test("the watch sweep resolves npx absolutely, and hands the child a Node to run", async () => {
+  const source = await import("node:fs").then(({ readFileSync }) =>
+    readFileSync(join(root, "scripts", "sweep-watch-items.mjs"), "utf8"),
+  );
+  // Same lesson as brain-cli above, one layer out: launchd's PATH has
+  // neither npx nor the node its shebang goes looking for.
+  assert.doesNotMatch(source, /execFileSync\(["']npx["']/);
+  assert.match(source, /execFileSync\(resolveNpxPath\(\)/);
+  assert.match(source, /PATH: `\$\{dirname\(process\.execPath\)\}/);
+});
+
 test("sweepTable: fills null rows and stops when the table is drained", async () => {
   const embedCalls = [];
   const updates = [];
