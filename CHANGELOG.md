@@ -4,6 +4,22 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.17.0
+
+Aug 12, 2026
+
+**Tools**
+
+- Video transcripts pasted into the todo app now land in the brain's evidence store on their own, one episode per video, with the title, channel, link, and the date it was watched kept alongside them.
+- Each transcript is stored in pieces cut at its own timestamps, so every piece opens with the moment it was said and a quote can be traced straight back to that point in the video.
+- Notes written about a video are stored as Tony's own words, which is the attribution recall leans on when it decides what is worth bringing up.
+- The hourly sync now runs this sweep between session ingest and embeddings, so a transcript pasted on the phone is searchable by the next cycle.
+  If the todo app's backend cannot be reached, that step is skipped and the rest of the sync still finishes.
+- Re-running is always safe: a video already captured is never stored twice, and a run that landed a transcript but never got to tell the app about it finishes that half on its next pass.
+- `npm run watch:sweep` runs the sweep by hand, and `--dry-run` reports what would land without writing anything anywhere.
+
+---
+
 ## v0.16.0
 
 Aug 6, 2026

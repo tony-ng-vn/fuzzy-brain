@@ -90,12 +90,24 @@ export async function runFusionSync({
     onError("ingest", error);
     return { ok: false, error: "session ingestion failed; completed batches remain saved and the next run can resume", output };
   }
+  // Before the embed sweep, so a transcript landed this cycle gets its
+  // vectors in the same cycle. Its failure is the one that does not stop
+  // the run: this is the only step reaching a backend off this Mac, and an
+  // outage there must not quietly freeze retrieval for everything else.
+  let watchItemsError = null;
+  try {
+    output.push(await run("sweep-watch-items.mjs", []));
+  } catch (error) {
+    onError("watch-items", error);
+    watchItemsError = "pasted video transcripts did not land; the next run retries them";
+  }
   try {
     output.push(await run("embed-sweep.mjs", ["--limit", String(embeddingLimit)]));
   } catch (error) {
     onError("embedding", error);
     return { ok: false, error: "session ingestion succeeded, but some embeddings remain pending", output };
   }
+  if (watchItemsError) return { ok: false, error: watchItemsError, output };
   return { ok: true, output };
 }
 

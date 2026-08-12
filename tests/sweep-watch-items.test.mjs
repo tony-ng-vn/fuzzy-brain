@@ -8,8 +8,15 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const { chunkTranscript, renderWatchItem, processWatchItems, resolveNpxPath, watchLocator, writeBackSql } =
-  await import(pathToFileURL(join(root, "scripts", "sweep-watch-items.mjs")));
+const {
+  chunkTranscript,
+  pendingWatchItemsSql,
+  processWatchItems,
+  renderWatchItem,
+  resolveNpxPath,
+  watchLocator,
+  writeBackSql,
+} = await import(pathToFileURL(join(root, "scripts", "sweep-watch-items.mjs")));
 const { scrubSensitivePatterns } = await import(pathToFileURL(join(root, "scripts", "brain.mjs")));
 
 const ITEM_ID = "11111111-2222-3333-4444-555555555555";
@@ -164,6 +171,13 @@ test("renderWatchItem: scrubbed text keeps offsets exact and no span re-triggers
   }
 });
 
+test("pendingWatchItemsSql: pending means a transcript exists and no episode was stamped", () => {
+  const sql = pendingWatchItemsSql();
+  assert.match(sql, /where transcript is not null and brain_episode_id is null/);
+  // The app's own queries never select transcript; this one has to.
+  assert.match(sql, /select id, video_id, url, title, channel, transcript, notes, completed_at/);
+});
+
 test("watchLocator and writeBackSql: one episode per video, and only uuids reach SQL", () => {
   assert.equal(watchLocator("dQw4w9WgXcQ"), "https://youtu.be/dQw4w9WgXcQ");
   assert.match(writeBackSql(ITEM_ID, EPISODE_ID), /update public\.watch_items/);
@@ -236,6 +250,22 @@ test("processWatchItems: lands a pending item and stamps the row with its episod
   assert.equal(updates.length, 1);
   assert.match(updates[0], new RegExp(`brain_episode_id = '${EPISODE_ID}'`));
   assert.match(updates[0], new RegExp(`where id = '${ITEM_ID}'`));
+});
+
+test("processWatchItems: an hour with nothing pasted does not touch the brain at all", () => {
+  let brainCalls = 0;
+  const { deps, submitted, updates } = fakeDeps({ rows: [] });
+  deps.ensureSource = () => {
+    brainCalls++;
+    return { id: "source-yt-1", exclusions: [] };
+  };
+
+  const counts = processWatchItems({}, deps);
+
+  assert.equal(counts.pending, 0);
+  assert.equal(brainCalls, 0, "an idle run should not even register the source row");
+  assert.equal(submitted.length, 0);
+  assert.equal(updates.length, 0);
 });
 
 test("processWatchItems: an item already captured is stamped, not ingested twice", () => {

@@ -223,13 +223,21 @@ function newCounts() {
 export function processWatchItems(cfg = {}, deps = {}) {
   const dryRun = cfg.dryRun ?? false;
   const query = deps.query ?? insforgeQuery;
+  const counts = newCounts();
+
+  // Ask what there is to do before touching the brain at all: most hours
+  // nothing has been pasted, and an idle run should write nothing, not
+  // even the source row it would need if there were work.
+  const rows = query(pendingWatchItemsSql()).rows ?? [];
+  counts.pending = rows.length;
+  if (rows.length === 0) return counts;
+
   const source = dryRun
     ? (deps.findSource ?? findSource)(SOURCE_KIND, SOURCE_LABEL)
     : (deps.ensureSource ?? ensureSource)(SOURCE_KIND, SOURCE_LABEL);
   const exclusions = source.exclusions ?? [];
   const listExisting = deps.listExisting ?? listExistingEpisodes;
   const submitChunk = deps.submitChunk ?? ((chunk) => cli("add-episode", [], chunk));
-  const counts = newCounts();
 
   const locators = new Map(
     source.id ? listExisting(source.id).map((e) => [e.source_locator, e.id]) : [],
@@ -252,11 +260,9 @@ export function processWatchItems(cfg = {}, deps = {}) {
       return false;
     }
   };
-  const rows = query(pendingWatchItemsSql()).rows ?? [];
   const pending = [];
 
   for (const row of rows) {
-    counts.pending++;
     // Scrub every field that lands in raw BEFORE rendering. brain.mjs
     // scrubs raw again on insert, and a placeholder is a different length
     // than what it replaced, so a miss here would shift every offset after

@@ -22,9 +22,29 @@ test("fusion sync ingests settled sessions before filling a bounded number of em
 
   assert.deepEqual(calls, [
     ["ingest-sessions.mjs", []],
+    ["sweep-watch-items.mjs", []],
     ["embed-sweep.mjs", ["--limit", "32"]],
   ]);
   assert.equal(result.ok, true);
+});
+
+test("fusion sync still fills embeddings when the watch-item sweep cannot reach its backend", async () => {
+  const calls = [];
+  const diagnostics = [];
+  const result = await runFusionSync({
+    run: async (script) => {
+      calls.push(script);
+      if (script === "sweep-watch-items.mjs") throw new Error("insforge unreachable");
+      return `${script} ok`;
+    },
+    onError: (stage, error) => diagnostics.push([stage, error.message]),
+  });
+
+  assert.deepEqual(calls, ["ingest-sessions.mjs", "sweep-watch-items.mjs", "embed-sweep.mjs"]);
+  assert.deepEqual(diagnostics, [["watch-items", "insforge unreachable"]]);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /next run retries them/);
+  assert.doesNotMatch(result.error, /DATABASE_URL|postgres/i);
 });
 
 test("fusion sync stops before embedding when ingestion fails", async () => {
