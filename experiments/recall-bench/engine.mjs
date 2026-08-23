@@ -669,7 +669,13 @@ export async function retrieve(client, query, ctx) {
   const sqlMs = Date.now() - sqlStart;
 
   let candidates = rows.map((row) => ({
-    id: row.id,
+    // memories.id is a bigint column, and node-postgres returns bigint as a
+    // JS string (avoiding precision loss above 2^53) rather than a number.
+    // Every id in the corpus JSON (targets, dup_group members, memoriesById
+    // keys) is a plain JS number, so leaving this a string makes every
+    // downstream `===` / Set/Map lookup silently fail -- ids here are dense
+    // 1..N, always well inside Number.isSafeInteger, so this cast is exact.
+    id: Number(row.id),
     laneRanks: row.lane_ranks ?? {},
     rrf: Number(row.rrf),
     rerankScore: null,
@@ -699,7 +705,7 @@ export async function retrieve(client, query, ctx) {
   const lanes = {};
   for (const row of rows) {
     for (const [lane, rnk] of Object.entries(row.lane_ranks ?? {})) {
-      (lanes[lane] ??= []).push({ id: row.id, rnk });
+      (lanes[lane] ??= []).push({ id: Number(row.id), rnk });
     }
   }
   for (const lane of Object.keys(lanes)) {
