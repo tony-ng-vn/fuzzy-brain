@@ -49,6 +49,41 @@ export const config = {
     clusters: 400,                 // topic clusters at 50K; scaled to 20_000 at 10M
     multiTargetShare: 0.0,         // headline test split is single-target on purpose (section 5)
     multiTargetCount: 300,         // separate reported set -> queries-multi.jsonl
+
+    // Additive knobs (section 4.1 names each family's mechanism but no
+    // numbers). Both exist because the family's designated solving lane has a
+    // measurable floor below which the family is unsolvable rather than hard.
+    typo: {
+      // A transposition inside a short word destroys most of its trigrams, so
+      // the trigram lane -- the only lane this family leaves standing -- can
+      // no longer reach the target. Six characters is where the corrupted
+      // token still shares enough trigrams to clear trigramThreshold.
+      minTermLength: 6,
+      // word_similarity divides by the QUERY's trigram count, so every extra
+      // clean term dilutes the corrupted one's contribution. One companion is
+      // enough to anchor the query topically without sinking the lane.
+      maxCleanTerms: 1,
+    },
+    partialRef: {
+      // The vague filler words are out-of-vocabulary by construction, so this
+      // family's OR lane is driven entirely by the (detail, noun) pair. When
+      // that pair co-occurs in more documents than the lane can rank, the
+      // target is not findable however good the engine is.
+      maxPairCoOccurrence: 10,
+    },
+  },
+
+  // The oracle ceiling (section 4.3) and its post-load verification.
+  oracle: {
+    bestLaneRankAt: 10,            // "best-lane-rank@10": the gate's k
+    gate: 0.97,                    // section 4.3's threshold
+    // Rounds of re-verbalize -> re-embed -> re-verify the repair loop will run
+    // before it reports a family as non-converging. Bounded on purpose: a
+    // family that cannot converge is a finding, not something to loop on.
+    repairRounds: 3,
+    // Re-verbalization draws from a seeded sub-stream keyed by qid and round,
+    // so a repaired corpus is as reproducible as an unrepaired one.
+    repairSeed: "fuzzy-brain-recall-bench-v1/repair",
   },
 
   lanes: {
