@@ -198,7 +198,7 @@ function checkFilterExclusion(qf, targetMemory) {
   return null;
 }
 
-function classifyFailure({ qf, targetId, targetMemory, result, profile, distractorIds, memoriesById }) {
+export function classifyFailure({ qf, targetId, targetMemory, result, profile, distractorIds, memoriesById, oracleLaneRanks }) {
   if (profile.filters) {
     const cause = checkFilterExclusion(qf, targetMemory);
     if (cause) return { cause, detail: 'an inferred metadata filter excluded the ground-truth target' };
@@ -206,7 +206,26 @@ function classifyFailure({ qf, targetId, targetMemory, result, profile, distract
 
   const laneHasTarget = Object.values(result.lanes ?? {}).some((ids) => ids.includes(targetId));
   if (!laneHasTarget) {
-    return { cause: 'not_retrieved', detail: 'target absent from every lane at configured depth; the certificate promised otherwise' };
+    // The verified oracle (load.mjs --verify-oracle's lane_ranks_measured),
+    // not this profile's own lane set, is what "the certificate promised"
+    // refers to. A profile that never runs the trigram lane (naive, fixedRrf)
+    // will always show laneHasTarget=false for a typo query only trigram
+    // solves; that is a profile limitation, not the generator bug this
+    // bucket exists to catch. Reserve not_retrieved for the case where no
+    // lane in the whole engine -- per the oracle -- reaches the target.
+    const solvingLanes = oracleLaneRanks
+      ? Object.entries(oracleLaneRanks).filter(([, rank]) => rank != null).map(([lane]) => lane)
+      : [];
+    if (solvingLanes.length === 0) {
+      return { cause: 'not_retrieved', detail: 'target absent from every lane at configured depth; the certificate promised otherwise' };
+    }
+    const missingFromProfile = solvingLanes.filter((lane) => !profile.lanes.includes(lane));
+    return {
+      cause: 'lost_in_fusion',
+      detail: missingFromProfile.length > 0
+        ? `oracle reaches the target via ${solvingLanes.join(', ')}, which this profile's lane set (${profile.lanes.join(', ')}) omits`
+        : `oracle reaches the target via ${solvingLanes.join(', ')}, all present in this profile, but it was outside the top 50 fused candidates`,
+    };
   }
 
   const top10 = result.hits.slice(0, 10);
@@ -412,6 +431,10 @@ async function main() {
           profile,
           distractorIds,
           memoriesById,
+          // Present once load.mjs --verify-oracle has run (DESIGN.md 4.3.1);
+          // absent (undefined) on a corpus that was never verified, in which
+          // case not_retrieved keeps its old, more conservative meaning.
+          oracleLaneRanks: f.query.certificate?.lane_ranks_measured,
         });
 
         byCause[cause] = (byCause[cause] ?? 0) + 1;
