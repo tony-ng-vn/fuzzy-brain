@@ -249,3 +249,112 @@ test("charTrigrams matches pg_trgm's show_trgm, which every trigram bound rests 
   const unrelated = wordSimilarityBounds("the skilet and the garlic", "totally unrelated words about puppies and leashes here");
   assert.ok(unrelated.upper < 0.5, `an unrelated document should not look like a match, got ${unrelated.upper}`);
 });
+
+// ---------------------------------------------------------------------------
+// Anchor resampling (2026-08-23 calibration decision). At the smoke1k scale
+// every test above uses, re-verbalizing alone always clears the certificate,
+// so it cannot exercise this path -- the failure it targets (a partial_ref
+// pair or typo_noisy token whose target memory was doomed from the start,
+// not merely misworded) only shows up once corpus density is high enough for
+// that to happen by coincidence. Measured 2026-08-23 at quality50k: 3/2,000
+// queries (2 partial_ref, 3 typo_noisy) needed a resampled anchor rather than
+// a re-verbalized one. quality50k is therefore the smallest tier that
+// actually exercises this code path, which is why this test (unlike every
+// other one in this file) does not use smoke1k.
+// ---------------------------------------------------------------------------
+
+test("quality50k: anchor resampling converges the corpus to fully solvable, and its evidence lands in both the stats and the written queries", async (t) => {
+  if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
+    t.skip("gen-corpus.mjs / config.mjs not landed yet");
+    return;
+  }
+  const { generateMemories, buildMemoryIndex, generateQueries, getRepairStats } = await import(pathToFileURL(genCorpusPath));
+  const { config, resolveTier } = await import(pathToFileURL(configPath));
+  const tier = resolveTier("quality50k");
+
+  const memories = [...generateMemories(tier)];
+  const index = buildMemoryIndex(memories);
+  const dev = generateQueries(tier, "dev", index);
+  const test = generateQueries(tier, "test", index);
+  const all = [...dev, ...test];
+
+  for (const q of all) {
+    assert.equal(q.certificate.solvable, true, `${q.qid} must certify solvable once repairAnchors has run`);
+  }
+
+  const stats = getRepairStats(tier);
+  assert.equal(stats.failures.length, 0, "repairAnchors must not report any unresolved failures at 50K");
+  assert.ok(
+    stats.anchorResampled.length > 0,
+    "this run must actually exercise anchor resampling and not just re-verbalize -- " +
+    "if this ever reads 0, the corpus got easier (or the mix changed) and this test's premise needs revisiting",
+  );
+  for (const r of stats.anchorResampled) {
+    assert.ok(
+      r.family === "partial_ref" || r.family === "typo_noisy",
+      `anchor resampling only applies to partial_ref/typo_noisy, got ${r.family} for ${r.qid}`,
+    );
+    assert.ok(
+      r.attempts >= 1 && r.attempts <= config.oracle.anchorResampleAttempts,
+      `${r.qid} used ${r.attempts} attempts, outside the configured bound of ${config.oracle.anchorResampleAttempts}`,
+    );
+  }
+
+  // The written record carries the same evidence as the in-memory stats, so
+  // a caller reading queries-*.jsonl off disk (not just this process) can see
+  // which queries needed a resampled anchor -- not just a re-verbalized one.
+  const resampledQids = new Set(stats.anchorResampled.map((r) => r.qid));
+  for (const q of all) {
+    if (resampledQids.has(q.qid)) {
+      assert.ok(q.diagnostics.anchor_resample_attempts >= 1, `${q.qid} is in repairStats.anchorResampled but its own diagnostics say 0 attempts`);
+    } else {
+      assert.equal(q.diagnostics.anchor_resample_attempts, 0, `${q.qid} was not anchor-resampled, so its diagnostics should read 0`);
+    }
+  }
+});
+
+// Expensive on purpose, and deliberately not a smoke1k test: repairAnchors
+// runs once inside buildPlan, over dev+test cases TOGETHER, before any
+// caller sees the memories (see gen-corpus.mjs's own comment on
+// repairAnchors) -- specifically so a caller asking for only the test split
+// repairs the exact same corpus a caller asking for both splits would. That
+// invariant cannot be checked against smoke1k, because at that scale nothing
+// needs the anchor-resample path in the first place, so there is no patch
+// whose split-order-independence would be worth proving. Two real subprocess
+// runs of quality50k, not one process asking twice, because generateMemories
+// memoizes per-process (see the cross-process determinism test above) and a
+// same-process check would prove the cache works, not that two independent
+// runs agree.
+test("quality50k: anchor resampling is split-order-independent -- '--split test' alone repairs the identical corpus '--split both' would", async (t) => {
+  if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
+    t.skip("gen-corpus.mjs / config.mjs not landed yet");
+    return;
+  }
+  const scriptFor = (splits) => `
+    const { generateMemories, buildMemoryIndex, generateQueries } = await import(${JSON.stringify(pathToFileURL(genCorpusPath).href)});
+    const { resolveTier } = await import(${JSON.stringify(pathToFileURL(configPath).href)});
+    const tier = resolveTier("quality50k");
+    const memories = [...generateMemories(tier)];
+    const index = buildMemoryIndex(memories);
+    const out = { memories };
+    for (const split of ${JSON.stringify(splits)}) out[split] = generateQueries(tier, split, index);
+    process.stdout.write(JSON.stringify(out));
+  `;
+  const run = (splits) => {
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", scriptFor(splits)], { maxBuffer: 1 << 29 });
+    assert.ok(out.length > 1_000_000, `child process produced only ${out.length} bytes for quality50k -- looks truncated or empty`);
+    return JSON.parse(out.toString());
+  };
+
+  const both = run(["dev", "test"]);
+  const testOnly = run(["test"]);
+
+  assert.deepEqual(
+    testOnly.memories, both.memories,
+    "a caller asking only for the test split must see the SAME repaired memories (including any anchor-resampled content) as one asking for both",
+  );
+  assert.deepEqual(
+    testOnly.test, both.test,
+    "the test split's queries, including any anchor-resampled text, must be identical regardless of which splits were requested",
+  );
+});
