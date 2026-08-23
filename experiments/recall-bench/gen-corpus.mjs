@@ -1012,10 +1012,14 @@ function buildPlan(tier) {
     declaredFilters: c.declaredFilters,
     targets: remap(c.targetContentIds),
     distractorIds: remap(c.distractorContentIds ?? []),
-    // Everything the repair loop needs to re-verbalize this query WITHOUT
-    // touching the memory it points at (load.mjs --verify-oracle --repair).
-    // The memories are already in the database and already embedded by then,
-    // so a repair that regenerated the target would invalidate the corpus.
+    // Everything load.mjs --verify-oracle's POST-load repair loop needs to
+    // re-verbalize this query WITHOUT touching the memory it points at: by
+    // then the memories are already in the database and already embedded, so
+    // a repair that regenerated the target would invalidate the corpus.
+    // repairAnchors below runs PRE-load, while the corpus is still plain
+    // objects in memory, so it is the one place a doomed target's content is
+    // allowed to change (DESIGN.md 4.3.1's text-only boundary is about the
+    // post-load loop specifically, not this one).
     regen: c.frame ? { frame: c.frame } : c.typo ? { typo: c.typo } : c.partialRef ? { partialRef: c.partialRef } : null,
   }));
   const finalMultiCases = multiCases.map((c) => ({
@@ -1028,13 +1032,304 @@ function buildPlan(tier) {
     distractorIds: [],
   }));
 
-  return { tier, memories: finalMemories, cases: finalCases, multiCases: finalMultiCases };
+  // Repairs finalMemories / finalCases in place -- see repairAnchors' own
+  // comment for why this has to run here (once, both splits together,
+  // before any caller sees the plan) rather than inside generateQueries.
+  const repairStats = repairAnchors(tier, finalMemories, finalCases);
+
+  return { tier, memories: finalMemories, cases: finalCases, multiCases: finalMultiCases, repairStats };
+}
+
+// ---------------------------------------------------------------------------
+// Anchor resampling (calibration decision, 2026-08-23): at 50K, a handful of
+// partial_ref and typo_noisy queries fail the offline certificate even after
+// every re-verbalize round, because re-verbalizing only rephrases the query
+// around content the target memory ALREADY carries -- for partial_ref that is
+// whichever (detail, noun) pair happens to already sit in the target's body
+// (reverbalizeQuery searches at most its 12 rarest words), and for typo_noisy
+// it is the same planted word under a different corruption. Neither can fix a
+// target whose planted anchor was doomed from the start.
+//
+// These two functions instead draw a BRAND NEW candidate anchor -- a fresh
+// (topic, noun, detail) triple, or a fresh rare word -- from a forked
+// sub-stream, and verify it against the real, already-built corpus index
+// BEFORE it is ever planted: partial_ref checks the exact co-occurrence count
+// certifyQuery itself will measure, typo_noisy checks the exact trigram
+// ceiling. So certification here CONFIRMS a candidate rather than discovering
+// a failure after the fact (evaluator's calibration item 2). Bounded by
+// config.oracle.anchorResampleAttempts, deterministic, called only from
+// repairAnchors below, and never touching thresholds or familyMix.
+// ---------------------------------------------------------------------------
+
+function coOccurrenceCount(index, wordA, wordB) {
+  const pa = index.postings.get(approxStem(wordA));
+  const pb = index.postings.get(approxStem(wordB));
+  if (!pa || !pb) return 0;
+  let co = 0;
+  for (const id of pa) if (pb.has(id)) co++;
+  return co;
+}
+
+function resamplePartialRefAnchor(q, index, tier) {
+  const r = makeRng(`${config.oracle.repairSeed}::anchor::${tier.name ?? 'adhoc'}::${q.qid}`);
+  for (let attempt = 0; attempt < config.oracle.anchorResampleAttempts; attempt++) {
+    const ar = r.fork(`attempt:${attempt}`);
+    const topic = topicById(ar.int(0, TOPICS.length - 1));
+    const noun = ar.pick(topic.concreteNouns);
+    const detail = ar.pick(DETAIL_WORDS);
+    // Verify BEFORE planting: this IS the OR-lane ceiling certifyQuery will
+    // measure (DESIGN.md 4.2 rule 2), computed against the corpus that
+    // already exists rather than guessed at.
+    if (coOccurrenceCount(index, detail, noun) > config.corpus.partialRef.maxPairCoOccurrence) continue;
+    const spec = buildStandaloneMemorySpec(ar.fork('spec'), topic, tier, { mustInclude: [noun, detail] });
+    const text = renderPartialRefQuery(ar.fork('render'), detail, noun);
+    return { spec, text, meta: { detail, noun }, attempt };
+  }
+  return null;
+}
+
+function resampleTypoNoisyAnchor(q, index, tier) {
+  const r = makeRng(`${config.oracle.repairSeed}::anchor::${tier.name ?? 'adhoc'}::${q.qid}`);
+  for (let attempt = 0; attempt < config.oracle.anchorResampleAttempts; attempt++) {
+    const ar = r.fork(`attempt:${attempt}`);
+    const topic = topicById(ar.int(0, TOPICS.length - 1));
+    const word = makeRareWord(ar.fork('typo-term'));
+    if (word.length < config.corpus.typo.minTermLength) continue;
+    // Global uniqueness, verified rather than assumed: makeRareWord draws
+    // from a small phonetic alphabet that can and does repeat at 50K density,
+    // and a token already sitting elsewhere in the corpus does not
+    // distinguish the target (DESIGN.md 4.2 rule 1).
+    if (index.postings.has(approxStem(word))) continue;
+    const companions = topic.concreteNouns.filter((w) => w.length >= config.corpus.typo.minTermLength);
+    const companion = companions.length && config.corpus.typo.maxCleanTerms > 0 ? ar.pick(companions) : null;
+    const spec = buildStandaloneMemorySpec(ar.fork('spec'), topic, tier, { mustInclude: [word, companion].filter(Boolean) });
+    const { text } = renderTypoQuery(ar.fork('render'), word, companion);
+    // Verify BEFORE planting: the exact trigram-ceiling function the
+    // certificate uses, scored against the candidate's own would-be content
+    // and the rest of the already-built corpus (targetId is excluded from
+    // the ceiling regardless of what content currently sits under it).
+    const ceiling = trigramLaneCeiling(text, index, q.targets[0], config.lanes.trigramThreshold, `${spec.title} ${spec.body}`);
+    if (ceiling == null || ceiling > config.oracle.bestLaneRankAt) continue;
+    return { spec, text, meta: { term: word, companion }, attempt };
+  }
+  return null;
+}
+
+// Mutates memoryId's content in place (Object.assign onto the existing
+// object, never a replacement object) because finalMemories, index.byId, and
+// any query that already targets this id all hold the SAME reference; a
+// spread-into-a-new-object would desync them silently. Keeps
+// index.postings / index.df / index.trigramPostings / index.dupGroups
+// consistent with the new content so a certifyQuery call made against this
+// index immediately afterward measures the corpus that was actually planted.
+function replaceMemoryContent(index, memoryId, newFields) {
+  const target = index.byId.get(memoryId);
+  if (!target) throw new Error(`replaceMemoryContent: memory ${memoryId} not found in index`);
+  const oldStems = new Set(tokenizeStem(`${target.title} ${target.raw} ${target.body}`));
+  const oldTrigrams = index.trigramPostings ? charTrigrams(`${target.title} ${target.body}`) : null;
+  const oldDupGroup = target.dup_group;
+
+  Object.assign(target, newFields);
+
+  const newStems = new Set(tokenizeStem(`${target.title} ${target.raw} ${target.body}`));
+  for (const stem of oldStems) {
+    if (newStems.has(stem)) continue;
+    const bucket = index.postings.get(stem);
+    if (bucket) { bucket.delete(memoryId); if (bucket.size === 0) index.postings.delete(stem); }
+    const df = index.df.get(stem);
+    if (df != null) { if (df <= 1) index.df.delete(stem); else index.df.set(stem, df - 1); }
+  }
+  for (const stem of newStems) {
+    if (oldStems.has(stem)) continue;
+    if (!index.postings.has(stem)) index.postings.set(stem, new Set());
+    index.postings.get(stem).add(memoryId);
+    index.df.set(stem, (index.df.get(stem) ?? 0) + 1);
+  }
+
+  if (index.trigramPostings) {
+    const newTrigrams = charTrigrams(`${target.title} ${target.body}`);
+    for (const g of oldTrigrams) {
+      if (newTrigrams.has(g)) continue;
+      const bucket = index.trigramPostings.get(g);
+      if (bucket) {
+        const i = bucket.indexOf(memoryId);
+        if (i !== -1) bucket.splice(i, 1);
+        if (bucket.length === 0) index.trigramPostings.delete(g);
+      }
+    }
+    for (const g of newTrigrams) {
+      if (oldTrigrams.has(g)) continue;
+      let bucket = index.trigramPostings.get(g);
+      if (!bucket) { bucket = []; index.trigramPostings.set(g, bucket); }
+      bucket.push(memoryId);
+    }
+  }
+
+  if (oldDupGroup !== target.dup_group) {
+    if (oldDupGroup != null) {
+      const arr = index.dupGroups.get(oldDupGroup);
+      if (arr) index.dupGroups.set(oldDupGroup, arr.filter((id) => id !== memoryId));
+    }
+    if (target.dup_group != null) {
+      if (!index.dupGroups.has(target.dup_group)) index.dupGroups.set(target.dup_group, []);
+      index.dupGroups.get(target.dup_group).push(memoryId);
+    }
+  }
+
+  return target;
+}
+
+// Runs once per plan, over dev+test cases TOGETHER in a fixed order, before
+// any caller (generateMemories, generateQueries for either split, in either
+// order) ever sees the memories -- so "gen-corpus --split test" alone and
+// "--split both" repair the exact same failures the exact same way, and
+// memories.jsonl is never written with content a later call would still
+// change (DESIGN.md section 1: "same seeds in, same corpus out"). Mutates
+// finalMemories / finalCases in place; returns stats for the CLI to report.
+function repairAnchors(tier, finalMemories, finalCases) {
+  const index = buildMemoryIndex(finalMemories);
+  const stats = { reverbalized: [], anchorResampled: [], failures: [] };
+
+  // qid mirrors finalizeQuery's own scheme exactly, so reverbalizeQuery's
+  // existing seed (keyed by qid) draws identically to what generateQueries
+  // used to produce before repair moved here: no seed shift for the existing
+  // mechanism, only a new fork label (above) for the new one.
+  const splitCounters = {};
+  const qidByCase = new Map();
+  for (const c of finalCases) {
+    splitCounters[c.split] = (splitCounters[c.split] ?? 0) + 1;
+    qidByCase.set(c, `${c.split}-${String(splitCounters[c.split]).padStart(6, '0')}`);
+  }
+
+  // Patching a memory's content can shift ANOTHER query's AND/OR ceiling by
+  // +/-1, but only for a query whose own stems intersect a stem the patch
+  // added or removed -- that is the only way a postings count the
+  // certificate reads can change. Tracking that touched-stem set is what
+  // lets the second pass below re-check exactly the queries a patch could
+  // have affected, instead of re-running the full certify pass (every
+  // query's trigram-lane ceiling is O(corpus) at the real-vector tiers) a
+  // second and third time over all 2,000 queries for a handful of patches.
+  const touchedStems = new Set();
+
+  // Stores the final certificate on `c` either way, so generateQueries can
+  // reuse it instead of re-certifying (see generateQueries's own comment).
+  function checkAndRepair(c) {
+    const qid = qidByCase.get(c);
+    const checkObj = {
+      qid, family: c.family, text: c.text, targets: c.targets,
+      diagnostics: { distractor_ids: c.distractorIds ?? [], regen: c.regen },
+    };
+    let certificate = certifyQuery(checkObj, index, tier);
+    if (certificate.solvable) { c.certificate = certificate; return true; }
+
+    let fixed = false;
+    for (let round = 1; round <= config.oracle.repairRounds && !fixed; round++) {
+      const text = reverbalizeQuery(checkObj, index, tier, round);
+      if (!text) break;
+      checkObj.text = text;
+      certificate = certifyQuery(checkObj, index, tier);
+      if (certificate.solvable) {
+        c.text = text;
+        stats.reverbalized.push(qid);
+        fixed = true;
+      }
+    }
+
+    if (!fixed && (c.family === 'partial_ref' || c.family === 'typo_noisy')) {
+      const resampled = c.family === 'partial_ref'
+        ? resamplePartialRefAnchor(checkObj, index, tier)
+        : resampleTypoNoisyAnchor(checkObj, index, tier);
+      if (resampled) {
+        const targetId = checkObj.targets[0];
+        const before = index.byId.get(targetId);
+        const oldStems = new Set(tokenizeStem(`${before.title} ${before.raw} ${before.body}`));
+        replaceMemoryContent(index, targetId, resampled.spec);
+        const after = index.byId.get(targetId);
+        const newStems = new Set(tokenizeStem(`${after.title} ${after.raw} ${after.body}`));
+        // A stem's posting count moving by 1 can only flip a ceiling that
+        // currently sits within a few of the gate -- for a stem that already
+        // sits in hundreds of documents (most of a body's ordinary filler
+        // vocabulary), +/-1 changes nothing a threshold of 10 will ever see.
+        // Filtering to low-df stems keeps pass 2 targeted at the handful of
+        // OTHER queries a patch could plausibly have affected, instead of
+        // re-certifying (O(corpus) trigram lane included) most of the split
+        // just because a patch's filler sentences happened to share common
+        // words with them.
+        const DF_RISK_CEILING = 500;
+        for (const s of oldStems) {
+          if (newStems.has(s)) continue;
+          if ((index.df.get(s) ?? 0) <= DF_RISK_CEILING) touchedStems.add(s);
+        }
+        for (const s of newStems) {
+          if (oldStems.has(s)) continue;
+          if ((index.df.get(s) ?? 0) <= DF_RISK_CEILING) touchedStems.add(s);
+        }
+
+        c.text = resampled.text;
+        c.regen = c.family === 'typo_noisy' ? { typo: resampled.meta } : { partialRef: resampled.meta };
+        c.anchor_resample_attempts = resampled.attempt + 1;
+        checkObj.text = resampled.text;
+        certificate = certifyQuery(checkObj, index, tier);
+        if (certificate.solvable) {
+          fixed = true;
+          stats.anchorResampled.push({ qid, family: c.family, attempts: resampled.attempt + 1 });
+        }
+      }
+    }
+
+    c.certificate = certificate;
+    return fixed;
+  }
+
+  // Pass 1: the one unavoidable full certify pass -- same total work the old
+  // per-split generateQueries calls already did, just done once instead of
+  // once per split. Repairs whatever fails on first measurement.
+  const failing = new Set();
+  for (const c of finalCases) {
+    if (!checkAndRepair(c)) failing.add(c);
+  }
+
+  // Pass 2: targeted, not another full sweep. Only cases whose own stems
+  // overlap something pass 1's patches touched could have flipped from
+  // solvable to not; re-measure exactly those (a small set in practice --
+  // partial_ref's fresh (detail, noun) pairs draw from shared pools,
+  // typo_noisy's fresh rare word never collides with anything real by
+  // construction) and repair anything that did flip.
+  if (touchedStems.size > 0) {
+    for (const c of finalCases) {
+      if (failing.has(c) || !c.certificate.solvable) continue;
+      const stems = tokenizeStem(c.text);
+      if (!stems.some((s) => touchedStems.has(s))) continue;
+      if (!checkAndRepair(c)) failing.add(c);
+    }
+  }
+
+  stats.failures = [...failing].map((c) => ({
+    qid: qidByCase.get(c), family: c.family, text: c.text, certificate: c.certificate,
+  }));
+  if (stats.failures.length === 0) return stats;
+
+  const byFamily = {};
+  for (const f of stats.failures) byFamily[f.family] = (byFamily[f.family] ?? 0) + 1;
+  throw new Error(
+    `gen-corpus: ${stats.failures.length} queries failed the offline solvability certificate after ` +
+    `re-verbalize (${config.oracle.repairRounds} rounds) and anchor resampling (${config.oracle.anchorResampleAttempts} attempts) ` +
+    `(DESIGN.md 4.2). By family: ${JSON.stringify(byFamily)}. First failures: ${JSON.stringify(stats.failures.slice(0, 5))}`,
+  );
 }
 
 function getPlan(tier) {
   const key = planCacheKey(tier);
   if (!planCache.has(key)) planCache.set(key, buildPlan(tier));
   return planCache.get(key);
+}
+
+// Generation-time retry statistics (evaluator's report requirement): how many
+// queries needed re-verbalization vs. full anchor resampling, and how many
+// resample attempts each one took. Empty arrays mean the corpus certified
+// clean on the first pass.
+export function getRepairStats(tier) {
+  return getPlan(tier).repairStats;
 }
 
 // ---------------------------------------------------------------------------
@@ -1061,6 +1356,11 @@ function finalizeQuery(caseObj, indexInSplit) {
       difficulty: caseObj.difficulty,
       regen: caseObj.regen ?? null,
       repair_round: 0,
+      // Set by repairAnchors (pre-load, buildPlan) when re-verbalizing alone
+      // could not clear the certificate and the underlying memory's planted
+      // anchor had to be resampled instead. 0 means the first draft (or a
+      // plain re-verbalize) already certified solvable.
+      anchor_resample_attempts: caseObj.anchor_resample_attempts ?? 0,
     },
   };
 }
@@ -1192,11 +1492,19 @@ function trigramPostings(index) {
   return postings;
 }
 
-function trigramLaneCeiling(queryText, index, targetId, threshold) {
+// targetTextOverride lets a caller ask "what would this lane's ceiling be if
+// targetId's content were REPLACED by this text?" without mutating the index
+// first -- everything past the targetLower check already excludes targetId
+// from the shortlist/count, so the rest of the corpus's postings are still
+// the right thing to check a hypothetical replacement against. This is what
+// makes anchor resampling (below) a verify-before-plant check rather than a
+// guess: the candidate is scored against the real, already-built corpus.
+function trigramLaneCeiling(queryText, index, targetId, threshold, targetTextOverride = null) {
   const target = index.byId.get(targetId);
   const A = charTrigrams(queryText);
   if (A.size === 0) return null;
-  const targetLower = wordSimilarityLowerBound(queryText, `${target.title} ${target.body}`);
+  const targetText = targetTextOverride ?? `${target.title} ${target.body}`;
+  const targetLower = wordSimilarityLowerBound(queryText, targetText);
   if (targetLower < threshold) return null;
 
   const postings = trigramPostings(index);
@@ -1423,42 +1731,21 @@ export function generateQueries(tier, split, index) {
   if (split !== 'dev' && split !== 'test') throw new Error(`generateQueries: split must be "dev" or "test", got "${split}"`);
   const plan = getPlan(tier);
   const splitCases = plan.cases.filter((c) => c.split === split);
-  const queries = [];
-  const failures = [];
-  const repaired = [];
-  splitCases.forEach((c, i) => {
+  // getPlan(tier) already ran repairAnchors (re-verbalize, then anchor
+  // resampling for partial_ref / typo_noisy) over dev+test together, and it
+  // throws if anything is still unsolvable -- so by the time this line runs
+  // every case in the plan IS solvable. Recomputing certifyQuery here would
+  // be a second full-corpus certification pass (expensive at the real-vector
+  // tiers, where every query's trigram-lane ceiling is O(corpus)) for a
+  // result that is already known; certifyQuery is still exported and callers
+  // that want a fresh, independent measurement can call it directly (e.g.
+  // load.mjs --verify-oracle does, against the loaded corpus, which is a
+  // different index entirely).
+  return splitCases.map((c, i) => {
     const draft = finalizeQuery(c, i + 1);
-    draft.certificate = certifyQuery(draft, index, tier);
-    // The offline certificate can reject a first draft (a partial_ref pair
-    // that turned out common once the whole corpus existed, a typo whose
-    // corrupted token missed trigramThreshold). Re-verbalizing costs nothing
-    // here, so it happens before the query is ever written to disk.
-    for (let round = 1; round <= config.oracle.repairRounds && !draft.certificate.solvable; round++) {
-      const text = reverbalizeQuery(draft, index, tier, round);
-      if (!text) break;
-      draft.text = text;
-      draft.diagnostics.repair_round = round;
-      draft.certificate = certifyQuery(draft, index, tier);
-      if (draft.certificate.solvable) repaired.push(draft.qid);
-    }
-    if (!draft.certificate.solvable) {
-      failures.push({ qid: draft.qid, family: draft.family, text: draft.text, certificate: draft.certificate });
-    }
-    queries.push(draft);
+    draft.certificate = c.certificate ?? certifyQuery(draft, index, tier);
+    return draft;
   });
-  if (failures.length > 0) {
-    const byFamily = {};
-    for (const f of failures) byFamily[f.family] = (byFamily[f.family] ?? 0) + 1;
-    throw new Error(
-      `generateQueries: ${failures.length}/${queries.length} ${split} queries failed the offline solvability certificate ` +
-      `after ${config.oracle.repairRounds} re-verbalize rounds (DESIGN.md 4.2). By family: ${JSON.stringify(byFamily)}. ` +
-      `First failures: ${JSON.stringify(failures.slice(0, 5))}`,
-    );
-  }
-  if (repaired.length > 0) {
-    console.warn(`gen-corpus: re-verbalized ${repaired.length} ${split} queries to clear the offline certificate (${repaired.slice(0, 5).join(', ')}${repaired.length > 5 ? ' ...' : ''})`);
-  }
-  return queries;
 }
 
 // Additive: DESIGN.md 3.3 assigns this module writing queries-multi.jsonl,
@@ -1723,6 +2010,21 @@ async function main() {
   const memoriesPath = path.join(outDir, 'memories.jsonl');
   const memCount = await writeJsonl(memoriesPath, generateMemories(tierCfg));
   console.log(`wrote ${memCount} memories -> ${memoriesPath}`);
+
+  // generateMemories(tierCfg) above already ran the full repair pass (see
+  // repairAnchors): re-verbalization and, where that alone cannot converge,
+  // anchor resampling for partial_ref / typo_noisy. Report what it did.
+  const repairStats = getRepairStats(tierCfg);
+  console.log(
+    `repair: ${repairStats.reverbalized.length} re-verbalized, ${repairStats.anchorResampled.length} anchor-resampled, ` +
+    `${repairStats.failures.length} unresolved`,
+  );
+  if (repairStats.anchorResampled.length > 0) {
+    const maxAttempts = Math.max(...repairStats.anchorResampled.map((r) => r.attempts));
+    const byFamily = {};
+    for (const r of repairStats.anchorResampled) byFamily[r.family] = (byFamily[r.family] ?? 0) + 1;
+    console.log(`  anchor-resampled by family: ${JSON.stringify(byFamily)}, max attempts used: ${maxAttempts}`);
+  }
 
   const memories = await loadJsonlArray(memoriesPath);
   const index = buildMemoryIndex(memories);
