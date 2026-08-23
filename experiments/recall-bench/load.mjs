@@ -705,6 +705,15 @@ async function runVerifyOracle(tier, args) {
     await writeJsonl(testPath, test);
     await writeFile(cachePath, Buffer.from(vectors.buffer, vectors.byteOffset, vectors.byteLength));
 
+    // Repair changed query text, so any CORPUS.lock written before this run
+    // now pins query hashes that no longer match. Say so loudly rather than
+    // leaving bench-recall to fail a hash check with no explanation: the fix
+    // is to re-run gen-corpus --verify, which is the freeze step, and DESIGN.md
+    // 4.4 puts repair before the freeze for exactly this reason.
+    if (result.repairedQids.length > 0 && existsSync(join(outDir, 'CORPUS.lock'))) {
+      console.log(`  note: ${result.repairedQids.length} queries were repaired, so CORPUS.lock's query hashes are stale -- re-run gen-corpus.mjs --verify to re-freeze`);
+    }
+
     const oraclePath = join(outDir, 'oracle.json');
     const provisional = existsSync(oraclePath) ? JSON.parse(await readFile(oraclePath, 'utf8')) : null;
     const oracle = {

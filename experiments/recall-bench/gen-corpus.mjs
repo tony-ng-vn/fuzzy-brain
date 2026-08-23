@@ -118,7 +118,7 @@ function trigramsOfWord(word) {
   return grams;
 }
 
-function charTrigrams(s) {
+export function charTrigrams(s) {
   const grams = new Set();
   for (const w of trigramWords(s)) for (const g of trigramsOfWord(w)) grams.add(g);
   return grams;
@@ -1749,6 +1749,12 @@ async function main() {
     console.log(`oracle written -> ${oraclePath} (bestLaneRankAt10=${oracle.overall.bestLaneRankAt10.toFixed(4)}, gate ${oracle.gate.passed ? 'PASSED' : 'FAILED'})`);
 
     const memoriesSha256 = await sha256OfFile(memoriesPath);
+    // The query files are hashed too, not just memories.jsonl. load.mjs
+    // --verify-oracle can rewrite query TEXT during repair, so a lock that
+    // pinned only the memories would claim to freeze a corpus whose questions
+    // had since changed. Repair belongs before the freeze (DESIGN.md 4.4 step
+    // 6), and hashing the query files is what makes that ordering checkable
+    // rather than a convention.
     const lock = {
       tier: args.tier,
       generatedAt: new Date().toISOString(),
@@ -1756,6 +1762,8 @@ async function main() {
       familyMix: tierCfg.familyMix,
       configHash: createHash('sha256').update(JSON.stringify(config.corpus)).digest('hex'),
       memoriesSha256,
+      queriesDevSha256: await sha256OfFile(path.join(outDir, 'queries-dev.jsonl')),
+      queriesTestSha256: await sha256OfFile(path.join(outDir, 'queries-test.jsonl')),
     };
     const lockPath = path.join(outDir, 'CORPUS.lock');
     await writeFile(lockPath, JSON.stringify(lock, null, 2));
