@@ -617,6 +617,22 @@ async function applyEfSearch(client, value) {
   lastEfSearch.set(client, value);
 }
 
+// The AND/OR lane bind parameters, derived from parsed query features.
+// Extracted so load.mjs --verify-oracle can measure the SAME lanes the engine
+// runs: the verify step needs each lane's rank at full depth, which retrieve()
+// cannot report (its `lanes` map is assembled from the fused top-50), so it
+// issues its own statement -- and the two must not drift apart in how they
+// build the OR disjunction or the fragment bar.
+export function lexicalQueryParams(qf) {
+  const contentTerms = [...new Set(qf.terms.filter((t) => !STOPWORDS.has(t)))].slice(0, 32);
+  return {
+    raw: qf.raw,
+    contentTerms,
+    orQuery: contentTerms.map(quoteLexeme).join(" | ") || null,
+    fragmentBar: Math.min(2, contentTerms.length),
+  };
+}
+
 export async function retrieve(client, query, ctx) {
   const t0 = Date.now();
   // Section 3.2's hard rule: engine.mjs sees {text, filters} and nothing
@@ -635,9 +651,7 @@ export async function retrieve(client, query, ctx) {
   const plan = planStatement(tier, profile, cfg);
   const resolved = resolveFilters(profile, filters, qf, kind);
 
-  const contentTerms = [...new Set(qf.terms.filter((t) => !STOPWORDS.has(t)))].slice(0, 32);
-  const orQuery = contentTerms.map(quoteLexeme).join(" | ") || null;
-  const fragmentBar = Math.min(2, contentTerms.length);
+  const { contentTerms, orQuery, fragmentBar } = lexicalQueryParams(qf);
   const rareTokens = contentTerms.slice(0, 32);
   const titlePatterns = qf.quoted.slice(0, 16).map((q) => `%${q}%`);
 
