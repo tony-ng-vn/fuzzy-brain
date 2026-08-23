@@ -72,6 +72,7 @@ import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 
 import { config, resolveTier } from './config.mjs';
@@ -364,6 +365,14 @@ export async function embedMemories(client, tier, opts = {}) {
   return { embedded, ms: Date.now() - started };
 }
 
+export function queryTextsHash(queries) {
+  return createHash('sha256').update(queries.map((q) => q.text).join('\n')).digest('hex');
+}
+
+export function queryTextsHashPath(cachePath) {
+  return `${cachePath}.texts.sha256`;
+}
+
 export async function cacheQueryVectors(queries, cachePath, opts = {}) {
   const started = Date.now();
   const concurrency = Math.max(1, opts.batchSize ?? 8);
@@ -391,6 +400,11 @@ export async function cacheQueryVectors(queries, cachePath, opts = {}) {
 
   await mkdir(dirname(cachePath), { recursive: true });
   await writeFile(cachePath, buffer);
+  // Sidecar, not a change to the .f32 layout (which bench-recall.mjs already
+  // reads as a bare Float32Array): a hash of the exact query texts these
+  // vectors were built from, so a later step can tell whether the cache still
+  // corresponds to the queries on disk.
+  await writeFile(queryTextsHashPath(cachePath), queryTextsHash(queries));
 
   return { cached: queries.length, ms: Date.now() - started };
 }
@@ -688,6 +702,21 @@ async function runVerifyOracle(tier, args) {
     throw new Error(`query-vector cache has ${vectors.length} floats, need ${expected} (dev ${dev.length} + test ${test.length} at dims=${tier.dims})`);
   }
 
+  // A cache built from different query text is worse than no cache: it would
+  // measure each query against a vector for a question nobody asked, and the
+  // oracle would look fine. gen-corpus.mjs regenerating queries without a
+  // fresh embedding sweep is exactly how that happens.
+  const allQueries = [...dev, ...test];
+  const hashPath = queryTextsHashPath(cachePath);
+  const cachedHash = existsSync(hashPath) ? (await readFile(hashPath, 'utf8')).trim() : null;
+  if (cachedHash !== queryTextsHash(allQueries)) {
+    console.log(`  query-vector cache does not match the queries on disk (${cachedHash ? 'text changed' : 'no sidecar hash'}); re-embedding ${allQueries.length} queries`);
+    const { ms } = await cacheQueryVectors(allQueries, cachePath, { batchSize: 8 });
+    console.log(`  re-embedded in ${(ms / 1000).toFixed(1)}s`);
+    const fresh = await readFile(cachePath);
+    vectors.set(new Float32Array(fresh.buffer.slice(fresh.byteOffset, fresh.byteOffset + fresh.byteLength)).subarray(0, vectors.length));
+  }
+
   const client = benchClient();
   await client.connect();
   const started = Date.now();
@@ -704,14 +733,26 @@ async function runVerifyOracle(tier, args) {
     await writeJsonl(devPath, dev);
     await writeJsonl(testPath, test);
     await writeFile(cachePath, Buffer.from(vectors.buffer, vectors.byteOffset, vectors.byteLength));
+    await writeFile(hashPath, queryTextsHash(allQueries));
 
-    // Repair changed query text, so any CORPUS.lock written before this run
-    // now pins query hashes that no longer match. Say so loudly rather than
-    // leaving bench-recall to fail a hash check with no explanation: the fix
-    // is to re-run gen-corpus --verify, which is the freeze step, and DESIGN.md
-    // 4.4 puts repair before the freeze for exactly this reason.
-    if (result.repairedQids.length > 0 && existsSync(join(outDir, 'CORPUS.lock'))) {
-      console.log(`  note: ${result.repairedQids.length} queries were repaired, so CORPUS.lock's query hashes are stale -- re-run gen-corpus.mjs --verify to re-freeze`);
+    // Repair rewrites query text, so a CORPUS.lock written before this run
+    // pins query hashes that no longer match what is on disk. Re-running
+    // gen-corpus --verify would NOT fix that -- it regenerates the queries
+    // from the plan and undoes the repair. Repair belongs before the freeze
+    // (DESIGN.md 4.4 step 6), so the honest move is to re-stamp the query
+    // hashes here. memoriesSha256 is never touched: repair cannot change a
+    // memory, and that hash is what bench-recall's test-split guard checks.
+    // Unconditional, not only on repair: this step always rewrites the query
+    // files, because it folds each measured certificate back into them.
+    const lockPath = join(outDir, 'CORPUS.lock');
+    if (existsSync(lockPath)) {
+      const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+      lock.queriesDevSha256 = createHash('sha256').update(await readFile(devPath)).digest('hex');
+      lock.queriesTestSha256 = createHash('sha256').update(await readFile(testPath)).digest('hex');
+      lock.verifiedAt = new Date().toISOString();
+      lock.repairedQueries = result.repairedQids.length;
+      await writeFile(lockPath, JSON.stringify(lock, null, 2));
+      console.log(`  re-stamped CORPUS.lock query hashes (${result.repairedQids.length} queries repaired)`);
     }
 
     const oraclePath = join(outDir, 'oracle.json');
