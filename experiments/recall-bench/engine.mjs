@@ -497,7 +497,7 @@ function planStatement(tier, profile, cfg) {
   order by ts_rank_cd(${ftsExpr}, q.orq) desc, m.id
   limit ${depth}
 )`);
-    fusedBranches.push(`select id, rnk, 'or', ${orWeightParam}::float / (${rrfK.or} + rnk) from or_lane`);
+    fusedBranches.push(`select id, rnk, 'or' as lane, ${orWeightParam}::float / (${rrfK.or} + rnk) as w from or_lane`);
   }
 
   const vectorWeightParam = addSlot("vectorWeight");
@@ -508,7 +508,7 @@ function planStatement(tier, profile, cfg) {
   order by m.embedding <=> q.vec
   limit ${depth}
 )`);
-  fusedBranches.push(`select id, rnk, 'vector', ${vectorWeightParam}::float / (${rrfK.vector} + rnk) from vec_lane`);
+  fusedBranches.push(`select id, rnk, 'vector' as lane, ${vectorWeightParam}::float / (${rrfK.vector} + rnk) as w from vec_lane`);
 
   if (hasTrigram) {
     const trigramWeightParam = addSlot("trigramWeight");
@@ -520,7 +520,7 @@ function planStatement(tier, profile, cfg) {
   order by ${simExpr} desc, m.id
   limit ${depth}
 )`);
-    fusedBranches.push(`select id, rnk, 'trigram', ${trigramWeightParam}::float / (${rrfK.trigram} + rnk) from trg_lane`);
+    fusedBranches.push(`select id, rnk, 'trigram' as lane, ${trigramWeightParam}::float / (${rrfK.trigram} + rnk) as w from trg_lane`);
   }
 
   const rareTokensParam = addSlot("rareTokens");

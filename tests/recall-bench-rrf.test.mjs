@@ -135,3 +135,30 @@ test("a profile's lane list decides which lanes reach fusion at all", () => {
   assert.equal(branches.length, 1, "naive fuses the vector lane alone");
   assert.doesNotMatch(naiveSql, /and_lane/, "naive must not emit an AND lane");
 });
+
+// Regression: every fusedBranches entry must alias its own 'lane' and 'w'
+// columns, not just the first one in the UNION ALL. Postgres names a UNION's
+// output columns from the FIRST select alone -- the 'and' branch used to be
+// the only one carrying "as lane"/"as w", which is invisible whenever 'and'
+// happens to be first (fixedRrf, tuned), and fatal ("column w does not
+// exist") the moment a profile's first (or only) lane is anything else, as
+// naive's vector-only profile is. This only surfaced against a live
+// Postgres -- the fixture oracle above never runs real SQL -- so it is
+// pinned here as a string check on every lane in isolation.
+test("every lane's fusion branch names its own 'lane' and 'w' columns, not just the first lane in the UNION", () => {
+  const tier = resolveTier("quality50k");
+  const singleLaneProfiles = {
+    and: { lanes: ["and"], weighting: "fixed", weights: { and: 1 }, filters: false, rerank: false },
+    or: { lanes: ["or"], weighting: "fixed", weights: { or: 1 }, filters: false, rerank: false },
+    vector: { lanes: ["vector"], weighting: "fixed", weights: { vector: 1 }, filters: false, rerank: false },
+    trigram: { lanes: ["trigram"], weighting: "fixed", weights: { trigram: 1 }, filters: false, rerank: false },
+  };
+  for (const [lane, profile] of Object.entries(singleLaneProfiles)) {
+    const sql = buildRetrievalSql(tier, profile).text;
+    assert.match(
+      sql,
+      new RegExp(`'${lane}' as lane, \\$\\d+::float / \\(\\d+ \\+ rnk\\) as w from ${lane === "vector" ? "vec_lane" : lane === "trigram" ? "trg_lane" : lane + "_lane"}`),
+      `the ${lane}-only branch must alias its own lane/w columns so 'fused as (select id, sum(w) ..., jsonb_object_agg(lane, rnk) ...)' resolves when ${lane} is the ONLY (and therefore first) branch in the UNION`,
+    );
+  }
+});
