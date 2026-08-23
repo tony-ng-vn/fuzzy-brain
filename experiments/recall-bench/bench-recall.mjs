@@ -198,7 +198,7 @@ function checkFilterExclusion(qf, targetMemory) {
   return null;
 }
 
-export function classifyFailure({ qf, targetId, targetMemory, result, profile, distractorIds, memoriesById, oracleLaneRanks }) {
+export function classifyFailure({ qf, targetId, targetMemory, result, profile, distractorIds, memoriesById, oracleSolvingLanes }) {
   if (profile.filters) {
     const cause = checkFilterExclusion(qf, targetMemory);
     if (cause) return { cause, detail: 'an inferred metadata filter excluded the ground-truth target' };
@@ -206,16 +206,21 @@ export function classifyFailure({ qf, targetId, targetMemory, result, profile, d
 
   const laneHasTarget = Object.values(result.lanes ?? {}).some((ids) => ids.includes(targetId));
   if (!laneHasTarget) {
-    // The verified oracle (load.mjs --verify-oracle's lane_ranks_measured),
+    // The verified oracle (load.mjs --verify-oracle's certificate.signals),
     // not this profile's own lane set, is what "the certificate promised"
     // refers to. A profile that never runs the trigram lane (naive, fixedRrf)
     // will always show laneHasTarget=false for a typo query only trigram
     // solves; that is a profile limitation, not the generator bug this
     // bucket exists to catch. Reserve not_retrieved for the case where no
     // lane in the whole engine -- per the oracle -- reaches the target.
-    const solvingLanes = oracleLaneRanks
-      ? Object.entries(oracleLaneRanks).filter(([, rank]) => rank != null).map(([lane]) => lane)
-      : [];
+    //
+    // oracleSolvingLanes must be the already-thresholded certificate.signals
+    // list (rank <= config.oracle.bestLaneRankAt), not a raw null-check over
+    // lane_ranks_measured: vector_rank is an exact, uncapped global rank
+    // (load.mjs's buildOracleSql counts the whole table), so it is never
+    // null and a bare null-check would count "vector rank 40,000" as a
+    // solving lane and silently empty the not_retrieved gate.
+    const solvingLanes = oracleSolvingLanes ?? [];
     if (solvingLanes.length === 0) {
       return { cause: 'not_retrieved', detail: 'target absent from every lane at configured depth; the certificate promised otherwise' };
     }
@@ -431,10 +436,12 @@ async function main() {
           profile,
           distractorIds,
           memoriesById,
-          // Present once load.mjs --verify-oracle has run (DESIGN.md 4.3.1);
-          // absent (undefined) on a corpus that was never verified, in which
-          // case not_retrieved keeps its old, more conservative meaning.
-          oracleLaneRanks: f.query.certificate?.lane_ranks_measured,
+          // certificate.signals is meaningful only once load.mjs
+          // --verify-oracle has run (DESIGN.md 4.3.1); pre-verify it lists
+          // only 'and'/'or'/'trigram' and never 'vector' (see gen-corpus.mjs
+          // computeCertificateAndReach), which is conservative in the same
+          // direction not_retrieved already was, so this is safe either way.
+          oracleSolvingLanes: f.query.certificate?.signals,
         });
 
         byCause[cause] = (byCause[cause] ?? 0) + 1;
