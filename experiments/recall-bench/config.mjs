@@ -84,6 +84,17 @@ export const config = {
     // Re-verbalization draws from a seeded sub-stream keyed by qid and round,
     // so a repaired corpus is as reproducible as an unrepaired one.
     repairSeed: "fuzzy-brain-recall-bench-v1/repair",
+    // Generation-time fallback for partial_ref / typo_noisy queries whose
+    // re-verbalize rounds keep returning to the SAME doomed (detail, noun)
+    // pair or planted token, because re-verbalizing only rephrases the query
+    // around content the target memory already carries -- it never changes
+    // what got planted. Anchor resampling draws a BRAND NEW candidate pair or
+    // token from a forked sub-stream, verifies it against the real corpus
+    // index (co-occurrence / trigram ceiling) BEFORE writing it into the
+    // target memory, and only commits on a verified pass. Bounded so a
+    // family that structurally cannot converge is reported, not looped on
+    // forever (DESIGN.md 4.2, calibration decision 2026-08-23).
+    anchorResampleAttempts: 20,
   },
 
   lanes: {
