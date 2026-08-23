@@ -8,19 +8,24 @@
 // resolvable date range, a swapped entity). certifyQuery is then run as a
 // *check* against the fully assembled corpus, not as a filter over guesses.
 //
-// Deviation from the literal text of DESIGN.md 4.2 rule 2, flagged here and
-// in more detail on vectorLaneRank/computeLaneRanks below: rule 2 wants the
-// vector lane's brute-force rank "by exact cosine over the whole corpus".
-// At the real-vector tiers (smoke1k, quality50k) the real embeddings do not
-// exist yet at generation time -- load.mjs computes them afterward. Rather
-// than fabricate a number and call it exact, this module uses
-// lib/synth-vectors.mjs as a *documented proxy* at every tier: the same
-// proxy IS the real vector at the synthetic tiers (rehearsal1m, full10m),
-// and is an honest stand-in elsewhere. Only paraphrase_nolex actually
-// depends on the vector lane to certify (it has zero lexical overlap by
-// construction), so this is where the proxy's honesty matters most; every
-// other family certifies on lexical evidence computed exactly, with no
-// model involved at all.
+// Deviation from the literal text of DESIGN.md 4.2 rule 2, and the reason
+// this module no longer certifies the vector lane at all: rule 2 wants the
+// vector lane's brute-force rank "by exact cosine over the whole corpus". At
+// the real-vector tiers (smoke1k, quality50k) the real embeddings do not
+// exist yet at generation time -- load.mjs computes them afterward. An
+// earlier version of this file used lib/synth-vectors.mjs as a documented
+// proxy instead. Measured against the real embedder that proxy was not just
+// imprecise, it was wrong in the direction that mattered: it certified every
+// paraphrase_nolex query at rank 1 while nomic-embed-text-v1.5 ranked those
+// same targets ~500th, so the harness reported an oracle ceiling of 1.0 for a
+// corpus whose real ceiling was 0.765.
+//
+// So the split is now: this module certifies the LEXICAL lanes offline, with
+// bounds that are provable rather than guessed (see the lane-ceiling
+// functions below), and load.mjs --verify-oracle certifies the vector lane
+// post-load with exact cosine in SQL against the corpus that was actually
+// embedded. oracle.json written here carries vector.verified=false; the
+// authoritative file is the one the verify step rewrites.
 //
 // Second deviation: DESIGN.md's directory listing (section 10) assigns this
 // track tests/rng.test.mjs and tests/gen-corpus.test.mjs. The orchestrating
@@ -40,7 +45,10 @@ import { makeRng } from './lib/rng.mjs';
 import { readJsonl, writeJsonl } from './lib/jsonl.mjs';
 import {
   PEOPLE, PLACES, TOPICS, topicById, DISTINGUISHER_PHRASES, DETAIL_WORDS,
-  buildDateTemplate, makeRareToken,
+  buildDateTemplate, makeRareToken, makeRareWord, PG_ENGLISH_STOPWORDS,
+  PARAPHRASE_DOMAINS, PARAPHRASE_AFTERMATHS, PARAPHRASE_REFLECTIONS,
+  PARAPHRASE_FILLERS_A, PARAPHRASE_TIME_WORDS_B,
+  PARAPHRASE_QUERY_TEMPLATES_B,
 } from './lib/lexicon.mjs';
 
 const PEOPLE_BY_SLUG = new Map(PEOPLE.map((p) => [p.slug, p]));
@@ -54,10 +62,6 @@ function entityAliases(entry) {
   const aliases = new Set([entry.name.toLowerCase(), entry.slug.replace(/-/g, ' ')]);
   return [...aliases];
 }
-import {
-  memoryVector, queryVector, cosineSimilarity,
-  DEFAULT_MEMORY_JITTER, DEFAULT_QUERY_DRIFT,
-} from './lib/synth-vectors.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,10 +78,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // consistent.
 // ---------------------------------------------------------------------------
 
-const STOPWORDS = new Set([
-  'the', 'and', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'was',
-  'we', 'i', 'it', 'that', 'this', 'is', 'did', 'what', 'our', 'from', 'by', 'or',
-]);
+// Postgres's own english.stop, imported rather than hand-trimmed: a lexeme
+// Postgres drops never reaches any tsvector, so two texts sharing one are not
+// sharing content, and a certification that counts them is predicting lanes
+// that do not exist.
+const STOPWORDS = PG_ENGLISH_STOPWORDS;
 
 function approxStem(word) {
   const w = word.toLowerCase();
@@ -95,28 +100,91 @@ function tokenizeStem(text) {
   return raw.filter((w) => !STOPWORDS.has(w) && w.length > 1).map(approxStem);
 }
 
-function charTrigrams(s) {
-  const t = s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const padded = `  ${t}  `;
-  const grams = new Set();
-  for (let i = 0; i < padded.length - 2; i++) grams.add(padded.slice(i, i + 3));
+// pg_trgm splits on non-alphanumerics and pads EACH WORD with two leading
+// and one trailing space, so "the cat" yields {"  t"," th","the","he ","  c",
+// " ca","cat","at "} and never a trigram spanning the gap. Verified against
+// the running cluster with `select show_trgm('the skilet and garlic')`; the
+// earlier implementation padded the whole string once and kept interior
+// spaces, which invented cross-word trigrams pg never produces and made every
+// bound computed from it unsound.
+function trigramWords(s) {
+  return (String(s).toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+function trigramsOfWord(word) {
+  const padded = `  ${word} `;
+  const grams = [];
+  for (let i = 0; i <= padded.length - 3; i++) grams.push(padded.slice(i, i + 3));
   return grams;
 }
 
-// Containment, not Jaccard: what fraction of the QUERY's trigrams show up
-// in the candidate. Postgres's word_similarity (what the real trigram lane
-// uses, DESIGN.md 6.2) is asymmetric for exactly this reason -- it measures
-// the best-matching substring of the longer text, so a short query is not
-// diluted by an unrelated few hundred characters elsewhere in a long body.
-// A plain Jaccard was tried first and undercounted real matches by 2x for
-// this reason (see gen-corpus.mjs task summary).
-function trigramSim(query, candidate) {
+function charTrigrams(s) {
+  const grams = new Set();
+  for (const w of trigramWords(s)) for (const g of trigramsOfWord(w)) grams.add(g);
+  return grams;
+}
+
+// DESIGN.md 4.2 rule 2 wants a true statement about a lane, not a guess.
+// Reimplementing pg's word_similarity extent search faithfully is a losing
+// bet (its exact extent rule is an implementation detail this file cannot
+// pin down offline), so the trigram lane is certified with BOUNDS instead,
+// which are provable from the definition alone:
+//
+//   word_similarity(A, doc) = max over word-aligned extents E of
+//                             |A n trg(E)| / (|A| + |trg(E)| - |A n trg(E)|)
+//
+//   LOWER bound: the value at any single extent is a lower bound on the max,
+//     so enumerating a family of extents and taking the best gives a number
+//     the real lane is guaranteed to meet or beat.
+//   UPPER bound: trg(E) subset of trg(doc) and |trg(E)| >= |A n trg(E)|, so
+//     the whole expression is at most |A n trg(doc)| / |A| -- computable from
+//     a trigram containment count alone, with no extent search at all.
+//
+// "Target's lower bound beats every other document's upper bound" is then a
+// sufficient condition for the target being top-1 in the lane, and counting
+// how many documents can possibly outrank it gives a sound rank ceiling.
+
+const WORD_SIMILARITY_EXTENT_SLACK = 4;
+
+// One window scan, both bounds:
+//   lower = max sim over the scanned extents (a value the real lane meets)
+//   upper = max |A n trg(E)| / |A| over the same extents (dropping the
+//           |E| - inter penalty, which only ever lowers the true value)
+// The upper bound is far tighter than whole-document containment, which is
+// what a short query full of stopwords needs: every document in the corpus
+// contains "the" and "and", so containment alone calls them all contenders.
+export function wordSimilarityBounds(query, doc) {
+  const qWords = trigramWords(query);
   const A = charTrigrams(query);
-  const B = charTrigrams(candidate);
-  if (A.size === 0) return 0;
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  return inter / A.size;
+  if (A.size === 0) return { lower: 0, upper: 0 };
+  const docWords = trigramWords(doc);
+  if (docWords.length === 0) return { lower: 0, upper: 0 };
+  const perWord = docWords.map((w) => trigramsOfWord(w));
+  const maxLen = Math.min(docWords.length, qWords.length + WORD_SIMILARITY_EXTENT_SLACK);
+  let lower = 0;
+  let bestInter = 0;
+  for (let start = 0; start < docWords.length; start++) {
+    const extent = new Set();
+    for (let len = 1; len <= maxLen && start + len <= docWords.length; len++) {
+      for (const g of perWord[start + len - 1]) extent.add(g);
+      let inter = 0;
+      for (const g of extent) if (A.has(g)) inter++;
+      if (inter > bestInter) bestInter = inter;
+      const sim = inter / (A.size + extent.size - inter);
+      if (sim > lower) lower = sim;
+    }
+  }
+  return { lower, upper: bestInter / A.size };
+}
+
+export function wordSimilarityLowerBound(query, doc) {
+  return wordSimilarityBounds(query, doc).lower;
+}
+
+// Whole-document containment: the cheapest sound upper bound, used only to
+// shortlist which documents are worth the window scan above.
+export function wordSimilarityContainmentBound(queryTrigrams, docTrigramHits) {
+  return queryTrigrams === 0 ? 0 : docTrigramHits / queryTrigrams;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,18 +238,23 @@ function randomClusterId(r, tier) {
   return r.int(0, tier.clusters - 1);
 }
 
-function corruptWord(word, r) {
+// `dup` is deliberately absent. Doubling a character adds a trigram that
+// exists nowhere in the target ("skilllet" contributes "lll") AND inflates
+// the query's own trigram count, which lowers word_similarity from both
+// sides at once -- the exact lane this family depends on. Transposition and
+// deletion keep the corrupted token's trigram overlap with the original high,
+// which is what lets the trigram lane still find the target.
+const TYPO_OPS = ['swap', 'drop'];
+
+function corruptWord(word, r, op = null) {
   const chars = word.split('');
-  const op = chars.length >= 3 ? r.pick(['swap', 'drop', 'dup']) : 'dup';
-  if (op === 'swap') {
+  const chosen = op ?? r.pick(TYPO_OPS);
+  if (chosen === 'swap') {
     const i = r.int(0, chars.length - 2);
     [chars[i], chars[i + 1]] = [chars[i + 1], chars[i]];
-  } else if (op === 'drop') {
+  } else {
     const i = r.int(1, chars.length - 2);
     chars.splice(i, 1);
-  } else {
-    const i = r.int(0, chars.length - 1);
-    chars.splice(i, 0, chars[i]);
   }
   return chars.join('');
 }
@@ -319,16 +392,155 @@ function buildStandaloneMemorySpec(r, topic, tier, extra = {}) {
 // footing (paraphrase_nolex, partial_ref).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// paraphrase_nolex: one semantic frame, verbalized twice
+//
+// The memory renders the frame's A column, the query renders the SAME frame's
+// B column. Same event, same participants, same salient details, disjoint
+// vocabulary -- which is what makes the family a paraphrase test rather than
+// (as the previous implementation was) an unrelated-text test that happened
+// to satisfy the zero-overlap rule. Measured under the real embedder, a
+// frame-rendered query ranks its frame-rendered target at mean rank 2.0 over
+// the 1K corpus; the previous abstract-register queries ranked theirs ~500th.
+// ---------------------------------------------------------------------------
+
+const cap = (s) => (s.length === 0 ? s : s[0].toUpperCase() + s.slice(1));
+
+// Which frame slots each lexicon query template needs. A template is only
+// eligible when every slot it names actually survived into the body -- a
+// query must not describe a detail the memory never wrote down.
+const PARAPHRASE_QUERY_TEMPLATE_SLOTS = [
+  ['action', 'mishap'],
+  ['mishap', 'action'],
+  ['action', 'detail', 'mishap'],
+  ['time', 'prop', 'action', 'mishap'],
+];
+
+function drawFrame(r) {
+  const domainIdx = r.int(0, PARAPHRASE_DOMAINS.length - 1);
+  const domain = PARAPHRASE_DOMAINS[domainIdx];
+  return {
+    domainIdx,
+    actionIdx: r.int(0, domain.actions.length - 1),
+    propIdx: r.int(0, domain.props.length - 1),
+    mishapIdx: r.int(0, domain.mishaps.length - 1),
+    detailIdx: r.int(0, domain.details.length - 1),
+    aftermathIdx: r.int(0, PARAPHRASE_AFTERMATHS.length - 1),
+    reflectionIdx: r.int(0, PARAPHRASE_REFLECTIONS.length - 1),
+    headIdx: r.int(0, 2),
+  };
+}
+
+function frameSlots(frame) {
+  const domain = PARAPHRASE_DOMAINS[frame.domainIdx];
+  return {
+    domain,
+    action: domain.actions[frame.actionIdx],
+    prop: domain.props[frame.propIdx],
+    mishap: domain.mishaps[frame.mishapIdx],
+    detail: domain.details[frame.detailIdx],
+    aftermath: PARAPHRASE_AFTERMATHS[frame.aftermathIdx],
+    reflection: PARAPHRASE_REFLECTIONS[frame.reflectionIdx],
+  };
+}
+
+// Every word outside a slot here is a Postgres stopword (or a person/place
+// name, which the zero-overlap check covers), so the disjointness question
+// stays entirely about the frame table's two columns.
+function paraphraseHead(frame, slots, person, place, dateText) {
+  const { action, prop } = slots;
+  if (frame.headIdx === 1) return `On ${dateText}, at ${place.name}, ${person.name} and I ${action.a}. The ${prop.a} was there too.`;
+  if (frame.headIdx === 2) return `${person.name} and I ${action.a} on ${dateText}, and the ${prop.a} was there too.`;
+  return `On ${dateText}, ${person.name} and I ${action.a}, and the ${prop.a} was there too.`;
+}
+
+// Slots are appended while they fit, so the same frame renders a 340-400
+// char body at the real-vector tiers and a 180-220 char one at the synthetic
+// tiers without a second frame table. `present` records what actually landed,
+// because the query may only mention what the memory wrote down.
+function renderParaphraseBody(r, frame, slots, person, place, dateText, tier) {
+  const [minLen, maxLen] = tier.bodyChars;
+  const present = new Set(['action', 'prop', 'time']);
+  let body = paraphraseHead(frame, slots, person, place, dateText);
+  for (const [name, pair] of [['mishap', slots.mishap], ['detail', slots.detail],
+    ['aftermath', slots.aftermath], ['reflection', slots.reflection]]) {
+    const next = `${body} ${cap(pair.a)}.`;
+    if (next.length <= maxLen) { body = next; present.add(name); }
+  }
+  const fillers = r.shuffle([...PARAPHRASE_FILLERS_A]);
+  for (const filler of fillers) {
+    if (body.length >= minLen) break;
+    const next = `${body} ${filler}`;
+    if (next.length <= maxLen) body = next;
+  }
+  return { body, present };
+}
+
+export function renderParaphraseQuery(r, frame, present) {
+  const slots = frameSlots(frame);
+  const eligible = PARAPHRASE_QUERY_TEMPLATE_SLOTS
+    .map((needed, i) => ({ i, needed }))
+    .filter(({ needed }) => needed.every((s) => present.has(s)));
+  if (eligible.length === 0) {
+    throw new Error('renderParaphraseQuery: no query template fits the slots the body kept');
+  }
+  const choice = r.pick(eligible);
+  const time = r.pick(PARAPHRASE_TIME_WORDS_B);
+  const filled = PARAPHRASE_QUERY_TEMPLATES_B[choice.i]
+    .replace('{time}', time)
+    .replace('{action}', slots.action.b)
+    .replace('{prop}', slots.prop.b)
+    .replace('{mishap}', slots.mishap.b)
+    .replace('{detail}', slots.detail.b);
+  return { text: filled, templateIdx: choice.i, timeWord: time };
+}
+
+// The honesty rule, measured rather than assumed (DESIGN.md 4.2 rule 4).
+// Checked against title + raw + body, not body alone: the tsvector is
+// title-A + raw-B + body-C, so a stem shared with the title would revive the
+// very lexical lanes this family exists to switch off.
+export function paraphraseOverlapStems(queryText, memory) {
+  const queryStems = new Set(tokenizeStem(queryText));
+  const targetStems = new Set(tokenizeStem(`${memory.title} ${memory.raw} ${memory.body}`));
+  return [...queryStems].filter((s) => targetStems.has(s));
+}
+
 function buildParaphraseCase(r, tier, helpers) {
-  const topic = topicById(r.int(0, TOPICS.length - 1));
-  const spec = buildStandaloneMemorySpec(r, topic, tier);
+  const frame = drawFrame(r);
+  const slots = frameSlots(frame);
+  const person = pickPerson(r);
+  const place = pickPlace(r);
+  const occurred_at = randomOccurredAt(r);
+  const dateText = humanDate(occurred_at);
+
+  const { body, present } = renderParaphraseBody(r, frame, slots, person, place, dateText, tier);
+  const title = `The ${slots.prop.a.split(' ').map(cap).join(' ')}`;
+  const raw = `${person.name} ${slots.action.a} ${slots.prop.a} ${slots.mishap.a}`.toLowerCase();
+  const spec = {
+    kind: r.pick(KIND_POOL),
+    title,
+    body,
+    raw,
+    people: [person.slug],
+    places: [place.slug],
+    tags: [slots.domain.slug],
+    occurred_at,
+    cluster_id: randomClusterId(r, tier),
+    dup_group: null,
+    rare_token: null,
+    distinguisher: null,
+  };
+
+  const { text, templateIdx, timeWord } = renderParaphraseQuery(r, frame, present);
+  const overlap = paraphraseOverlapStems(text, spec);
+  if (overlap.length > 0) {
+    // Regeneration, not repair-in-place: the static register assertion in
+    // lexicon.mjs keeps this rare, and a case that trips it is a frame/person/
+    // place combination whose names collide, so a fresh draw is the fix.
+    throw new Error(`paraphrase_nolex: query shares stems with its target (${overlap.join(', ')})`);
+  }
+
   const targetContentId = helpers.addMemory(spec);
-
-  const aNoun1 = r.pick(topic.abstractNouns);
-  const aNoun2 = r.pick(topic.abstractNouns);
-  const aVerb = r.pick(topic.abstractVerbs);
-  const text = `what was that ${aNoun1} where we ${aVerb} the ${aNoun2}`;
-
   return {
     query: {
       text,
@@ -336,6 +548,7 @@ function buildParaphraseCase(r, tier, helpers) {
       distractorContentIds: [],
       difficulty: 3,
       declaredFilters: { date_from: null, date_to: null, people: [] },
+      frame: { ...frame, templateIdx, timeWord, present: [...present] },
     },
   };
 }
@@ -491,6 +704,11 @@ const VAGUE_FILLER_WORDS = [
   'stuff', 'whatnot', 'situation', 'moment',
 ];
 
+export function renderPartialRefQuery(r, detail, noun) {
+  const vague = r.sample(VAGUE_FILLER_WORDS, 3);
+  return `${vague[0]} about the ${detail} ${noun} or ${vague[1]}, ${vague[2]} like that`;
+}
+
 function buildPartialRefCase(r, tier, helpers) {
   const topic = topicById(r.int(0, TOPICS.length - 1));
   const noun = r.pick(topic.concreteNouns);
@@ -498,29 +716,44 @@ function buildPartialRefCase(r, tier, helpers) {
   const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [noun, detail] });
   const targetContentId = helpers.addMemory(spec);
 
-  const vague = r.sample(VAGUE_FILLER_WORDS, 3);
-  const text = `${vague[0]} about the ${detail} ${noun} or ${vague[1]}, ${vague[2]} like that`;
-
   return {
     query: {
-      text,
+      text: renderPartialRefQuery(r, detail, noun),
       targetContentIds: [targetContentId],
       distractorContentIds: [],
       difficulty: 3,
       declaredFilters: { date_from: null, date_to: null, people: [] },
+      partialRef: { detail, noun },
     },
   };
 }
 
+// A short query is what makes the trigram lane work: word_similarity divides
+// by the query's own trigram count, so every extra clean term the target
+// happens to match still costs the corrupted term its share of the score. One
+// corrupted term plus at most one clean companion is the shape that keeps the
+// target's best extent tight, and the companion is what stops the query from
+// being a bare misspelling with no topical anchor at all.
+export function renderTypoQuery(r, target, companion, op = null) {
+  const corrupted = corruptWord(target, r, op);
+  return { text: companion ? `the ${corrupted} and the ${companion}` : `the ${corrupted}`, corrupted };
+}
+
 function buildTypoNoisyCase(r, tier, helpers) {
   const topic = topicById(r.int(0, TOPICS.length - 1));
-  const target = r.pick(topic.concreteNouns);
-  const companion = r.pick(topic.concreteNouns.filter((w) => w !== target));
-  const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [target, companion] });
+  // The corrupted term is a planted one-off name, not a topic noun. See
+  // makeRareWord in lib/lexicon.mjs: a corrupted topic noun is shared by
+  // hundreds of memories, so no extent of the target's body scores higher
+  // than every other memory containing the same noun, and the trigram lane
+  // -- the only lane this family leaves standing -- cannot separate it.
+  const target = makeRareWord(r.fork('typo-term'));
+  if (target.length < config.corpus.typo.minTermLength) throw new Error(`typo_noisy: planted term "${target}" shorter than ${config.corpus.typo.minTermLength} characters`);
+  const companions = topic.concreteNouns.filter((w) => w.length >= config.corpus.typo.minTermLength);
+  const companion = companions.length && config.corpus.typo.maxCleanTerms > 0 ? r.pick(companions) : null;
+  const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [target, companion].filter(Boolean) });
   const targetContentId = helpers.addMemory(spec);
 
-  const corrupted = corruptWord(target, r);
-  const text = `the ${corrupted} and the ${companion}`;
+  const { text } = renderTypoQuery(r, target, companion);
 
   return {
     query: {
@@ -529,6 +762,7 @@ function buildTypoNoisyCase(r, tier, helpers) {
       distractorContentIds: [],
       difficulty: 2,
       declaredFilters: { date_from: null, date_to: null, people: [] },
+      typo: { term: target, companion },
     },
   };
 }
@@ -751,6 +985,11 @@ function buildPlan(tier) {
     declaredFilters: c.declaredFilters,
     targets: remap(c.targetContentIds),
     distractorIds: remap(c.distractorContentIds ?? []),
+    // Everything the repair loop needs to re-verbalize this query WITHOUT
+    // touching the memory it points at (load.mjs --verify-oracle --repair).
+    // The memories are already in the database and already embedded by then,
+    // so a repair that regenerated the target would invalidate the corpus.
+    regen: c.frame ? { frame: c.frame } : c.typo ? { typo: c.typo } : c.partialRef ? { partialRef: c.partialRef } : null,
   }));
   const finalMultiCases = multiCases.map((c) => ({
     split: c.split,
@@ -793,6 +1032,8 @@ function finalizeQuery(caseObj, indexInSplit) {
     diagnostics: {
       distractor_ids: caseObj.distractorIds ?? [],
       difficulty: caseObj.difficulty,
+      regen: caseObj.regen ?? null,
+      repair_round: 0,
     },
   };
 }
@@ -861,7 +1102,17 @@ export function buildMemoryIndex(memories) {
 // the cheap lanes did not already clear the bar.
 // ---------------------------------------------------------------------------
 
-function andLaneRank(queryStems, index, targetId) {
+// Every lexical bound below returns a RANK CEILING, not a rank: the largest
+// position the target can occupy in that lane under any tie-break Postgres
+// might apply. That is what makes the offline certificate a true statement
+// about the lane rather than a guess about ts_rank_cd -- if the ceiling is
+// <= 10 then the target IS top-10, whatever the ranking function does inside
+// the candidate set. The previous implementation guessed the ordering
+// (id-ascending for AND, match-count for OR) and could not be sound.
+//
+// null means the lane does not hold the target at all.
+
+function andLaneCeiling(queryStems, index, targetId) {
   const uniqueStems = [...new Set(queryStems)];
   if (uniqueStems.length === 0) return null;
   let inter = null;
@@ -872,14 +1123,10 @@ function andLaneRank(queryStems, index, targetId) {
     if (inter.size === 0) return null;
   }
   if (!inter.has(targetId)) return null;
-  // ts_rank_cd ties are broken by id (DESIGN.md 6.1's SQL sketch); this proxy
-  // has no term-frequency signal among AND-matching docs (they all match
-  // every term by definition), so id order is the whole ranking.
-  const ids = [...inter].sort((a, b) => a - b);
-  return ids.indexOf(targetId) + 1;
+  return inter.size;
 }
 
-function orLaneRank(queryStems, index, targetId, fragmentBar) {
+function orLaneCeiling(queryStems, index, targetId, fragmentBar) {
   const uniqueStems = [...new Set(queryStems)];
   if (uniqueStems.length === 0) return null;
   const bar = Math.min(fragmentBar, uniqueStems.length);
@@ -889,56 +1136,104 @@ function orLaneRank(queryStems, index, targetId, fragmentBar) {
     if (!ids) continue;
     for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
   }
-  const candidates = [...counts.entries()].filter(([, c]) => c >= bar);
-  if (!candidates.some(([id]) => id === targetId)) return null;
-  candidates.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
-  return candidates.findIndex(([id]) => id === targetId) + 1;
-}
-
-function trigramLaneRank(queryText, index, targetId, threshold) {
-  const target = index.byId.get(targetId);
-  const targetSim = trigramSim(queryText, `${target.title} ${target.body}`);
-  if (targetSim < threshold) return null;
-  let beatenBy = 0;
-  for (const [id, m] of index.byId) {
-    if (id === targetId) continue;
-    const sim = trigramSim(queryText, `${m.title} ${m.body}`);
-    if (sim >= threshold && (sim > targetSim || (sim === targetSim && id < targetId))) beatenBy++;
+  const targetCount = counts.get(targetId) ?? 0;
+  if (targetCount < bar) return null;
+  // Only a row matching at least as many of the query's lexemes can outrank
+  // the target under ts_rank_cd's coverage-density score; rows matching
+  // strictly fewer cannot. Counting those is a sound ceiling.
+  let couldOutrank = 0;
+  for (const [id, c] of counts) {
+    if (id !== targetId && c >= bar && c >= targetCount) couldOutrank++;
   }
-  return beatenBy + 1;
+  return couldOutrank + 1;
 }
 
-function vectorLaneRank(targetId, index, tier) {
-  const target = index.byId.get(targetId);
-  const qVec = queryVector(targetId, target.cluster_id, tier.dims, DEFAULT_QUERY_DRIFT);
-  const targetVec = memoryVector(targetId, target.cluster_id, tier.dims, DEFAULT_MEMORY_JITTER);
-  const targetSim = cosineSimilarity(qVec, targetVec);
-  let beatenBy = 0;
+// Lazily built and cached on the index: trigram -> ids of documents whose
+// `title || ' ' || body` (the exact expression engine.mjs's trigram lane
+// scores) contains it. Only paid for when a query actually needs the lane.
+function trigramPostings(index) {
+  if (index.trigramPostings) return index.trigramPostings;
+  const postings = new Map();
   for (const [id, m] of index.byId) {
-    if (id === targetId) continue;
-    const v = memoryVector(id, m.cluster_id, tier.dims, DEFAULT_MEMORY_JITTER);
-    if (cosineSimilarity(qVec, v) > targetSim) beatenBy++;
+    for (const g of charTrigrams(`${m.title} ${m.body}`)) {
+      let bucket = postings.get(g);
+      if (!bucket) { bucket = []; postings.set(g, bucket); }
+      bucket.push(id);
+    }
   }
-  return beatenBy + 1;
+  index.trigramPostings = postings;
+  return postings;
 }
 
-function computeLaneRanks(q, index, tier, targetId) {
+function trigramLaneCeiling(queryText, index, targetId, threshold) {
+  const target = index.byId.get(targetId);
+  const A = charTrigrams(queryText);
+  if (A.size === 0) return null;
+  const targetLower = wordSimilarityLowerBound(queryText, `${target.title} ${target.body}`);
+  if (targetLower < threshold) return null;
+
+  const postings = trigramPostings(index);
+  const hits = new Map();
+  for (const g of A) {
+    const bucket = postings.get(g);
+    if (!bucket) continue;
+    for (const id of bucket) hits.set(id, (hits.get(id) ?? 0) + 1);
+  }
+  const bar = Math.max(threshold, targetLower);
+  const shortlist = [];
+  for (const [id, c] of hits) {
+    if (id === targetId) continue;
+    if (wordSimilarityContainmentBound(A.size, c) >= bar) shortlist.push(id);
+  }
+  // Escape hatch, deliberately conservative: if the cheap prefilter did not
+  // narrow the field, report the shortlist size itself as the ceiling rather
+  // than paying a window scan per document. A query that lands here is one
+  // whose trigrams the whole corpus shares, which is not a query this lane
+  // was going to rank anyway.
+  if (shortlist.length > TRIGRAM_WINDOW_SCAN_LIMIT) return shortlist.length + 1;
+
+  let couldOutrank = 0;
+  for (const id of shortlist) {
+    const m = index.byId.get(id);
+    if (wordSimilarityBounds(queryText, `${m.title} ${m.body}`).upper >= bar) couldOutrank++;
+  }
+  return couldOutrank + 1;
+}
+
+const TRIGRAM_WINDOW_SCAN_LIMIT = 2000;
+
+// The vector lane is deliberately absent. At the real-vector tiers the
+// embeddings do not exist until load.mjs has run, and the synthetic proxy
+// this function used to consult is not the vector the engine searches: under
+// the real embedder the proxy-certified paraphrase queries ranked their
+// targets ~500th while the certificate claimed rank 1. Certifying the vector
+// lane is now load.mjs --verify-oracle's job, against the loaded corpus with
+// exact cosine in SQL (DESIGN.md section 4, post-load verification note).
+function computeLaneCeilings(q, index, tier) {
+  const targetId = q.targets[0];
   const rawStems = tokenizeStem(q.text);
-  const andRank = andLaneRank(rawStems, index, targetId);
   const fragmentBar = Math.min(2, new Set(rawStems).size);
-  const orRank = orLaneRank(rawStems, index, targetId, fragmentBar);
-  // Trigram lane is quality-tier only (DESIGN.md 6.2): the scale tier has no
-  // trigram index at all, so certifying against it there would credit a
-  // lane the real engine never runs.
-  const trigramRank = tier.vector === 'real' ? trigramLaneRank(q.text, index, targetId, config.lanes.trigramThreshold) : null;
-  const lexicalCleared10 = [andRank, orRank, trigramRank].some((r) => r != null && r <= 10);
-  const vectorRank = lexicalCleared10 ? null : vectorLaneRank(targetId, index, tier);
-  return { and: andRank, or: orRank, trigram: trigramRank, vector: vectorRank };
+  return {
+    and: andLaneCeiling(rawStems, index, targetId),
+    or: orLaneCeiling(rawStems, index, targetId, fragmentBar),
+    // Trigram lane is quality-tier only (DESIGN.md 6.2): the scale tier has
+    // no trigram index at all, so certifying against it there would credit a
+    // lane the real engine never runs.
+    trigram: tier.vector === 'real'
+      ? trigramLaneCeiling(q.text, index, targetId, config.lanes.trigramThreshold)
+      : null,
+  };
 }
 
 // Shared by certifyQuery and oracleCeiling so a query is only brute-forced
 // once even when both the certificate and the depth-reachability diagnostic
 // are needed.
+// paraphrase_nolex is the one family whose designated solving lane is the
+// vector lane (DESIGN.md 4.1), which cannot be certified without the loaded
+// corpus. Its offline verdict is therefore "pending", not "solvable": the
+// number that reaches oracle.json comes from load.mjs --verify-oracle.
+const VECTOR_ONLY_FAMILIES = new Set(['paraphrase_nolex']);
+
 function computeCertificateAndReach(q, index, tier) {
   const targetId = q.targets[0];
   const target = index.byId.get(targetId);
@@ -951,30 +1246,41 @@ function computeCertificateAndReach(q, index, tier) {
   const union = new Set([...queryStemSet, ...targetStems]).size;
   const lexicalOverlap = union === 0 ? 0 : overlap / union;
 
-  const ranks = computeLaneRanks(q, index, tier, targetId);
+  const ceilings = computeLaneCeilings(q, index, tier);
+  const k = config.oracle.bestLaneRankAt;
   const signals = [];
-  if (ranks.and != null && ranks.and <= 10) signals.push('and');
-  if (ranks.or != null && ranks.or <= 10) signals.push('or');
-  if (ranks.trigram != null && ranks.trigram <= 10) signals.push('trigram');
-  if (ranks.vector != null && ranks.vector <= 10) signals.push('vector');
-
-  const reachableAtDepth = Object.values(ranks).some((rk) => rk != null && rk <= tier.laneDepth);
+  for (const lane of ['and', 'or', 'trigram']) {
+    if (ceilings[lane] != null && ceilings[lane] <= k) signals.push(lane);
+  }
+  const reachableAtDepth = Object.values(ceilings).some((c) => c != null && c <= tier.laneDepth);
+  const pendingLanes = VECTOR_ONLY_FAMILIES.has(q.family) || signals.length === 0 ? ['vector'] : [];
 
   const dupGroup = target.dup_group;
   const dupSiblings = dupGroup != null ? Math.max(0, (index.dupGroups.get(dupGroup)?.length ?? 1) - 1) : 0;
   const plantedDistractors = q.diagnostics?.distractor_ids?.length ?? 0;
 
-  let solvable = signals.length > 0;
+  let solvable = signals.length > 0 || pendingLanes.length > 0;
   // Certificate rule 4 (DESIGN.md 4.2): paraphrase_nolex's entire claim is
-  // zero lexical overlap with the target body. Nonzero overlap here would
-  // mean the family is not testing what its name says, and that overrides
-  // whatever the vector lane found.
+  // zero lexical overlap with the target. Nonzero overlap means the family is
+  // not testing what its name says, and no lane result overrides that.
   if (q.family === 'paraphrase_nolex' && lexicalOverlap !== 0) solvable = false;
+  // A partial_ref query whose (detail, noun) pair is shared by more documents
+  // than the OR lane can rank is unsolvable rather than hard: the vague
+  // filler words carry no postings, so nothing else can separate it.
+  if (q.family === 'partial_ref' && (ceilings.or == null || ceilings.or > config.corpus.partialRef.maxPairCoOccurrence)) solvable = false;
+  // typo_noisy leaves only the trigram lane standing (AND is empty, and the
+  // OR fragment bar rejects a row matching one clean term out of two).
+  if (q.family === 'typo_noisy' && !signals.includes('trigram')) solvable = false;
 
   return {
     certificate: {
       solvable,
       signals,
+      // Set to a measured lane list by load.mjs --verify-oracle. Offline this
+      // is honestly "not yet known", never a proxy-vector guess.
+      pending_lanes: pendingLanes,
+      vector_verified: false,
+      lane_ceilings: ceilings,
       dup_siblings: dupSiblings,
       planted_distractors: plantedDistractors,
       lexical_overlap: Number(lexicalOverlap.toFixed(4)),
@@ -987,23 +1293,143 @@ export function certifyQuery(q, index, tier) {
   return computeCertificateAndReach(q, index, tier).certificate;
 }
 
+// ---------------------------------------------------------------------------
+// Re-verbalization: a NEW query text for the SAME target, from a fresh seeded
+// sub-stream. Used twice -- by generateQueries when the offline certificate
+// rejects a first draft, and by load.mjs --verify-oracle's repair loop when
+// the post-load measurement rejects one. The second caller is why this never
+// touches the memory: by then the corpus is loaded and embedded, so a repair
+// that regenerated the target would invalidate everything downstream of it.
+// ---------------------------------------------------------------------------
+
+function contentWordsOf(text) {
+  return (text.toLowerCase().match(/[a-z0-9']+/g) ?? []).filter((w) => !STOPWORDS.has(w) && w.length > 1);
+}
+
+// Rarest first: a term the whole corpus shares cannot separate the target
+// from anything, and both typo_noisy and partial_ref are ranked by exactly
+// the terms the query keeps.
+function rareContentWords(memory, index, minLength = 1) {
+  const seen = new Set();
+  const words = [];
+  for (const w of contentWordsOf(`${memory.title} ${memory.body}`)) {
+    if (w.length < minLength || seen.has(w)) continue;
+    seen.add(w);
+    words.push({ word: w, df: index.df.get(approxStem(w)) ?? index.totalDocs });
+  }
+  words.sort((a, b) => a.df - b.df || (a.word < b.word ? -1 : 1));
+  return words;
+}
+
+export function reverbalizeQuery(q, index, tier, round) {
+  const r = makeRng(`${config.oracle.repairSeed}::${tier.name ?? 'adhoc'}::${q.qid}::round:${round}`);
+  const target = index.byId.get(q.targets[0]);
+  if (!target) throw new Error(`reverbalizeQuery: target ${q.targets[0]} missing from index (qid=${q.qid})`);
+
+  if (q.family === 'paraphrase_nolex') {
+    const frame = q.diagnostics?.regen?.frame;
+    if (!frame) return null;
+    const present = new Set(frame.present ?? ['action', 'prop', 'mishap', 'time']);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const drawn = renderParaphraseQuery(r.fork(`attempt:${attempt}`), frame, present);
+      if (paraphraseOverlapStems(drawn.text, target).length === 0 && drawn.text !== q.text) return drawn.text;
+    }
+    return null;
+  }
+
+  if (q.family === 'typo_noisy') {
+    // word_similarity scores the best CONTIGUOUS word-aligned extent of the
+    // body, so the two terms the query keeps have to be adjacent in the body
+    // or no single extent covers both and the lane's score collapses. The
+    // planted pair is adjacent by construction ("It centered on the X and the
+    // Y"), so repair varies the corruption and drops the companion rather
+    // than reaching for two arbitrary rare words from opposite ends of the
+    // body -- which is what an earlier version did, and why it could not
+    // converge.
+    const planted = q.diagnostics?.regen?.typo;
+    if (!planted?.term) return null;
+    const variants = [
+      { term: planted.term, companion: planted.companion, op: 'swap' },
+      { term: planted.term, companion: planted.companion, op: 'drop' },
+      { term: planted.term, companion: null, op: 'drop' },
+      { term: planted.term, companion: null, op: 'swap' },
+    ];
+    for (let attempt = 0; attempt < variants.length * 3; attempt++) {
+      const v = variants[attempt % variants.length];
+      const { text } = renderTypoQuery(r.fork(`attempt:${attempt}`), v.term, v.companion, v.op);
+      if (text !== q.text) return text;
+    }
+    return null;
+  }
+
+  if (q.family === 'partial_ref') {
+    // Pick the (detail, noun) pair present in the target that co-occurs in the
+    // fewest documents: that pair IS the OR lane's whole ranking signal, so
+    // minimizing its co-occurrence is exactly minimizing the lane's ceiling.
+    const words = rareContentWords(target, index).slice(0, 12);
+    const details = words.filter((w) => DETAIL_WORDS.includes(w.word));
+    const nouns = words.filter((w) => !DETAIL_WORDS.includes(w.word));
+    if (details.length === 0 || nouns.length === 0) return null;
+    let best = null;
+    for (const d of details) {
+      for (const n of nouns) {
+        const dp = index.postings.get(approxStem(d.word));
+        const np = index.postings.get(approxStem(n.word));
+        if (!dp || !np) continue;
+        let co = 0;
+        for (const id of dp) if (np.has(id)) co++;
+        if (best === null || co < best.co) best = { detail: d.word, noun: n.word, co };
+      }
+    }
+    if (!best) return null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const text = renderPartialRefQuery(r.fork(`attempt:${attempt}`), best.detail, best.noun);
+      if (text !== q.text) return text;
+    }
+    return null;
+  }
+
+  return null;
+}
+
 export function generateQueries(tier, split, index) {
   if (split !== 'dev' && split !== 'test') throw new Error(`generateQueries: split must be "dev" or "test", got "${split}"`);
   const plan = getPlan(tier);
   const splitCases = plan.cases.filter((c) => c.split === split);
   const queries = [];
   const failures = [];
+  const repaired = [];
   splitCases.forEach((c, i) => {
     const draft = finalizeQuery(c, i + 1);
     draft.certificate = certifyQuery(draft, index, tier);
-    if (!draft.certificate.solvable) failures.push({ qid: draft.qid, family: draft.family, certificate: draft.certificate });
+    // The offline certificate can reject a first draft (a partial_ref pair
+    // that turned out common once the whole corpus existed, a typo whose
+    // corrupted token missed trigramThreshold). Re-verbalizing costs nothing
+    // here, so it happens before the query is ever written to disk.
+    for (let round = 1; round <= config.oracle.repairRounds && !draft.certificate.solvable; round++) {
+      const text = reverbalizeQuery(draft, index, tier, round);
+      if (!text) break;
+      draft.text = text;
+      draft.diagnostics.repair_round = round;
+      draft.certificate = certifyQuery(draft, index, tier);
+      if (draft.certificate.solvable) repaired.push(draft.qid);
+    }
+    if (!draft.certificate.solvable) {
+      failures.push({ qid: draft.qid, family: draft.family, text: draft.text, certificate: draft.certificate });
+    }
     queries.push(draft);
   });
   if (failures.length > 0) {
+    const byFamily = {};
+    for (const f of failures) byFamily[f.family] = (byFamily[f.family] ?? 0) + 1;
     throw new Error(
-      `generateQueries: ${failures.length}/${queries.length} ${split} queries failed the solvability certificate ` +
-      `(DESIGN.md 4.2): ${JSON.stringify(failures.slice(0, 10))}${failures.length > 10 ? ' ...' : ''}`,
+      `generateQueries: ${failures.length}/${queries.length} ${split} queries failed the offline solvability certificate ` +
+      `after ${config.oracle.repairRounds} re-verbalize rounds (DESIGN.md 4.2). By family: ${JSON.stringify(byFamily)}. ` +
+      `First failures: ${JSON.stringify(failures.slice(0, 5))}`,
     );
+  }
+  if (repaired.length > 0) {
+    console.warn(`gen-corpus: re-verbalized ${repaired.length} ${split} queries to clear the offline certificate (${repaired.slice(0, 5).join(', ')}${repaired.length > 5 ? ' ...' : ''})`);
   }
   return queries;
 }
@@ -1024,11 +1450,12 @@ export function generateMultiTargetQueries(tier, index) {
     const signalSet = new Set();
     let allReachable = true;
     for (const targetId of draft.targets) {
-      const andRank = andLaneRank(rawStems, index, targetId);
-      const orRank = orLaneRank(rawStems, index, targetId, fragmentBar);
+      const k = config.oracle.bestLaneRankAt;
+      const andCeiling = andLaneCeiling(rawStems, index, targetId);
+      const orCeiling = orLaneCeiling(rawStems, index, targetId, fragmentBar);
       let reached = false;
-      if (andRank != null && andRank <= 10) { signalSet.add('and'); reached = true; }
-      if (orRank != null && orRank <= 10) { signalSet.add('or'); reached = true; }
+      if (andCeiling != null && andCeiling <= k) { signalSet.add('and'); reached = true; }
+      if (orCeiling != null && orCeiling <= k) { signalSet.add('or'); reached = true; }
       if (!reached) allReachable = false;
     }
     draft.certificate = {
@@ -1051,48 +1478,54 @@ export function generateMultiTargetQueries(tier, index) {
 // target is ranked <=10 by at least one lane in isolation, overall and per
 // family, plus the weaker depth-100 reachability diagnostic.
 //
-// Known limitation, worth reading before trusting a 1.0000 here: this
-// generator is constructive (query text is built FROM words force-injected
-// into the target body, then certified against that same text), so the
-// AND/OR lanes it certifies against are close to tautological -- they
-// almost cannot fail. DESIGN.md 4.3 describes this gate as something that
-// "can genuinely come in at 0.88 and stop the ladder"; as shipped, this
-// module will report close to 1.0 at every tier regardless of how hard the
-// corpus actually is for the real engine, because the brute-force check
-// and the construction share the same planted evidence. A 1.0000 here is
-// not proof the corpus is well-calibrated for claim A's 0.60-0.80 naive /
-// 0.91 tuned bands (DESIGN.md 4.4) -- only bench-recall.mjs running the
-// real engine against real embeddings can show that. Treat this gate as
-// "did generation succeed at planting a findable signal", not as evidence
-// about retrieval difficulty.
+// This is the PROVISIONAL oracle. It counts a query as solvable when a
+// lexical lane's rank ceiling clears k, or when the query's only remaining
+// hope is the vector lane, which this module cannot see. `vector.verified` is
+// false in what it writes, and load.mjs --verify-oracle overwrites the file
+// with measured per-lane ranks including exact cosine.
+//
+// Reading a 1.0000 here as "the corpus is solvable" is exactly the mistake
+// the smoke run made: the lexical checks are near-tautological by
+// construction (the query text is built FROM words planted in the target),
+// and the family whose solving lane is the vector lane contributes an
+// unverified "pending" to the same number. Only the verified file is a
+// statement about retrieval difficulty.
 export function oracleCeiling(queries, index, tier) {
   const perFamily = {};
   let bestLaneHits = 0;
   let depthHits = 0;
+  let pending = 0;
 
   for (const q of queries) {
     const { certificate, reachableAtDepth } = computeCertificateAndReach(q, index, tier);
-    perFamily[q.family] ??= { n: 0, bestLaneHits: 0, depthHits: 0 };
+    perFamily[q.family] ??= { n: 0, bestLaneHits: 0, depthHits: 0, pending: 0 };
     perFamily[q.family].n++;
     if (certificate.solvable) { perFamily[q.family].bestLaneHits++; bestLaneHits++; }
     if (reachableAtDepth) { perFamily[q.family].depthHits++; depthHits++; }
+    if (certificate.pending_lanes.length > 0) { perFamily[q.family].pending++; pending++; }
   }
 
   const n = queries.length;
   return {
     tier: tier.name ?? null,
     generatedAt: new Date().toISOString(),
+    vector: {
+      verified: false,
+      note: 'lexical lanes certified offline by rank ceiling; the vector lane needs the loaded corpus -- run load.mjs --verify-oracle',
+    },
     overall: {
       n,
       bestLaneRankAt10: n ? bestLaneHits / n : 0,
       depth100ReachabilityAt: n ? depthHits / n : 0,
+      pendingVectorVerification: pending,
     },
     perFamily: Object.fromEntries(Object.entries(perFamily).map(([f, v]) => [f, {
       n: v.n,
       bestLaneRankAt10: v.n ? v.bestLaneHits / v.n : 0,
       depth100Reachability: v.n ? v.depthHits / v.n : 0,
+      pendingVectorVerification: v.pending,
     }])),
-    gate: { threshold: 0.97, passed: (n ? bestLaneHits / n : 0) >= 0.97 },
+    gate: { threshold: config.oracle.gate, passed: (n ? bestLaneHits / n : 0) >= config.oracle.gate, provisional: true },
   };
 }
 
