@@ -479,6 +479,13 @@ The projected naive score, family by family (vector-only top-10 over the full co
 That is a projection, not a result.
 The calibration procedure in 4.4 is what turns it into a number, and the mix is allowed to move only inside that procedure.
 
+**Measured at the 1K smoke tier (2026-08-23), the projection is optimistic about how badly a modern embedder does.**
+Naive came in at 0.880, with the per-family vector-only numbers landing well above their projections for the families whose lane the vector was supposed to break -- `rare_token` 1.000 against 0.35, `entity_swap` 1.000 against 0.50.
+The `entity_swap` result was checked rather than assumed: its group members now render byte-identical prose apart from the swapped entity, and cosine still ranks the queried name first, so a name token dominates 350 characters of otherwise identical text.
+There is also an arithmetic floor under naive that no dial reaches.
+`paraphrase_nolex` is 20% of the mix and the vector lane is its only lane, so the 0.97 ceiling gate forces its vector recall to ~0.97 and it contributes ~0.194 to naive unconditionally; naive <= 0.85 therefore requires the other 80% to average <= 0.82, and measured they average 0.89.
+Two resolutions exist and both change a frozen contract, so neither is taken here: shift the mix away from `paraphrase_nolex` toward the families a non-vector lane solves (4.4's own prescription, but it invalidates the projections above), or accept that the smoke band was set against a projection the real embedder disproves and re-check the band at 50K, where competitor density is 50x higher.
+
 ### 4.2 The solvability certificate
 
 An unanswerable query silently caps the benchmark's ceiling and no amount of engine work recovers it.
@@ -505,6 +512,27 @@ That one is reported as a weaker diagnostic and is **not** a gate, because certi
 
 **Gate: best-lane-rank@10 >= 0.97 at the 1K smoke tier and again at 50K.**
 Below that, the corpus is too hard for the claim and the mix must be loosened *before* any engine tuning happens -- which is allowed, because at that point no tuned number exists to steer toward.
+
+#### 4.3.1 Vector certification is post-load, and why (added 2026-08-23, after the rung-1 smoke run)
+
+The vector lane cannot be certified at generation time, and the first smoke run proved that the hard way.
+
+`gen-corpus.mjs` runs before any embedding exists, so its original implementation certified the vector lane against `lib/synth-vectors.mjs` proxy vectors and said so in a comment.
+Measured against the real embedder (`scripts/lib/embeddings.mjs`, nomic-embed-text-v1.5), the proxy was not merely imprecise, it was inverted: it certified every `paraphrase_nolex` query at rank 1 while the real model ranked those same targets around 500th.
+The harness reported an oracle ceiling of 1.0 for a corpus whose real ceiling was 0.765, and a gate that cannot fail is not a gate.
+
+So certification is split by what each half can actually prove:
+
+- **Offline, in `gen-corpus.mjs`.** The lexical lanes only, and as a rank *ceiling* rather than a rank -- the largest position the target can hold under any tie-break Postgres might apply. AND reports its match-set size; OR counts rows matching at least as many query lexemes as the target; trigram brackets `word_similarity` between a lower bound from one concrete extent and an upper bound from the best window's trigram overlap. A ceiling of 10 or better is a true statement about the lane, where the earlier code's guess at `ts_rank_cd`'s ordering was not. `oracle.json` written here carries `vector.verified: false`.
+- **Post-load, in `load.mjs --verify-oracle`.** Every lane's real rank against the corpus that was actually loaded and actually embedded, with the vector lane measured as an exact cosine rank in SQL rather than the HNSW lane's approximate one -- rule 2 above asks for a statement about the lane, not about the index, and a count over a distance comparison cannot use the index. This rewrites `oracle.json` with `vector.verified: true` and keeps the offline numbers alongside under `provisionalOffline` so the two can be compared rather than one silently replacing the other.
+
+**The authoritative oracle is the verified file.** `bench-recall.mjs` prints `oracle.overall.bestLaneRankAt10` in its headline table, and that key means the post-load number once verify has run.
+
+`--verify-oracle` also runs a bounded repair loop (`config.oracle.repairRounds`).
+A query no lane reaches is re-verbalized against the *same* target from a seeded sub-stream, re-embedded in place, and re-measured.
+Repair is text-only by construction: the query-vector cache's offsets are derived from the dev and test file lengths, so adding or removing a query would shift every offset after it.
+Repair belongs before the freeze in 4.4 step 6, and `CORPUS.lock` now hashes the query files as well as `memories.jsonl` so that ordering is checkable rather than a convention.
+A family that will not converge inside the bound is reported as a finding, not looped on.
 
 ### 4.4 Calibration procedure, with the freeze point marked
 
