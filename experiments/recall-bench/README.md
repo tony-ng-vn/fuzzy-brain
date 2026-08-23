@@ -59,7 +59,7 @@ The smoke tier takes about 18 seconds and writes into `.out/smoke1k/`:
 - `memories.jsonl`, 1,000 records
 - `queries-dev.jsonl` and `queries-test.jsonl`, 100 queries each
 - `queries-multi.jsonl`, the separately reported multi-target set
-- `oracle.json`, written only with `--verify`
+- `oracle.json`, written only with `--verify` -- and provisional: it certifies the lexical lanes only, and carries `vector.verified: false` until the post-load verify step runs (see `DESIGN.md` section 4.3.1)
 - `CORPUS.lock`, the freeze point described in `DESIGN.md` section 4.4
 
 Expect a warning that the smoke tier only fits about 65 of the configured 300 multi-target cases.
@@ -86,6 +86,22 @@ Caching query vectors is not a nicety.
 Tuning takes dozens of `bench-recall` runs, and re-embedding 2,000 queries costs 26 seconds every time.
 
 `--stream` skips writing `memories.jsonl` and feeds the generator straight into `COPY`, which matters only at the 10M tier where the file would cost roughly 4 GB of scratch disk.
+
+### Verifying the oracle, after loading
+
+```sh
+node load.mjs --tier smoke1k --verify-oracle [--repair-rounds 3]
+```
+
+Run this after the load, before any bench.
+It measures every query's rank in every lane against the corpus that was actually embedded, with the vector lane as an exact cosine rank in SQL, and rewrites `oracle.json` with `vector.verified: true`.
+That file is the authoritative oracle; the one `gen-corpus --verify` writes is a provisional lexical-only number.
+
+Queries no lane reaches are re-verbalized against the same target from a seeded sub-stream, re-embedded in place, and re-measured, for at most `config.oracle.repairRounds` rounds.
+A family that does not converge inside that bound is printed as a finding rather than looped on.
+
+The step refuses to trust a query-vector cache that does not match the query text on disk, and re-embeds instead.
+Regenerating a corpus without re-running the sweep is exactly how a verified-looking oracle gets measured against vectors for questions nobody asked.
 
 ### The quality bench (claim A)
 
@@ -131,7 +147,7 @@ They cover the safety allowlist and the no-managed-database audit, the corpus co
 ```
 config.mjs        every tunable, plus resolveTier(); the frozen contract
 gen-corpus.mjs    memories, queries, ground truth, solvability certificates, oracle ceiling
-load.mjs          COPY ingest, embedding sweep, query-vector cache, index build
+load.mjs          COPY ingest, embedding sweep, query-vector cache, index build, post-load oracle verification
 engine.mjs        lanes, query features, lane weighting, fusion SQL, filters
 rerank.mjs        the linear rerank scorer, tuned independently
 bench-recall.mjs  Recall@10, the ablation ladder, the failure taxonomy
