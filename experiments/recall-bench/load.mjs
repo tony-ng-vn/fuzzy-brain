@@ -4,7 +4,7 @@
 // signatures + CLI in section 3.6/3.7.
 //
 // Usage (section 3.7):
-//   node load.mjs --tier <name> [--stream] [--skip-embed]
+//   node load.mjs --tier <name> [--stream] [--skip-embed] [--verify-oracle]
 //     [--vector-index hnsw|ivfflat] [--resume]
 //
 // Deviations from the literal DESIGN.md text, and why, collected here rather
@@ -68,7 +68,7 @@ import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,6 +78,9 @@ import { config, resolveTier } from './config.mjs';
 import { assertBenchTarget, benchClient } from './lib/safety.mjs';
 import { hashString } from './lib/rng.mjs';
 import { memoryVector, toHalfvecLiteral } from './lib/synth-vectors.mjs';
+import { writeJsonl } from './lib/jsonl.mjs';
+import { parseQueryFeatures, lexicalQueryParams } from './engine.mjs';
+import { buildMemoryIndex, reverbalizeQuery } from './gen-corpus.mjs';
 import { embedDocuments, embedQuery } from '../../scripts/lib/embeddings.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -154,7 +157,7 @@ function slugId(slug) {
 // [0.1,-0.2,...] -> "[0.1,-0.2,...]", the real-vector `vector` column format
 // (mirrors scripts/embed-sweep.mjs's vectorLiteral).
 function vectorLiteral(vec) {
-  return `[${vec.join(',')}]`;
+  return `[${Array.from(vec).join(',')}]`;
 }
 
 function resolvePsqlBin() {
@@ -463,6 +466,277 @@ export async function buildIndexes(client, tier, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Post-load oracle verification (DESIGN.md section 4, post-load note)
+//
+// The corpus generator cannot certify the vector lane: at the real-vector
+// tiers the embeddings do not exist until this file has run. It used to try
+// anyway, with lib/synth-vectors.mjs as a proxy, and the proxy was wrong in
+// the direction that mattered -- it certified paraphrase_nolex at rank 1
+// while the real embedder ranked those targets ~500th. So the authoritative
+// oracle is measured here, against the corpus that was actually loaded and
+// actually embedded, with exact cosine in SQL.
+//
+// Why its own statement rather than engine.retrieve(): retrieve() assembles
+// its `lanes` map from the fused top-50, so a target sitting at lane rank 80
+// never appears in it. The oracle needs each lane's rank at full depth. The
+// AND/OR bind parameters come from engine.lexicalQueryParams so the two
+// cannot drift apart in how they build the disjunction or the fragment bar.
+//
+// Why exact cosine rather than the HNSW lane's rank: DESIGN.md 4.2 rule 2
+// asks for "a true statement about the lane rather than a guess about the
+// index". A count over a distance comparison cannot use the HNSW index, so
+// it is exact by construction.
+// ---------------------------------------------------------------------------
+
+function buildOracleSql(tier, depth, trigramThreshold) {
+  const table = `${tier.schema}.memories`;
+  const withTrigram = tier.vector === 'real';
+  const simExpr = `word_similarity(q.raw, m.title || ' ' || m.body)`;
+  const trigramCte = withTrigram
+    ? `,
+trg_lane as (
+  select m.id, row_number() over (order by ${simExpr} desc, m.id) as rnk
+  from ${table} m, q
+  where ${simExpr} >= ${trigramThreshold}
+  order by ${simExpr} desc, m.id limit ${depth}
+)`
+    : '';
+  const trigramSelect = withTrigram ? `(select rnk from trg_lane where id = $4) as trg_rank` : `null::bigint as trg_rank`;
+  return `with q as (
+  select $1::text as raw,
+         websearch_to_tsquery('english', $1) as andq,
+         to_tsquery('english', $2) as orq,
+         $5::vector as vec
+),
+and_lane as (
+  select m.id, row_number() over (order by ts_rank_cd(m.fts, q.andq) desc, m.id) as rnk
+  from ${table} m, q
+  where m.fts @@ q.andq
+  order by ts_rank_cd(m.fts, q.andq) desc, m.id limit ${depth}
+),
+or_lane as (
+  select m.id, row_number() over (order by ts_rank_cd(m.fts, q.orq) desc, m.id) as rnk
+  from ${table} m, q
+  where m.fts @@ q.orq
+    and (select count(*) from unnest($3::text[]) ql where m.fts @@ to_tsquery('english', ql)) >= $6
+  order by ts_rank_cd(m.fts, q.orq) desc, m.id limit ${depth}
+)${trigramCte},
+tgt as (select embedding as vec from ${table} where id = $4)
+select
+  (select rnk from and_lane where id = $4) as and_rank,
+  (select rnk from or_lane  where id = $4) as or_rank,
+  ${trigramSelect},
+  (select count(*) + 1 from ${table} m, q, tgt
+     where m.embedding is not null and (m.embedding <=> q.vec) < (tgt.vec <=> q.vec)) as vector_rank`;
+}
+
+const laneRankNumber = (v) => (v === null || v === undefined ? null : Number(v));
+
+export async function measureLaneRanks(client, tier, query, queryVector, cfg = config) {
+  const qf = parseQueryFeatures(query.text, EMPTY_ORACLE_VOCAB, cfg);
+  const { raw, contentTerms, orQuery, fragmentBar } = lexicalQueryParams(qf);
+  // An all-stopword query has no OR disjunction to build; to_tsquery('') is a
+  // syntax error, so bind a lexeme nothing matches rather than crash.
+  const orParam = orQuery ?? 'zzzznomatchzzzz';
+  const { rows } = await client.query(
+    buildOracleSql(tier, tier.laneDepth, cfg.lanes.trigramThreshold),
+    [raw, orParam, contentTerms, query.targets[0], vectorLiteral(queryVector), fragmentBar],
+  );
+  const r = rows[0];
+  return {
+    and: laneRankNumber(r.and_rank),
+    or: laneRankNumber(r.or_rank),
+    trigram: laneRankNumber(r.trg_rank),
+    vector: laneRankNumber(r.vector_rank),
+  };
+}
+
+// parseQueryFeatures only reads the vocab for idf/entity features, none of
+// which affect the lane SQL above -- the oracle measures lanes, not weights.
+const EMPTY_ORACLE_VOCAB = { totalDocs: 1, df: new Map(), people: new Map(), places: new Map() };
+
+function summarizeOracle(records, tier, cfg) {
+  const k = cfg.oracle.bestLaneRankAt;
+  const depth = tier.laneDepth;
+  const perFamily = {};
+  let bestLaneHits = 0;
+  let depthHits = 0;
+  for (const rec of records) {
+    const ranks = Object.values(rec.laneRanks).filter((v) => v != null);
+    const best = ranks.length ? Math.min(...ranks) : null;
+    const hit = best != null && best <= k;
+    const reached = best != null && best <= depth;
+    perFamily[rec.family] ??= { n: 0, bestLaneHits: 0, depthHits: 0, byLane: {} };
+    perFamily[rec.family].n++;
+    if (hit) { perFamily[rec.family].bestLaneHits++; bestLaneHits++; }
+    if (reached) { perFamily[rec.family].depthHits++; depthHits++; }
+    for (const [lane, rnk] of Object.entries(rec.laneRanks)) {
+      if (rnk != null && rnk <= k) perFamily[rec.family].byLane[lane] = (perFamily[rec.family].byLane[lane] ?? 0) + 1;
+    }
+  }
+  const n = records.length;
+  return {
+    overall: { n, bestLaneRankAt10: n ? bestLaneHits / n : 0, depth100ReachabilityAt: n ? depthHits / n : 0 },
+    perFamily: Object.fromEntries(Object.entries(perFamily).map(([f, v]) => [f, {
+      n: v.n,
+      bestLaneRankAt10: v.n ? v.bestLaneHits / v.n : 0,
+      depth100Reachability: v.n ? v.depthHits / v.n : 0,
+      solvedByLane: v.byLane,
+    }])),
+  };
+}
+
+// Bounded on purpose (config.oracle.repairRounds). A family that will not
+// converge is a finding to report, not something to loop on: repairing forever
+// would just be searching for a corpus that flatters the harness.
+export async function verifyOracle(client, tier, opts) {
+  const cfg = opts.cfg ?? config;
+  const { dev, test, vectors, dims, onLog = () => {} } = opts;
+  const all = [...dev.map((q, i) => ({ q, block: 'dev', i })), ...test.map((q, i) => ({ q, block: 'test', i }))];
+  const offsetOf = (entry) => (entry.block === 'dev' ? entry.i : dev.length + entry.i) * dims;
+  const vectorOf = (entry) => vectors.subarray(offsetOf(entry), offsetOf(entry) + dims);
+
+  const records = new Map();
+  for (const entry of all) {
+    records.set(entry.q.qid, {
+      qid: entry.q.qid, family: entry.q.family, entry,
+      laneRanks: await measureLaneRanks(client, tier, entry.q, vectorOf(entry), cfg),
+    });
+  }
+
+  const k = cfg.oracle.bestLaneRankAt;
+  const bestOf = (rec) => {
+    const ranks = Object.values(rec.laneRanks).filter((v) => v != null);
+    return ranks.length ? Math.min(...ranks) : null;
+  };
+
+  const rounds = [];
+  const nonConverging = [];
+  for (let round = 1; round <= (opts.repairRounds ?? cfg.oracle.repairRounds); round++) {
+    const failing = [...records.values()].filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
+    if (failing.length === 0) break;
+
+    const rewritten = [];
+    for (const rec of failing) {
+      const text = reverbalizeQuery(rec.entry.q, opts.index, tier, round);
+      if (!text) { continue; }
+      rec.entry.q.text = text;
+      rec.entry.q.diagnostics.repair_round = round;
+      rewritten.push(rec);
+    }
+    if (rewritten.length === 0) break;
+
+    // Re-embed only what changed, straight into the cache buffer, so the
+    // dev-block-then-test-block offsets bench-recall.mjs reads stay valid.
+    // Repair is text-only for exactly this reason: adding or removing a query
+    // would shift every offset after it.
+    for (const rec of rewritten) {
+      const vec = await embedQuery(rec.entry.q.text);
+      const base = offsetOf(rec.entry);
+      for (let d = 0; d < dims; d++) vectors[base + d] = vec[d];
+      rec.laneRanks = await measureLaneRanks(client, tier, rec.entry.q, vectorOf(rec.entry), cfg);
+    }
+
+    const stillFailing = rewritten.filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
+    rounds.push({ round, attempted: failing.length, rewritten: rewritten.length, stillFailing: stillFailing.length });
+    onLog(`  repair round ${round}: ${failing.length} failing, ${rewritten.length} re-verbalized, ${stillFailing.length} still failing`);
+  }
+
+  const leftover = [...records.values()].filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
+  const byFamily = {};
+  for (const rec of leftover) byFamily[rec.family] = (byFamily[rec.family] ?? 0) + 1;
+  for (const [family, count] of Object.entries(byFamily)) nonConverging.push({ family, count });
+
+  // Fold the measurement back into each query's certificate, so a query file
+  // on disk carries a verified certificate rather than the provisional one.
+  for (const rec of records.values()) {
+    const q = rec.entry.q;
+    q.certificate.lane_ranks_measured = rec.laneRanks;
+    q.certificate.signals = Object.entries(rec.laneRanks).filter(([, r]) => r != null && r <= k).map(([lane]) => lane);
+    q.certificate.pending_lanes = [];
+    q.certificate.vector_verified = true;
+    q.certificate.solvable = q.certificate.signals.length > 0;
+  }
+
+  const records0 = [...records.values()];
+  return {
+    summary: summarizeOracle(records0, tier, cfg),
+    rounds,
+    nonConverging,
+    repairedQids: records0.filter((r) => r.entry.q.diagnostics.repair_round > 0).map((r) => r.qid),
+  };
+}
+
+async function runVerifyOracle(tier, args) {
+  const outDir = join(HERE, '.out', tier.name);
+  const cachePath = join(outDir, 'query-vectors.f32');
+  if (!existsSync(cachePath)) {
+    throw new Error(`--verify-oracle needs the query-vector cache at ${cachePath}; run the embedding sweep first`);
+  }
+
+  const memories = await collectJsonl(join(outDir, 'memories.jsonl'));
+  const index = buildMemoryIndex(memories);
+  const devPath = join(outDir, 'queries-dev.jsonl');
+  const testPath = join(outDir, 'queries-test.jsonl');
+  const dev = await collectJsonl(devPath);
+  const test = await collectJsonl(testPath);
+
+  const buf = await readFile(cachePath);
+  const vectors = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const expected = (dev.length + test.length) * tier.dims;
+  if (vectors.length < expected) {
+    throw new Error(`query-vector cache has ${vectors.length} floats, need ${expected} (dev ${dev.length} + test ${test.length} at dims=${tier.dims})`);
+  }
+
+  const client = benchClient();
+  await client.connect();
+  const started = Date.now();
+  try {
+    const result = await verifyOracle(client, tier, {
+      dev, test, vectors, dims: tier.dims, index, cfg: config,
+      repairRounds: args['repair-rounds'] ? Number.parseInt(args['repair-rounds'], 10) : config.oracle.repairRounds,
+      onLog: (line) => console.log(line),
+    });
+
+    // Repair changed query TEXT only, so the file's line count and therefore
+    // every query-vector offset is unchanged (see verifyOracle's comment).
+    if (dev.length + test.length !== expected / tier.dims) throw new Error('verify-oracle: query count changed during repair');
+    await writeJsonl(devPath, dev);
+    await writeJsonl(testPath, test);
+    await writeFile(cachePath, Buffer.from(vectors.buffer, vectors.byteOffset, vectors.byteLength));
+
+    const oraclePath = join(outDir, 'oracle.json');
+    const provisional = existsSync(oraclePath) ? JSON.parse(await readFile(oraclePath, 'utf8')) : null;
+    const oracle = {
+      tier: tier.name,
+      generatedAt: new Date().toISOString(),
+      vector: { verified: true, method: 'exact cosine rank in SQL over the loaded corpus', embedder: 'nomic-embed-text-v1.5' },
+      overall: result.summary.overall,
+      perFamily: result.summary.perFamily,
+      gate: { threshold: config.oracle.gate, passed: result.summary.overall.bestLaneRankAt10 >= config.oracle.gate, provisional: false },
+      repair: { rounds: result.rounds, repaired: result.repairedQids.length, nonConverging: result.nonConverging },
+      // Kept alongside so the two numbers can be compared rather than one
+      // silently replacing the other.
+      provisionalOffline: provisional ? { overall: provisional.overall, perFamily: provisional.perFamily } : null,
+    };
+    await writeFile(oraclePath, JSON.stringify(oracle, null, 2));
+
+    console.log(`verified oracle best-lane-rank@${config.oracle.bestLaneRankAt}: ${oracle.overall.bestLaneRankAt10.toFixed(4)} (gate ${config.oracle.gate}, ${oracle.gate.passed ? 'PASSED' : 'FAILED'})`);
+    console.log(`depth-${tier.laneDepth} reachability: ${oracle.overall.depth100ReachabilityAt.toFixed(4)}`);
+    for (const [family, v] of Object.entries(oracle.perFamily)) {
+      console.log(`  ${family.padEnd(18)} n=${String(v.n).padStart(3)} best-lane@10=${v.bestLaneRankAt10.toFixed(3)} lanes=${JSON.stringify(v.solvedByLane)}`);
+    }
+    if (result.nonConverging.length > 0) {
+      console.log(`families that did not converge after ${config.oracle.repairRounds} repair rounds: ${JSON.stringify(result.nonConverging)}`);
+    }
+    console.log(`oracle written -> ${oraclePath} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
+    if (!oracle.gate.passed) process.exitCode = 1;
+  } finally {
+    await client.end();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -474,6 +748,8 @@ async function main() {
       'skip-embed': { type: 'boolean', default: false },
       'vector-index': { type: 'string', default: 'hnsw' },
       resume: { type: 'boolean', default: false },
+      'verify-oracle': { type: 'boolean', default: false },
+      'repair-rounds': { type: 'string' },
     },
   });
 
@@ -487,6 +763,11 @@ async function main() {
   // line one, before anything else runs.
   console.log(`load.mjs: target=${config.db.url} tier=${args.tier} schema=${tier.schema}`);
   assertBenchTarget(config.db.url);
+
+  if (args['verify-oracle']) {
+    await runVerifyOracle(tier, args);
+    return;
+  }
 
   // 51K embeddings is a long CPU job (DESIGN.md 1.3); lowest priority so the
   // sweep does not starve the rest of the machine, mirroring scripts/embed-sweep.mjs.
