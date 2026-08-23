@@ -348,7 +348,7 @@ const KIND_POOL = ['event', 'event', 'event', 'note', 'preference', 'quote'];
 // Builds one memory's content (everything but `id`), given a render context
 // assembled from `extra`. This is the one function every family builder
 // calls to actually produce a MemoryRecord-shaped object.
-function buildStandaloneMemorySpec(r, topic, tier, extra = {}) {
+function buildStandaloneMemorySpec(r, topic, tier, extra = {}, helpers = null) {
   const person = extra.person ?? pickPerson(r);
   const place = extra.place ?? pickPlace(r);
   const occurred_at = extra.occurred_at ?? randomOccurredAt(r);
@@ -376,7 +376,10 @@ function buildStandaloneMemorySpec(r, topic, tier, extra = {}) {
     occurred_at,
     cluster_id,
     dup_group: extra.dup_group ?? null,
-    rare_token: extra.rareToken ?? null,
+    // Non-null exactly when the token is in the body: the rare_hit rerank
+    // feature and the AND lane both read text, so a column value the body
+    // never mentions would be a signal nothing can find.
+    rare_token: ctx.rareToken && body.includes(ctx.rareToken) ? ctx.rareToken : null,
     distinguisher: extra.distinguisher ?? null,
   };
 }
@@ -560,7 +563,15 @@ function buildRareTokenCase(r, tier, helpers) {
   const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [noun], rareToken });
   const targetContentId = helpers.addMemory(spec);
 
-  const text = `the ${noun} with reference code ${rareToken}`;
+  // Deliberately NOT "the {noun} with reference code {token}". DESIGN.md 4.1
+  // says this family breaks the vector lane because "a rare token barely
+  // moves a 768-dim sentence embedding" -- but naming the target's topic noun
+  // alongside the token hands the vector lane the topical anchor the family
+  // exists to withhold, and measured naive recall for the family came in at
+  // 1.000 against a projection of 0.35. The token alone is what the family
+  // claims to test. The AND lane still reaches the target at rank 1, because
+  // the token is globally unique, so the ceiling is untouched.
+  const text = `the reference code ${rareToken}`;
 
   return {
     query: {
@@ -585,14 +596,21 @@ function buildEntitySwapCase(r, tier, helpers) {
   const sharedCluster = randomClusterId(r, tier);
   const entities = swapPeople ? r.sample(PEOPLE, groupSize) : r.sample(PLACES, groupSize);
 
+  // DESIGN.md 4.1 calls this family "2-4 memories identical in topic and phrasing,
+  // differing only in the person or place". A per-member
+  // fork made each member draw its own padding sentences, so the members
+  // were near-identical in metadata and visibly different in prose -- and
+  // the vector lane, which this family exists to break, separated them
+  // easily (measured naive recall 1.000 against a projection of 0.50). One
+  // shared fork label makes every member render the SAME sentences, so the
+  // planted difference really is the only difference.
   const contentIds = [];
   for (let i = 0; i < groupSize; i++) {
-    const memberR = r.fork(`member:${i}`);
     const person = swapPeople ? entities[i] : sharedPerson;
     const place = swapPeople ? sharedPlace : entities[i];
-    const spec = buildStandaloneMemorySpec(memberR, topic, tier, {
+    const spec = buildStandaloneMemorySpec(r.fork('member-shared'), topic, tier, {
       person, place, occurred_at: sharedDate, cluster_id: sharedCluster, mustInclude,
-    });
+    }, helpers);
     contentIds.push(helpers.addMemory(spec));
   }
 
@@ -625,15 +643,22 @@ function buildNearDupCase(r, tier, helpers) {
   const distinguisher = r.pick(DISTINGUISHER_PHRASES);
   const targetIdx = r.int(0, groupSize - 1);
 
+  // DESIGN.md 4.1 calls this family "a dup_group of near-identical memories; only
+  // one carries the distinguisher the query mentions". A per-member
+  // fork made each member draw its own padding sentences, so the members
+  // were near-identical in metadata and visibly different in prose -- and
+  // the vector lane, which this family exists to break, separated them
+  // easily (measured naive recall 1.000 against a projection of 0.50). One
+  // shared fork label makes every member render the SAME sentences, so the
+  // planted difference really is the only difference.
   const contentIds = [];
   for (let i = 0; i < groupSize; i++) {
-    const memberR = r.fork(`member:${i}`);
-    const spec = buildStandaloneMemorySpec(memberR, topic, tier, {
+    const spec = buildStandaloneMemorySpec(r.fork('member-shared'), topic, tier, {
       cluster_id: sharedCluster,
       mustInclude,
       dup_group: dupGroup,
       distinguisher: i === targetIdx ? distinguisher : null,
-    });
+    }, helpers);
     contentIds.push(helpers.addMemory(spec));
   }
 
@@ -661,16 +686,18 @@ function buildDateFilterCase(r, tier, helpers) {
   const month = r.int(0, 11);
   const day = r.int(1, 28);
 
+  // The same recurring event across several years (DESIGN.md 4.1): one shared
+  // fork label so every year renders identical prose and the date really is
+  // the only thing separating them, which is the whole point of the family.
   const contentIds = [];
   const years = [];
   for (let i = 0; i < groupSize; i++) {
     const year = startYear + i;
     years.push(year);
     const occurred_at = new Date(Date.UTC(year, month, day, r.int(8, 21), r.int(0, 59))).toISOString();
-    const memberR = r.fork(`member:${i}`);
-    const spec = buildStandaloneMemorySpec(memberR, topic, tier, {
+    const spec = buildStandaloneMemorySpec(r.fork('member-shared'), topic, tier, {
       person: sharedPerson, place: sharedPlace, occurred_at, cluster_id: sharedCluster, mustInclude,
-    });
+    }, helpers);
     contentIds.push(helpers.addMemory(spec));
   }
 
@@ -713,7 +740,7 @@ function buildPartialRefCase(r, tier, helpers) {
   const topic = topicById(r.int(0, TOPICS.length - 1));
   const noun = r.pick(topic.concreteNouns);
   const detail = r.pick(DETAIL_WORDS);
-  const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [noun, detail] });
+  const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [noun, detail] }, helpers);
   const targetContentId = helpers.addMemory(spec);
 
   return {
@@ -750,7 +777,7 @@ function buildTypoNoisyCase(r, tier, helpers) {
   if (target.length < config.corpus.typo.minTermLength) throw new Error(`typo_noisy: planted term "${target}" shorter than ${config.corpus.typo.minTermLength} characters`);
   const companions = topic.concreteNouns.filter((w) => w.length >= config.corpus.typo.minTermLength);
   const companion = companions.length && config.corpus.typo.maxCleanTerms > 0 ? r.pick(companions) : null;
-  const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [target, companion].filter(Boolean) });
+  const spec = buildStandaloneMemorySpec(r, topic, tier, { mustInclude: [target, companion].filter(Boolean) }, helpers);
   const targetContentId = helpers.addMemory(spec);
 
   const { text } = renderTypoQuery(r, target, companion);
@@ -794,7 +821,7 @@ function buildMultiTargetCase(r, tier, helpers) {
   const contentIds = [];
   for (let i = 0; i < k; i++) {
     const memberR = r.fork(`member:${i}`);
-    const spec = buildStandaloneMemorySpec(memberR, topic, tier, { mustInclude, cluster_id: sharedCluster });
+    const spec = buildStandaloneMemorySpec(memberR, topic, tier, { mustInclude, cluster_id: sharedCluster }, helpers);
     contentIds.push(helpers.addMemory(spec));
   }
 
@@ -962,7 +989,7 @@ function buildPlan(tier) {
   while (memoryPlans.length < tier.memories) {
     const r = fillerRng.fork(`memory:${fillerIndex}`);
     const topic = topicById(r.int(0, TOPICS.length - 1));
-    helpers.addMemory(buildStandaloneMemorySpec(r, topic, tier));
+    helpers.addMemory(buildStandaloneMemorySpec(r, topic, tier, {}, helpers));
     fillerIndex++;
   }
 
