@@ -327,7 +327,11 @@ async function main() {
 
   try {
     const baseCtx = {
-      tier: args.tier,
+      // engine.mjs's EngineContext.tier is the resolved tier object (it reads
+      // tier.schema/tier.vector/tier.dims directly, per DESIGN.md 3.6's
+      // buildRetrievalSql(tier, profile) signature) -- a bare tier name
+      // string here produces "undefined.memories" from planStatement.
+      tier: tierCfg,
       cfg: config,
       vocab,
       useDeclaredFilters: args['declared-filters'],
