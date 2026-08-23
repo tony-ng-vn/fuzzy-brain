@@ -53,3 +53,7 @@ next-env.d.ts
 
 # local tool runtime state (entire)
 .entire/
+
+# recall bench (disposable container data + generated corpora)
+experiments/recall-bench/.data/
+experiments/recall-bench/.out/

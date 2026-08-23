@@ -1,0 +1,181 @@
+// Every tunable for the recall bench lives here (DESIGN.md section 3.4).
+// This file is a frozen contract: gen-corpus.mjs, load.mjs, engine.mjs,
+// rerank.mjs, and both bench-*.mjs scripts all read the same shape, so a
+// key rename here breaks every sibling module at once.
+//
+// Additive-only deviations from the DESIGN.md 3.4 listing, each because
+// "every tunable lives in config.mjs" (this module's own mandate) means a
+// number section 3.4 never named a field for cannot just be hardcoded in
+// engine.mjs instead:
+//   - `weighting.dateBoost`: section 6.3's `w.vector += 0.2` on a resolved
+//     date has no 3.4 entry.
+//   - `weighting.paraphrase`: section 6.3 defines looksParaphrase as "long,
+//     low maxIdf, no entities" prose with no named thresholds.
+//   - `dates`: the closed-world date parser (section 3.6) needs a reference
+//     point for templates with no year in the text ("last <Month>", "around
+//     <Month>", bare month names); DESIGN.md never names one either.
+//     referenceIso is pinned to lib/lexicon.mjs's own REFERENCE_NOW so both
+//     sides resolve the same templates the same way.
+//   - `resolveTier()`: section 3.4 splits a tier's knobs across `tiers` (size,
+//     dims, schema) and `corpus` (seeds, family mix, dup groups), but every
+//     downstream signature in 3.6 takes a single `tier`. Composing the two
+//     halves lives here so all five entry points get the identical object.
+// Every key that DESIGN.md 3.4 does show verbatim is left exactly as shown --
+// nothing already in section 3.4 is renamed, reshaped, or renumbered.
+
+export const config = {
+  db: {
+    url: process.env.BENCH_DATABASE_URL ?? "postgres://bench:bench@127.0.0.1:55433/recallbench",
+    poolSize: 96,
+  },
+
+  tiers: {
+    smoke1k:    { memories: 1_000,     queriesPerSplit: 100,   vector: "real",      dims: 768, bodyChars: [340, 400], schema: "bench_smoke" },
+    quality50k: { memories: 50_000,    queriesPerSplit: 1_000, vector: "real",      dims: 768, bodyChars: [340, 400], schema: "bench_q50k"  },
+    rehearsal1m:{ memories: 1_000_000, queriesPerSplit: 2_000, vector: "synthetic", dims: 256, bodyChars: [180, 220], schema: "bench_r1m"   },
+    full10m:    { memories: 10_000_000,queriesPerSplit: 5_000, vector: "synthetic", dims: 256, bodyChars: [180, 220], schema: "bench_x10m"  },
+  },
+
+  corpus: {
+    seedMemories: "fuzzy-brain-recall-bench-v1/memories",
+    seedDev:      "fuzzy-brain-recall-bench-v1/queries/dev",
+    seedTest:     "fuzzy-brain-recall-bench-v1/queries/test",
+    familyMix: { paraphrase_nolex: 0.20, rare_token: 0.15, entity_swap: 0.15,
+                 near_dup: 0.15, date_filter: 0.15, partial_ref: 0.10, typo_noisy: 0.10 },
+    // Big enough to actually crowd a top-10. A group of 3-8 cannot: siblings plus
+    // the target still fit in ten slots, so merely finding the group would score.
+    // Large groups stay solvable through the planted `distinguisher` (section 4.2).
+    dupGroupSize: [12, 20],
+    clusters: 400,                 // topic clusters at 50K; scaled to 20_000 at 10M
+    multiTargetShare: 0.0,         // headline test split is single-target on purpose (section 5)
+    multiTargetCount: 300,         // separate reported set -> queries-multi.jsonl
+  },
+
+  lanes: {
+    // Per tier: the quality tier can afford depth, the scale tier cannot.
+    // These are the knobs that decide whether ~5 ms of CPU per query is enough,
+    // so the scale values are priced for recall cost at the 1M rung (rung 3).
+    quality: { depth: 100, efSearch: 100, ivfProbes: 12 },
+    scale:   { depth: 30,  efSearch: 40,  ivfProbes: 8  },
+    rrfK: { and: 60, or: 60, vector: 60, trigram: 60 },
+    trigramThreshold: 0.3,
+    // efSearch to apply when a metadata filter is present on the vector lane
+    // (section 6.1: "hnsw.ef_search is raised to 200 when a filter is present
+    // so a selective filter does not starve the lane"). Not filter-free depth.
+    filteredEfSearch: 200,
+    // Section 6.2's OR-lane fragment bar ("a row counts only when it holds at
+    // least min(2, terms) of the query's lexemes") has no tunable here on
+    // purpose: engine.mjs computes the bar per query as min(2, contentTerms)
+    // and enforces it with a count over the unnested lexemes, so there is no
+    // number for config to own. An earlier draft of this file declared an
+    // orFragmentMaxTerms knob for a pairwise-AND expansion that was never
+    // built; it has been removed rather than left describing a mechanism the
+    // engine does not have.
+  },
+
+  profiles: {
+    // Baseline 1: vector-only top-10. Zero tunables, which is exactly why it is
+    // safe to calibrate corpus difficulty against it (section 4.4).
+    naive:      { lanes: ["vector"], weighting: "fixed", weights: { vector: 1 },
+                  filters: false, rerank: false },
+    // Baseline 2: all lanes, equal weights, textbook RRF, no query awareness.
+    fixedRrf:   { lanes: ["and", "or", "vector"], weighting: "fixed",
+                  weights: { and: 1, or: 1, vector: 1 }, filters: false, rerank: false },
+    tuned:      { lanes: ["and", "or", "vector", "trigram"], weighting: "query-dependent",
+                  filters: true, rerank: true },
+    // Claim B's wording is FTS/GIN + ANN + metadata filters + rerank; trigram is
+    // not in it, and a trigram GIN over 10M x 200 chars would cost 5-8 GB and blow
+    // the disk budget. The trigram lane is quality-tier only, and the scale tier
+    // runs this three-lane profile.
+    tunedScale: { lanes: ["and", "or", "vector"], weighting: "query-dependent",
+                  filters: true, rerank: true },
+  },
+
+  weighting: {
+    // Query-dependent lane weights: see section 6.3 for what each dial means.
+    base:            { and: 1.0, or: 0.6, vector: 1.0, trigram: 0.0 },
+    rareTermBoost:   { and: 1.8, trigram: 0.2 },   // applied when maxIdf >= rareIdfFloor
+    paraphraseBoost: { vector: 1.6, or: 0.8, and: -0.7 },
+    typoBoost:       { trigram: 1.5, and: -0.8 },
+    entityBoost:     { and: 1.3 },
+    // Section 6.3's dateRange rule ("text lanes lose discrimination once the
+    // filter has already cut the year") has no named config field in the 3.4
+    // listing; added here rather than hardcoded in engine.mjs.
+    dateBoost:       { vector: 0.2 },
+    rareIdfFloor: 9.5,             // ln(N/df); calibrated on the dev split only
+    oovRatioFloor: 0.34,           // share of query terms absent from the corpus vocabulary
+    // looksParaphrase = "long, low maxIdf, no entities" (section 6.3 prose).
+    // These three thresholds are what that sentence cashes out to; tuned on
+    // the dev split alongside rareIdfFloor/oovRatioFloor.
+    paraphrase: { minTerms: 6, maxIdfCeiling: 6.0 },
+  },
+
+  // Additive: the closed-world date parser (section 3.6) needs a reference
+  // point to resolve the three relative templates that carry no year in the
+  // text ("last <Month>", "around <Month>", bare month names). DESIGN.md
+  // does not name one. referenceIso: null defaults to real wall-clock "now";
+  // once lib/lexicon.mjs's generator lands, set this to whatever anchor date
+  // it used, or those three templates resolve against the wrong year in the
+  // synthetic corpus. See engine.mjs's date-parser comments.
+  dates: {
+    // Matches lib/lexicon.mjs's REFERENCE_NOW exactly: the corpus generator
+    // resolves "last <Month>"/bare-month templates against this fixed
+    // anchor, not wall-clock time, so the parser has to use the same one.
+    referenceIso: "2026-01-01T00:00:00.000Z",
+  },
+
+  rerank: {
+    topK: 50,                      // candidates handed to the reranker
+    weights: { lexical: 0.9, cosine: 1.0, entity: 1.4, recency: 0.2,
+               dateFit: 1.6, rareHit: 2.0, dupPenalty: -0.7, titleHit: 0.5 },
+    // Additive: section 6.5 names a `recency_decay` feature and a `date_fit`
+    // that "decays outside" the parsed range, but gives neither a time
+    // constant. Both live here rather than in rerank.mjs for the same reason
+    // as dateBoost above -- they are dials someone will tune on the dev split,
+    // and section 6.5 requires the fitted values to be committed so a reported
+    // run reproduces from the repo alone.
+    recencyHalfLifeDays: 730.5,    // two years: a decade-wide corpus should not flatten to ~0
+    dateFitHalfLifeDays: 365.25,   // one year outside the parsed range is worth half
+  },
+
+  load: {
+    mode: "open", offeredQps: 2400, durationSec: 120, warmupSec: 60,
+    closedLoopSweep: [8, 16, 32, 64, 96, 128, 192],
+    distinctQueries: 200_000,
+    latencyBudgetMs: { p50: 41 },
+  },
+};
+
+// Composes a config.tiers[name] entry with the corpus-wide knobs it needs.
+//
+// Every entry point must resolve tiers through this one function. A raw
+// config.tiers entry is missing familyMix/dupGroupSize/seeds, and the corpus
+// generator seeds its RNG off tier.name, so a hand-merged tier object either
+// crashes or -- worse -- silently produces a different corpus than the one
+// gen-corpus.mjs wrote to disk.
+//
+// Cluster count is keyed by vector type, not tier size: DESIGN.md 3.4 says
+// clusters are "400 at 50K; scaled to 20,000 at 10M" but does not say what
+// rehearsal1m uses. Since rehearsal1m and full10m share vector="synthetic",
+// dims=256, and bodyChars -- they are the same generation recipe at
+// different N -- this reads that as "20,000 clusters at every synthetic
+// tier", the more consistent interpretation. Flagged as an interpretation,
+// not a literal transcription.
+export function resolveTier(name, cfg = config) {
+  const base = cfg.tiers[name];
+  if (!base) throw new Error(`resolveTier: unknown tier "${name}"; expected one of ${Object.keys(cfg.tiers).join(', ')}`);
+  const isReal = base.vector === 'real';
+  return {
+    name,
+    ...base,
+    clusters: isReal ? cfg.corpus.clusters : 20_000,
+    familyMix: cfg.corpus.familyMix,
+    dupGroupSize: cfg.corpus.dupGroupSize,
+    multiTargetShare: cfg.corpus.multiTargetShare,
+    multiTargetCount: cfg.corpus.multiTargetCount,
+    seedMemories: cfg.corpus.seedMemories,
+    seedDev: cfg.corpus.seedDev,
+    seedTest: cfg.corpus.seedTest,
+    laneDepth: isReal ? cfg.lanes.quality.depth : cfg.lanes.scale.depth,
+  };
+}
