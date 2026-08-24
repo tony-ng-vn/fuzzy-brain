@@ -971,7 +971,8 @@ Neither is taken.
 | --- | --- | --- |
 | Re-measured baseline, same instrument, none of the above | 5.45 | 5.51 |
 | After the stored tsvector column | 4.39 | 4.49 |
-| After the vector-lane gate | **3.56** | **3.53** |
+| After the vector-lane gate | 3.56 | 3.53 |
+| Final, 20 queries per family | **3.64** | **3.67** |
 
 The date-index change is not a separate row because its effect is confined to one family and the same-session A/B above is the honest measurement of it: `date_filter` 8.99 -> 6.46 ms.
 
@@ -1056,6 +1057,33 @@ Gates:
 - Projected 10M footprint <= 30 GB. Over that: drop to `halfvec(192)` or shorten `body`.
 - Projected HNSW build <= 90 minutes. Over that, **switch to IVFFlat** (`lists = 3162`, about `sqrt(10M)`, `ivfflat.probes = 12`), which builds in a fraction of the time at some recall cost, and record the recall cost by re-running rung 2's quality bench against an IVFFlat index at 50K.
 - 1M load bench comfortably above 2,400 QPS. If 1M cannot clear it, 10M certainly cannot, and the honest move is to report the ceiling found rather than proceed.
+
+#### What the IVFFlat fallback costs in recall, measured at 50K (2026-08-24)
+
+The HNSW build blew the 90-minute gate, so the scale tier runs IVFFlat, and the gate above owes a number for what that costs.
+Here it is.
+Reproduce with `.out/quality50k/ivf-vs-hnsw.sh`.
+
+Method, because the obvious version of this experiment is confounded.
+The 50K table was cloned once into a throwaway schema and **both** arms ran there, so the only difference between the two columns is which vector index exists -- not the schema, not the row order, not the planner's statistics.
+`bench_q50k` itself was never touched, because a tuning agent owns it and dropping its index mid-loop would corrupt their measurement and mine.
+Only `naive` and `fixedRrf` were run: the tuned profile's weights are fitted against this corpus, and running it here would confound an index comparison with a weighting one.
+Test split, 1,000 queries, `hnsw.ef_search` 400 and `ivfflat.probes` 12 as `config.lanes.quality` pins them.
+
+| | HNSW | IVFFlat | Delta |
+| --- | --- | --- | --- |
+| naive Recall@1 | 0.364 | 0.149 | **-0.215** |
+| naive Recall@10 | 0.698 | 0.363 | **-0.335** |
+| fixedRrf Recall@1 | 0.619 | 0.599 | -0.020 |
+| fixedRrf Recall@10 | 0.897 | 0.823 | **-0.074** |
+| Build time at 50K | 18.76 s | 7.89 s | 2.4x faster |
+
+**The vector lane loses about half its standalone recall and the hybrid loses 7 points.**
+`naive` is the vector lane by itself, and at `probes = 12` over 224 lists IVFFlat finds barely more than half of what HNSW finds.
+The hybrid absorbs most of that because the lexical lanes are looking for the same documents, which is the entire argument for fusion -- but 7.4 points is not nothing, and rung 2's gate is Tuned Recall@10 >= 0.91 with the bootstrap lower bound also >= 0.91.
+`fixedRrf` on HNSW already sits at 0.897, so **the quality tier must keep HNSW**, and the scale tier's IVFFlat is a scale-only concession whose recall cost is now on the record rather than assumed small.
+
+This also means the two tiers are no longer measuring the same retrieval system, and any 10M claim inherits the IVFFlat column, not the HNSW one.
 
 #### Rung 3 results (2026-08-24): the per-query cost profile, and two measurement bugs found on the way
 
@@ -1172,32 +1200,47 @@ Until the machine is plugged in, no open-loop or closed-loop window on this box 
 
 #### Re-measured after section 6.7's cost work (2026-08-24, on AC power)
 
-Every window below was taken on AC, on a box checked idle first, and every one of them came back `valid` -- no suspends, no overruns.
+Reproduce with `.out/rehearsal1m/full-validation.sh`, which enforces all three validity conditions this machine can violate: AC power, the suspend verdict, and a contention sampler that watches for the tuning agent's `bench_q50k` bursts every 5 seconds across the whole window.
+
+**The closed-loop ceiling sweep.**
+Every window 60 s warmup plus 120 s measured, every window `valid`, and the sweep as a whole recorded zero contended samples.
 
 | Concurrency | Completed QPS | p50 | p95 | p99 | server sqlMs | window |
 | --- | --- | --- | --- | --- | --- | --- |
-| 8 | 1,580 | 4.85 ms | 9.43 ms | 10.91 ms | 4.92 ms | valid |
-| 16 | 1,868 | 7.69 ms | 16.37 ms | 31.98 ms | 8.39 ms | valid |
-| 32 | 1,838 | 14.77 ms | 35.25 ms | 77.96 ms | 17.28 ms | valid |
-| 48 | 1,901 | 24.66 ms | 47.85 ms | 82.29 ms | 25.13 ms | valid |
+| 8 | 1,509 | 5.12 ms | 9.88 ms | 11.25 ms | 5.15 ms | valid |
+| 16 | 1,778 | 7.87 ms | 17.57 ms | 35.82 ms | 8.80 ms | valid |
+| 32 | **1,805** | 15.52 ms | 35.98 ms | 83.04 ms | 17.58 ms | valid |
+| 64 | 1,710 | 35.45 ms | 80.68 ms | 143.23 ms | 37.23 ms | valid |
 
-**The closed-loop ceiling moved from ~1,300 QPS to ~1,900**, a 46% gain, and the knee moved to concurrency 16: throughput is flat from 16 onward while latency keeps climbing.
+**The closed-loop ceiling moved from ~1,300 QPS to ~1,800**, a 39% gain.
+The knee is at concurrency 16 to 32, and 64 is past it: throughput falls while latency doubles, which is the shape of a saturated machine being asked for more.
 
-**The service-demand profile still overpredicts throughput, and by about the same margin as before.**
-12 cores divided by 3.56 core-ms predicts 3,371 QPS; the machine delivers 1,900.
-That is a 44% overprediction, against the 33% the 6.94 profile showed, so the per-query overhead the profile charges to no lane did not shrink with the SQL.
-Quoting the profile's projected QPS as a throughput result would repeat exactly the error the earlier 1,850 figure made, so it is not quoted as one here.
+**The open-loop runs, which are the ones that decide the gate.**
+Closed-loop reports what a saturated machine completes; open-loop asks whether a fixed arrival rate is sustainable, and the gate additionally fails a window whose in-flight count is growing.
 
-**Open-loop is stricter than closed-loop, and it is the number that matters.**
-A closed-loop sweep reports what the machine completes when it is already saturated.
-Open-loop asks whether a fixed arrival rate is sustainable, and the gate includes an in-flight-growth check, so a window whose median still looks healthy fails when the queue is quietly growing behind it.
-Measured on the same clean period: **1,200 QPS offered sustained cleanly (p50 12.24 ms, p90 37.99 ms, gate PASS)**, while 1,400 offered failed on in-flight growth despite a p50 of 14.60 ms, and 1,616 offered collapsed to a p50 of 666 ms.
+| Offered | Completed | p50 | p95 | in-flight growing | window | gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,200 | 1,200.1 | 12.99 ms | 412 ms | no | valid | **PASS** |
+| 1,800 | 1,944.8 | 34,680 ms | 53,536 ms | yes | INVALID, overran 31% | FAIL |
+| 2,400 | 2,808.5 | 91,082 ms | 151,162 ms | yes | INVALID, overran 88% | FAIL |
 
-**A note on contention, because it invalidated three windows before it was caught.**
+The 1,800 and 2,400 windows were both clean of contention, so those are real results rather than artefacts.
+The 1,200 window passed *while* contended, which makes it a conservative pass.
+An earlier short-window pass at 1,200 read p50 12.24 ms and p90 37.99 ms, and a 1,400 QPS window failed on in-flight growth despite a healthy-looking p50 of 14.60 ms, so **the sustainable open-loop rate sits between 1,200 and 1,400 QPS**.
+
+**2,400 QPS is not reachable at 1M on this machine.**
+Offering it produces a p50 of 91 seconds and a window that overruns its own schedule by 88%, which is a queue, not a service rate.
+
+**The service-demand profile overpredicts throughput, and by more than it used to.**
+12 cores divided by 3.64 core-ms predicts 3,297 QPS; the machine delivers 1,805 closed-loop and 1,200 to 1,400 sustainable.
+That is a 45% overprediction against the 33% the 6.94 profile showed, so the per-query overhead the lane profile charges to no lane did not shrink when the SQL did -- it is now the larger half of the story.
+Quoting the profile's projected QPS as a throughput result would repeat exactly the error the retracted 1,850 figure made, so it is not quoted as one here.
+
+**A note on contention, because it invalidated two windows before it was caught.**
 A tuning agent runs `bench-recall` against `bench_q50k` on this same cluster in bursts.
-Checking `pgrep` once before a window is not enough: a run that starts ten seconds in steals one of twelve cores for most of the measurement and the window still reports a plausible number.
-One `1,200 QPS` window read p50 12.24 ms clean and p50 13.01 ms with p90 1,073 ms while contended -- same rate, same code, same machine.
-`.out/rehearsal1m/open-bisect.sh` samples for competing processes every 5 seconds across the whole window and discards any result that shared the machine, which is the same discipline the suspend detector applies to sleeps.
+Checking `pgrep` once before a window is not enough: a burst that starts ten seconds in steals one of twelve cores for most of the measurement, and the window still reports a plausible number.
+One 1,200 QPS window read p50 12.24 ms with p90 37.99 ms clean, and p50 13.01 ms with p90 1,073 ms while contended -- same rate, same code, same machine, and only the tail gives it away.
+The first 8/16/32/64 sweep attempt overlapped the tuner in 133 of its 5-second samples and was discarded and re-run rather than reported.
 
 ### Rung 4: 10M full run -- **claim B**
 
@@ -1209,8 +1252,9 @@ Gate: sustained 2,400 QPS with offered == completed, p50 <= 41 ms.
 **Status (2026-08-24, updated after section 6.7's cost work): still not started, and rung 3's gate is still not met -- but by a much smaller margin.**
 
 Rung 3's third gate is "1M load bench comfortably above 2,400 QPS".
-The closed-loop ceiling is now ~1,900 QPS, up from 1,300, and the sustainable open-loop rate is ~1,200.
-Against the 2,400 QPS target that is 1.26x on the saturation ceiling and 2x on the sustainable rate.
+The closed-loop ceiling is now ~1,805 QPS, up from 1,300, and the sustainable open-loop rate is between 1,200 and 1,400.
+Against the 2,400 QPS target that is 1.33x on the saturation ceiling and about 1.9x on the sustainable rate.
+Offering 2,400 directly produces a p50 of 91 seconds, so this is not a marginal miss.
 Section 7's rule is that a failed gate stops the ladder rather than getting waived, so the 10M build still does not start.
 
 What changed is that the gap is no longer obviously structural.
