@@ -85,9 +85,14 @@ create index on :schema_name.memories using gin ((title || ' ' || body) gin_trgm
 \else
 
 -- Synthetic-vector tiers (rehearsal1m, full10m): 256-dim halfvec, unlogged
--- (disposable, and it skips WAL), no stored fts column (saves ~3 GB of heap
--- at 10M). Every lane query must use the identical to_tsvector('english',
--- body) expression or the GIN index below is not used.
+-- (disposable, and it skips WAL).
+--
+-- `fts` is stored, not an expression index over to_tsvector('english', body).
+-- An earlier revision skipped it to save heap at 10M; the 1M rehearsal then
+-- measured what the recompute costs and reversed the trade (DESIGN.md 6.7).
+-- Measured at 1M: the column adds 213 bytes/row -- 227 MB here, ~2.1 GB at
+-- 10M against the 30 GB rung-3 gate -- and removes 10.4 us per candidate row,
+-- which every lexical lane pays up to its 400-row cap on every query.
 create unlogged table :schema_name.memories (
   id          bigint primary key,
   body        text not null,
@@ -96,10 +101,11 @@ create unlogged table :schema_name.memories (
   place_id    smallint not null,
   occurred_at date not null,
   cluster_id  int not null,
-  embedding   halfvec(256)
+  embedding   halfvec(256),
+  fts         tsvector generated always as (to_tsvector('english', body)) stored
 );
 
-create index on :schema_name.memories using gin (to_tsvector('english', body));
+create index on :schema_name.memories using gin (fts);
 create index on :schema_name.memories using hnsw (embedding halfvec_cosine_ops)
   with (m = 16, ef_construction = 128);
 create index on :schema_name.memories (occurred_at);

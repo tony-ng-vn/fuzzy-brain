@@ -524,7 +524,16 @@ function planScaleStatement(tier, profile, cfg) {
   const depth = scale.depth;
   const rrfK = cfg.lanes.rrfK;
   const topK = cfg.rerank.topK;
-  const doc = "to_tsvector('english', m.body)";
+  // The stored generated column, not to_tsvector('english', m.body). Every
+  // candidate row a lexical lane caps at pays this once, and recomputing it is
+  // 10.4 us/row against 0.68 us/row for ts_rank_cd over an already-materialized
+  // tsvector (measured at 1M over a fixed 400-row set: 4.51 ms to recompute
+  // 400, 0.20 ms to read the same 400 bodies). At a 400-row cap that is ~4.3 ms
+  // of the AND lane's ~11.8 ms, paid on every query with a lexical lane.
+  // DESIGN.md 3.5 skipped the column to save heap at 10M; that traded ~2.1 GB
+  // of a 30 GB budget for the dominant per-query cost, and section 6.6's
+  // addendum records the reversal with both numbers.
+  const doc = 'm.fts';
 
   const slots = [];
   const addSlot = (key) => {
@@ -632,16 +641,15 @@ function planScaleStatement(tier, profile, cfg) {
     const andFirstGate = hasAnd
       ? `\n    and (select count(*) from and_lane) < ${scale.andFirstThreshold}`
       : '';
-    // The lexeme array is projected alongside the tsvector through an OFFSET 0
-    // lateral so to_tsvector runs once per candidate rather than once per
-    // reference. The fragment bar then reads that array instead of parsing a
-    // fresh tsquery per query term per row, which is what the bar used to do
+    // The fragment bar reads tsvector_to_array(doc) instead of parsing a fresh
+    // tsquery per query term per row, which is what the bar used to do
     // (measured over a fixed 500-row candidate set: 4.7 ms for the old bar
-    // against 1.8 ms for this one).
+    // against 1.8 ms for this one). The OFFSET 0 lateral this used to need --
+    // to stop to_tsvector running once per reference -- is gone with the
+    // stored column: `doc` is now a plain column read.
     ctes.push(`or_cand as materialized (
-  select m.id, d.doc, tsvector_to_array(d.doc) as lex
-  from ${schema}.memories m, q,
-       lateral (select ${doc} as doc offset 0) d
+  select m.id, ${doc} as doc, tsvector_to_array(${doc}) as lex
+  from ${schema}.memories m, q
   where ${doc} @@ q.orq${andFirstGate}${spanClause}
   limit ${scale.orCandidateCap}
 )`);
