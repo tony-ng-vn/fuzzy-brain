@@ -951,12 +951,98 @@ Gates:
 - Projected HNSW build <= 90 minutes. Over that, **switch to IVFFlat** (`lists = 3162`, about `sqrt(10M)`, `ivfflat.probes = 12`), which builds in a fraction of the time at some recall cost, and record the recall cost by re-running rung 2's quality bench against an IVFFlat index at 50K.
 - 1M load bench comfortably above 2,400 QPS. If 1M cannot clear it, 10M certainly cannot, and the honest move is to report the ceiling found rather than proceed.
 
+#### Rung 3 results (2026-08-24): the per-query cost profile, and two measurement bugs found on the way
+
+**Corpus and index, as built.** 1M rows, `bench_r1m`, 1,381 MB total including indexes and toast.
+The HNSW build was projected at 186 minutes for 10M against the 90-minute gate, so the gate fired and the design's IVFFlat fallback is what the schema now carries (`memories_embedding_ivfflat`, 533 MB).
+
+**The per-family cost profile.**
+One connection, sequential, no load generator, striding the query files so every family is represented in its real proportion.
+Measuring this way is deliberate: it isolates per-query service demand from anything the load harness does to it, and it is the only measurement on this machine that a suspend delays rather than corrupts.
+
+| Family | Share of mix | Total ms | of which SQL | of which rerank | Lanes returning rows |
+| --- | --- | --- | --- | --- | --- |
+| paraphrase_nolex | 0.23 | 5.78 | 5.66 | 0.07 | and 30.0, vector 29.7, or 8.4 |
+| rare_token | 0.22 | 4.12 | 4.10 | 0.00 | vector 30.0, and 1.0, or 1.0 |
+| entity_swap | 0.11 | 8.40 | 8.05 | 0.18 | vector 30.0, and 20.6 |
+| near_dup | 0.15 | 5.39 | 5.24 | 0.14 | vector 30.0, or 20.2, and 1.0 |
+| date_filter | 0.15 | 15.47 | 15.23 | 0.09 | vector 27.5, and 18.5, or 16.0 |
+| partial_ref | 0.07 | 5.62 | 5.57 | 0.00 | vector 30.0, or 5.4 |
+| typo_noisy | 0.07 | 3.67 | 3.55 | 0.00 | vector 30.0, and 1.0, or 1.0 |
+| **mix-weighted** | | **6.94** | **6.78** | **0.08** | |
+
+Two things fall straight out of this table.
+
+**Node is not the bottleneck, and the design's worry about it was misplaced.**
+Rerank costs 0.00-0.18 ms and the whole non-SQL remainder is 0.10-0.35 ms, against 6.78 ms of SQL.
+Section 8.1's `SELECT 1` ceiling probe agrees from the other direction: 105,324 QPS, p50 0.29 ms, against a 9,600 QPS floor.
+Multiple client processes would buy nothing; the work is in Postgres.
+
+**The target is above the machine's measured ceiling, and by a knowable amount.**
+2,400 QPS on 12 cores allows roughly 5 core-ms per query (section 6.6's own arithmetic).
+The workload costs 6.94.
+That is a 39% overshoot, and it is consistent with the closed-loop ceiling of ~1,850 QPS measured earlier: 12 cores / 6.94 ms = 1,729 QPS of pure service capacity.
+**Clearing 2,400 QPS at 1M requires cutting roughly 2 core-ms per query, not tuning the pool.**
+`date_filter` is where that cut has to come from: 15% of the mix carrying 33% of the total cost.
+
+**Where the cost actually sits, per lane.**
+Same queries run under lane subsets, medians so a suspend inflates one sample instead of the result, all connections carrying the pinned GUCs.
+
+| Family | and+or+vector | and+vector | vector only | and only | marginal OR | marginal AND |
+| --- | --- | --- | --- | --- | --- | --- |
+| date_filter | 11.61 ms | 9.60 ms | 3.24 ms | 8.70 ms | 2.01 ms | 6.36 ms |
+| entity_swap | 7.42 ms | 6.98 ms | 3.01 ms | 6.87 ms | 0.44 ms | 3.97 ms |
+| paraphrase_nolex | 4.96 ms | 3.40 ms | 3.04 ms | 3.37 ms | 1.56 ms | 0.36 ms |
+
+**This overturns the assumption section 6.6 left standing.**
+`date_filter` was expensive because of its filtered vector lane, and the fix for that was iterative scan.
+It is not: the filtered vector lane costs 3.24 ms, in line with every other family's vector lane, while **the AND lane costs 6.36 ms marginal on this family** -- a date-constrained conjunction paying for a `BitmapAnd` of the `occurred_at` btree against the FTS GIN.
+The date filter made the *conjunction* expensive, not the ANN search.
+
+**What the section-6.6 gating policy is worth, priced against this table.**
+Skipping the OR lane where the AND lane already fills its cap saves 2.01 ms on 15% of the mix; skipping both lexical lanes for a no-rare-term paraphrase saves 1.92 ms on 23%.
+Together that is about 0.74 ms off the 6.94 ms weighted mean, landing near 6.20 ms, or roughly 1,935 QPS of service capacity.
+**Real, and not enough.** 2,400 QPS needs 5.0 ms, so a further 1.2 ms would have to come out of the vector lane, which costs ~3.0 ms uniformly across every family and is the one lane whose depth and probe count are already priced against recall.
+The honest reading is that 2,400 QPS at 1M is out of reach on this 12-core machine at the recall the config pins, and section 9's rule for that case is to report the ceiling found.
+
+**Bug 1: the vector GUCs reached one connection out of the pool, not all of them.**
+`engine.applyVectorGucs` caches on a `WeakMap` keyed by the `client` it is handed, and both benches hand it the `Pool`.
+So the cache went per-pool while the `SET` landed on whichever single physical connection served the first query.
+
+Measured against `bench_r1m` -- one awaited query, then a concurrent burst -- **1 of 8 backends carried the pinned `ivfflat.probes = 8`; the other 7 ran pgvector's defaults, `probes = 1` with `hnsw.iterative_scan = off`.**
+A vector lane searching one IVFFlat list instead of eight is quietly faster and much less accurate, and a filtered lane with iterative scan off returns 0-5 rows of 30 by section 6.6's own table.
+The race corrupts latency and recall together, in the flattering direction.
+
+It only looked correct in an earlier check because a concurrent startup burst has every request see an empty cache at once, so they all issue the `SET` and between them cover the pool.
+That is luck, and a pool that grows after warmup loses it.
+
+**Every open-loop number recorded before this fix is optimistic and was measured at an unknown vector recall**, including the 700 and 900 QPS passes.
+The fix applies the settings as Postgres startup `options` on the connection string, so the server has them before the connection is handed out: no round trip, no window in which a query can run without them, and nothing to race. Re-measured: 8 of 8 backends.
+
+**Bug 2: a measurement window that spans a machine suspend still reports a number.**
+This machine runs on battery, and its battery power profile carries `sleep 1` against AC's `sleep 0`.
+`pmset` logged repeated `Maintenance Sleep` entries during measurement, including one of **659 seconds** that landed inside a closed-loop sweep.
+A window spanning one reports `offered == completed` and a plausible QPS with a p50 in the hundreds of seconds -- it passes every validity condition section 8.2 lists.
+
+Comparing the wall clock against Node's monotonic clock does not detect this, because Darwin's clock keeps advancing across a suspend and the two agree.
+The dispatch ticker does: it is scheduled every 10 ms, so a multi-second gap between consecutive ticks can only mean the machine stopped running us.
+`assessWindow` now reports every window's verdict and a suspended or overrunning window fails the gate on its own.
+
+**This is a hard blocker on the remaining rate-based measurements, and it needs AC power, not code.**
+`caffeinate -s` asserts `PreventSystemSleep`, but the system-wide assertion still reads 0 while on battery -- macOS documents `-s` as valid only on AC power, and it is not honoring it.
+Until the machine is plugged in, no open-loop or closed-loop window on this box is trustworthy, so the knee sweep, the 2,400 QPS run, and the 10M rung are all gated on that.
+
 ### Rung 4: 10M full run -- **claim B**
 
 The claim run.
 `bench-load.mjs --tier full10m --profile tunedScale --mode open --offered-qps 2400 --duration 120 --warmup 60`.
 
 Gate: sustained 2,400 QPS with offered == completed, p50 <= 41 ms.
+
+**Status (2026-08-24): not started, and rung 3's gate is not yet met.**
+Rung 3's third gate is "1M load bench comfortably above 2,400 QPS", and the measured per-query cost puts 1M at roughly 1,729 QPS of service capacity.
+Section 7's rule is that a failed gate stops the ladder rather than getting waived, so the 10M build does not start until the 1M workload clears 2,400 QPS.
+The footprint half of the go/no-go does project cleanly -- 1,381 MB at 1M extrapolates to about 13.8 GB at 10M, inside the 30 GB budget, with 58 GB free on the volume -- but footprint was never the binding constraint.
 
 ---
 
