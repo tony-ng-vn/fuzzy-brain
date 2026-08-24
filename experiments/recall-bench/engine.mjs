@@ -1176,7 +1176,13 @@ export async function retrieve(client, query, ctx) {
   const { rows } = await client.query({ name: statementName(tier, effectiveProfile), text: plan.sql, values });
   const sqlMs = performance.now() - sqlStart;
 
-  let candidates = rows.map((row) => ({
+  let candidates = rows.map((row, i) => ({
+    // The statement's final ORDER BY is `t.rrf desc, t.id`, so arrival order IS
+    // the fused rank. Carried explicitly because the rerank re-sorts in place:
+    // without it there is no way afterwards to ask whether a final top-10 row
+    // came from deep in the candidate set, which is how cfg.rerank.topK is
+    // priced (a cut is provably free when no survivor sat past the new cap).
+    fusedRank: i + 1,
     // memories.id is a bigint column, and node-postgres returns bigint as a
     // JS string (avoiding precision loss above 2^53) rather than a number.
     // Every id in the corpus JSON (targets, dup_group members, memoriesById

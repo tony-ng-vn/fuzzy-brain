@@ -437,6 +437,14 @@ export const config = {
     closedLoopSweep: [8, 16, 32, 64, 96, 128, 192],
     distinctQueries: 200_000,
     latencyBudgetMs: { p50: 41 },
+    // Fraction of load queries whose result is checked against its target, so
+    // every throughput run reports whole-pipeline recall alongside the rate
+    // (DESIGN.md 6.8: a system that does not retrieve has no throughput claim).
+    // Sampled rather than universal to keep the hot path to a retrieval call
+    // and one object literal; the check itself is arithmetic done after the
+    // window closes. At 0.1 a 180 s window at 1,200 QPS still yields ~21,000
+    // probes, roughly 3,000 per family, which is a +/- 1 point error bar.
+    recallSampleRate: 0.1,
   },
 };
 

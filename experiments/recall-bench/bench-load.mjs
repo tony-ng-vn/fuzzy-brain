@@ -24,12 +24,19 @@
 //    config target, rather than fabricating 200k. This is the "report the number
 //    that was measured, never a fudge" rule from section 9 applied to the query
 //    pool itself.
-// 2. Query vectors for the load workload. QueryRecord carries no cluster_id, so a
-//    synthetic-tier query vector cannot be reconstructed from the query file alone
-//    via synth-vectors.mjs. Instead this file fetches each query's target's stored
-//    `embedding` directly from the database in one batched SELECT during setup
-//    (not the hot loop) -- exact, self-contained, and correct for both real and
-//    synthetic vector tiers without depending on any unwritten Track 2 internals.
+// 2. WITHDRAWN 2026-08-24 (DESIGN.md 6.8). This file used to hand the engine each
+//    query's target's own stored `embedding` as the query vector, on the grounds
+//    that QueryRecord carries no cluster_id. Handing the retrieval engine the
+//    answer is not a query: it makes the vector lane trivially exact and turns
+//    every recall number measured that way into an upper bound. cluster_id is a
+//    column on the corpus row, so the drifted query vector CAN be rebuilt --
+//    synthetic tiers now join it out of the table and regenerate the vector with
+//    lib/synth-vectors.mjs, exactly as the corpus generator made it. Real-vector
+//    tiers read load.mjs's query-vectors.f32 cache, which holds the real
+//    embedding of the query TEXT. The stored-embedding path survives only as a
+//    last-resort fallback for a real tier with no cache, and when it is taken the
+//    report stamps queryVectorSource so no number sourced that way can be read as
+//    a measurement of retrieval.
 // 3. Vocab for engine.mjs's EngineContext.vocab is not a frozen shape anywhere in
 //    DESIGN.md. This file builds one itself from Postgres's built-in ts_stat() over
 //    the already-ingested fts/to_tsvector(body) expression: { totalDocs, df } where
@@ -61,6 +68,7 @@ import { config, resolveTier } from './config.mjs';
 import { assertBenchTarget, benchPool } from './lib/safety.mjs';
 import { loadTermStats } from './lib/term-stats.mjs';
 import { makeRng } from './lib/rng.mjs';
+import { queryVector, DEFAULT_QUERY_DRIFT } from './lib/synth-vectors.mjs';
 import * as engine from './engine.mjs';
 import { rerank as rerankFn } from './rerank.mjs';
 
@@ -144,43 +152,124 @@ function parseVectorLiteral(text) {
 
 function loadQueryPool(tierName) {
   const dir = `${OUT_DIR}/${tierName}`;
-  const files = ['queries-dev.jsonl', 'queries-test.jsonl']
-    .map((f) => `${dir}/${f}`)
-    .filter(existsSync);
-  if (files.length === 0) {
+  const splits = ['dev', 'test'];
+  const pool = [];
+  let found = 0;
+  for (const split of splits) {
+    const f = `${dir}/queries-${split}.jsonl`;
+    if (!existsSync(f)) continue;
+    found += 1;
+    // The real-vector query-vector cache is POSITIONAL over the unfiltered
+    // split, so the row's original index has to travel with it or a subsetted
+    // pool would pair each query with another query's embedding. Same contract
+    // bench-recall.mjs reads (its loadQueryVectorCache comment owns the layout).
+    let i = 0;
+    for (const rec of readJsonlSync(f)) {
+      const vecIndex = i++;
+      if (rec.text && Array.isArray(rec.targets) && rec.targets.length > 0) {
+        pool.push({ ...rec, split, vecIndex });
+      }
+    }
+  }
+  if (found === 0) {
     throw new Error(
       `no query files found under ${dir}/ -- run gen-corpus.mjs --tier ${tierName} first`,
     );
   }
-  const pool = [];
-  for (const f of files) {
-    for (const rec of readJsonlSync(f)) {
-      if (rec.text && Array.isArray(rec.targets) && rec.targets.length > 0) pool.push(rec);
-    }
-  }
   return pool;
 }
 
-async function fetchTargetVectors(queryPool, pgPool, schema) {
+// The query vector each pooled query is issued with, keyed by qid.
+//
+// This is the deviation-2 reversal (header note 2, DESIGN.md 6.8). What a load
+// run must hand the engine is a vector standing in for what a user typed, never
+// the target's own stored embedding.
+export async function buildQueryVectors(queryPool, pgPool, tier, tierName) {
+  if (tier.vector === 'synthetic') {
+    const ids = [...new Set(queryPool.map((q) => q.targets[0]))];
+    const clusterOf = new Map();
+    const CHUNK = 5000;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const { rows } = await pgPool.query(
+        `select id, cluster_id from ${tier.schema}.memories where id = any($1::bigint[])`,
+        [ids.slice(i, i + CHUNK)],
+      );
+      // memories.id is bigint, so node-postgres hands back a string here (same
+      // reason engine.mjs's retrieve() casts row.id). Pool targets are plain
+      // numbers, so without the cast every lookup below would miss.
+      for (const row of rows) clusterOf.set(Number(row.id), row.cluster_id);
+    }
+    const vectors = new Map();
+    const missing = [];
+    for (const q of queryPool) {
+      const target = q.targets[0];
+      const cluster = clusterOf.get(target);
+      if (cluster == null) {
+        missing.push(target);
+        continue;
+      }
+      vectors.set(q.qid, queryVector(target, cluster, tier.dims, DEFAULT_QUERY_DRIFT));
+    }
+    if (missing.length) {
+      throw new Error(
+        `${missing.length} query targets are absent from ${tier.schema}.memories ` +
+          `(first: ${missing.slice(0, 5).join(', ')}) -- the corpus and the query files disagree`,
+      );
+    }
+    return { vectors, source: 'synth-vectors drifted query vector (rebuilt from cluster_id)' };
+  }
+
+  const cachePath = `${OUT_DIR}/${tierName}/query-vectors.f32`;
+  if (existsSync(cachePath)) {
+    const counts = { dev: 0, test: 0 };
+    for (const split of ['dev', 'test']) {
+      const f = `${OUT_DIR}/${tierName}/queries-${split}.jsonl`;
+      if (existsSync(f)) counts[split] = readJsonlSync(f).length;
+    }
+    const buf = readFileSync(cachePath);
+    const flat = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    const dims = tier.dims;
+    const needed = (counts.dev + counts.test) * dims;
+    if (flat.length < needed) {
+      throw new Error(
+        `query-vectors cache too short: have ${flat.length} floats, need ${needed} ` +
+          `(dev ${counts.dev} + test ${counts.test} at dims=${dims})`,
+      );
+    }
+    const base = { dev: 0, test: counts.dev * dims };
+    const vectors = new Map();
+    for (const q of queryPool) {
+      const off = base[q.split] + q.vecIndex * dims;
+      vectors.set(q.qid, flat.subarray(off, off + dims));
+    }
+    return { vectors, source: 'real embedding of the query text (load.mjs query-vectors.f32)' };
+  }
+
+  // Last resort, and the report says so. A run sourced this way measures an
+  // upper bound on retrieval, not retrieval (DESIGN.md 6.8).
+  console.warn(
+    `WARNING: ${cachePath} is missing, so this run falls back to the TARGET'S OWN stored embedding ` +
+      `as the query vector. Recall measured this way is an upper bound, not a measurement. ` +
+      `Build the cache with: node load.mjs --tier ${tierName}`,
+  );
   const ids = [...new Set(queryPool.map((q) => q.targets[0]))];
-  const vectors = new Map();
+  const byId = new Map();
   const CHUNK = 5000;
   for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
     const { rows } = await pgPool.query(
-      `select id, embedding from ${schema}.memories where id = any($1::bigint[])`,
-      [chunk],
+      `select id, embedding from ${tier.schema}.memories where id = any($1::bigint[])`,
+      [ids.slice(i, i + CHUNK)],
     );
     for (const row of rows) {
-      // memories.id is bigint, so node-postgres hands back a string here (same
-      // reason engine.mjs's retrieve() casts row.id -- see its comment on the
-      // `id: Number(row.id)` line). queryPool targets are plain JS numbers, so
-      // without this cast every Map.get(q.targets[0]) below misses and every
-      // query silently runs with queryVector === undefined.
-      if (row.embedding != null) vectors.set(Number(row.id), parseVectorLiteral(row.embedding));
+      if (row.embedding != null) byId.set(Number(row.id), parseVectorLiteral(row.embedding));
     }
   }
-  return vectors;
+  const vectors = new Map();
+  for (const q of queryPool) {
+    const v = byId.get(q.targets[0]);
+    if (v) vectors.set(q.qid, v);
+  }
+  return { vectors, source: 'stored-embedding (UPPER BOUND, not a retrieval measurement)' };
 }
 
 async function buildVocab(pgPool, schema, tier) {
@@ -446,6 +535,61 @@ function summarizeSamples(samples, durationSec) {
   };
 }
 
+// Whole-pipeline recall, reduced AFTER the window closes (DESIGN.md 6.8's
+// binding decision: the claim is hybrid retrieval, so a throughput number
+// unaccompanied by a recall number is not evidence for it).
+//
+// The hot loop only records `{ family, target, topIds, fusedRanks }` for the
+// sampled fraction; everything below is arithmetic on that, so nothing here is
+// charged to a latency sample. `topIds` is the POST-rerank order, which is what
+// a caller of retrieve() would actually see.
+export function summarizeRecall(probes, mixShares = null) {
+  const byFamily = new Map();
+  let deepSurvivors = 0;
+  let survivorRankMax = 0;
+  for (const p of probes) {
+    const f = byFamily.get(p.family) ?? { n: 0, at1: 0, at10: 0 };
+    f.n += 1;
+    if (p.topIds[0] === p.target) f.at1 += 1;
+    const hitIdx = p.topIds.indexOf(p.target);
+    if (hitIdx >= 0 && hitIdx < 10) f.at10 += 1;
+    byFamily.set(p.family, f);
+    // How deep into the fused candidate set the surviving top-10 reached. This
+    // is what prices cfg.rerank.topK without re-running a throughput window.
+    for (let i = 0; i < Math.min(10, p.fusedRanks.length); i++) {
+      survivorRankMax = Math.max(survivorRankMax, p.fusedRanks[i]);
+      if (p.fusedRanks[i] > 25) deepSurvivors += 1;
+    }
+  }
+  if (byFamily.size === 0) return null;
+
+  const families = {};
+  for (const [name, f] of [...byFamily].sort()) {
+    families[name] = { n: f.n, recallAt1: f.at1 / f.n, recallAt10: f.at10 / f.n };
+  }
+  const names = Object.keys(families);
+  // Two aggregates on purpose. The unweighted family mean is what DESIGN.md 6.8
+  // reported (0.669), so it is the comparable number; the mix-weighted one is
+  // what this query pool actually produces and is the honest headline.
+  const unweightedAt10 = names.reduce((a, n) => a + families[n].recallAt10, 0) / names.length;
+  const unweightedAt1 = names.reduce((a, n) => a + families[n].recallAt1, 0) / names.length;
+  const total = names.reduce((a, n) => a + families[n].n, 0);
+  const weight = (n) => (mixShares && mixShares[n] != null ? mixShares[n] : families[n].n / total);
+  const weightSum = names.reduce((a, n) => a + weight(n), 0);
+  const mixWeightedAt10 = names.reduce((a, n) => a + weight(n) * families[n].recallAt10, 0) / weightSum;
+  const mixWeightedAt1 = names.reduce((a, n) => a + weight(n) * families[n].recallAt1, 0) / weightSum;
+
+  return {
+    probes: total,
+    families,
+    unweighted: { recallAt1: unweightedAt1, recallAt10: unweightedAt10 },
+    mixWeighted: { recallAt1: mixWeightedAt1, recallAt10: mixWeightedAt10 },
+    // Provable-cut evidence, not a tuning knob: zero deep survivors means
+    // truncating the candidate set at 25 could not have changed any answer.
+    topKPressure: { survivorsPastFusedRank25: deepSurvivors, deepestSurvivingFusedRank: survivorRankMax },
+  };
+}
+
 function summarizeLanes(samples) {
   const laneCounts = {};
   for (const s of samples) {
@@ -457,6 +601,25 @@ function summarizeLanes(samples) {
   const out = {};
   for (const [lane, counts] of Object.entries(laneCounts)) out[lane] = mean(counts);
   return out;
+}
+
+function printRecall(recall) {
+  if (!recall) return;
+  console.log(
+    `whole-pipeline recall (${recall.probes} probes @ sample rate ${recall.sampleRate}): ` +
+      `R@1 ${recall.mixWeighted.recallAt1.toFixed(3)} / R@10 ${recall.mixWeighted.recallAt10.toFixed(3)} mix-weighted, ` +
+      `${recall.unweighted.recallAt10.toFixed(3)} R@10 unweighted family mean`,
+  );
+  for (const [family, f] of Object.entries(recall.families)) {
+    console.log(
+      `  ${family.padEnd(18)} n=${String(f.n).padStart(6)}  R@1 ${f.recallAt1.toFixed(3)}  R@10 ${f.recallAt10.toFixed(3)}`,
+    );
+  }
+  const p = recall.topKPressure;
+  console.log(
+    `  final top-10 survivors past fused rank 25: ${p.survivorsPastFusedRank25} ` +
+      `(deepest surviving fused rank ${p.deepestSurvivingFusedRank})`,
+  );
 }
 
 function printSummary(report) {
@@ -485,16 +648,21 @@ function printSummary(report) {
     console.log(
       `gate: ${report.gate.pass ? 'PASS' : 'FAIL'} (target ${report.gate.qpsTarget} qps @ p50 <= ${report.gate.p50TargetMs} ms)`,
     );
+    printRecall(o.recall);
   }
   if (report.closedSweep) {
-    console.log('concurrency  completed_qps  p50ms   p95ms   p99ms');
+    console.log('concurrency  completed_qps  p50ms   p95ms   p99ms   R@10(mix)');
     for (const row of report.closedSweep) {
+      const r = row.recall ? row.recall.mixWeighted.recallAt10.toFixed(3) : 'n/a';
       console.log(
         `${String(row.concurrency).padEnd(11)}  ${row.qpsCompleted.toFixed(1).padEnd(13)}  ` +
-          `${fmt(row.latencyMs.p50).padEnd(6)}  ${fmt(row.latencyMs.p95).padEnd(6)}  ${fmt(row.latencyMs.p99)}`,
+          `${fmt(row.latencyMs.p50).padEnd(6)}  ${fmt(row.latencyMs.p95).padEnd(6)}  ` +
+          `${fmt(row.latencyMs.p99).padEnd(6)}  ${r}`,
       );
     }
+    printRecall(report.closedSweep[report.closedSweep.length - 1]?.recall);
   }
+  if (report.queryVectorSource) console.log(`query vectors: ${report.queryVectorSource}`);
 }
 
 function fmt(v) {
@@ -520,6 +688,7 @@ async function main() {
       'sweep-warmup': { type: 'string', default: '5' },
       out: { type: 'string' },
       'skip-select1-probe': { type: 'boolean', default: false },
+      'recall-sample-rate': { type: 'string' },
       seed: { type: 'string', default: 'recall-bench-load-v1' },
     },
   });
@@ -605,7 +774,11 @@ async function main() {
     report.queryPoolSize = cappedPool.length;
     report.queryPoolTarget = config.load.distinctQueries;
 
-    const vectors = await fetchTargetVectors(cappedPool, pgPool, tier.schema);
+    const { vectors, source: queryVectorSource } = await buildQueryVectors(
+      cappedPool, pgPool, tier, tierName,
+    );
+    console.log(`query vectors: ${queryVectorSource}`);
+    report.queryVectorSource = queryVectorSource;
     const vocab = await buildVocab(pgPool, tier.schema, tier);
     report.vocab = {
       totalDocs: vocab.totalDocs,
@@ -627,16 +800,41 @@ async function main() {
     const rng = makeRng(values.seed);
     const cycle = makeQueryCycler(cappedPool, rng);
 
+    // Recall is sampled rather than computed on every query so the hot path
+    // stays a retrieval call and an object literal. The probes are reduced
+    // after the window closes (summarizeRecall), so the rate bounds memory and
+    // the error bar, never correctness. Deterministic stride over an already
+    // shuffled cycle, so it reproduces and stays unbiased across families.
+    const recallSampleRate = Number(values['recall-sample-rate'] ?? config.load.recallSampleRate);
+    const recallStride = recallSampleRate > 0 ? Math.max(1, Math.round(1 / recallSampleRate)) : 0;
+    const recallProbes = [];
+    let issued = 0;
+
     const queryFn = async () => {
       const q = cycle();
-      const queryVector = vectors.get(q.targets[0]);
+      const queryVector = vectors.get(q.qid);
+      const probe = recallStride > 0 && issued++ % recallStride === 0;
       const result = await engine.retrieve(pgPool, { text: q.text }, { ...engineCtx, queryVector });
+      if (probe) {
+        const top = result.hits.slice(0, 10);
+        recallProbes.push({
+          family: q.family ?? 'unknown',
+          target: q.targets[0],
+          topIds: top.map((h) => h.id),
+          fusedRanks: top.map((h) => h.fusedRank ?? 0),
+        });
+      }
       return {
         sqlMs: result.timings?.sqlMs ?? null,
         rerankMs: result.timings?.rerankMs ?? null,
         totalMs: result.timings?.totalMs ?? null,
         lanes: result.lanes,
       };
+    };
+    const takeRecall = () => {
+      const summary = summarizeRecall(recallProbes);
+      recallProbes.length = 0;
+      return summary ? { sampleRate: recallSampleRate, ...summary } : null;
     };
 
     if (mode === 'open') {
@@ -673,6 +871,8 @@ async function main() {
         window,
         ...summary,
         laneRowsExamined: summarizeLanes(samples),
+        // Recall does not depend on offered rate, so warmup probes count too.
+        recall: takeRecall(),
       };
       report.bufferHitRatio = { before: bufferBefore, after: await bufferHitRatio(pgPool, tier.schema) };
       report.gate = {
@@ -712,6 +912,7 @@ async function main() {
           window,
           ...summary,
           laneRowsExamined: summarizeLanes(samples),
+          recall: takeRecall(),
         });
       }
       report.bufferHitRatio = { before: bufferBefore, after: await bufferHitRatio(pgPool, tier.schema) };
