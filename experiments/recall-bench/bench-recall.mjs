@@ -191,8 +191,11 @@ function checkFilterExclusion(qf, targetMemory) {
     const outside = (from && occurred < from) || (to && occurred > to);
     if (outside) return 'date_misparse';
   }
-  if (qf?.entities?.people?.length) {
-    const overlap = qf.entities.people.some((p) => targetMemory.people?.includes(p));
+  // Must mirror resolveFilters: only confident mentions become a hard filter,
+  // so only those can be what excluded the target.
+  const filteringPeople = qf?.entities?.peopleConfident ?? qf?.entities?.people;
+  if (filteringPeople?.length) {
+    const overlap = filteringPeople.some((p) => targetMemory.people?.includes(p));
     if (!overlap) return 'filter_excluded';
   }
   return null;

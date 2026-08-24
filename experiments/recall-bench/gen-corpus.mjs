@@ -1448,6 +1448,7 @@ export function buildMemoryIndex(memories) {
   // extract zero entities, since Set has no `.entries()` shape matching
   // what that code expects.
   const people = new Map();
+  const peopleDocs = new Map();
   const places = new Map();
   const tags = new Set();
   const byId = new Map();
@@ -1460,6 +1461,10 @@ export function buildMemoryIndex(memories) {
         const entry = PEOPLE_BY_SLUG.get(p);
         people.set(p, entry ? entityAliases(entry) : [p]);
       }
+      // How many documents actually carry this person. engine.mjs compares it
+      // against the alias's own document frequency to tell a name apart from
+      // an ordinary word that happens to spell one ("van" the vehicle).
+      peopleDocs.set(p, (peopleDocs.get(p) ?? 0) + 1);
     }
     for (const pl of m.places) {
       if (!places.has(pl)) {
@@ -1480,7 +1485,7 @@ export function buildMemoryIndex(memories) {
     }
   }
 
-  return { totalDocs: memories.length, df, postings, people, places, tags, byId, dupGroups, stem: approxStem };
+  return { totalDocs: memories.length, df, postings, people, peopleDocs, places, tags, byId, dupGroups, stem: approxStem };
 }
 
 // ---------------------------------------------------------------------------
