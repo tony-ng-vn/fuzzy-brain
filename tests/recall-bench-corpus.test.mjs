@@ -116,6 +116,42 @@ test("generated queries carry a solvable certificate and only target real memory
   }
 });
 
+// The invariant the post-load oracle's date-filtered lane measurement rests on
+// (DESIGN.md 4.2 rule 1, "a resolvable date constraint"): a date_filter query
+// declares a closed range, and its own target has to sit inside it. When it
+// does not, every range-filtered lane returns NULL for that target and the
+// query is unsolvable by the one mechanism the family exists to test -- which
+// reads as "the filter did not help" rather than "the range is wrong".
+test("date_filter targets fall inside the range their own query declares", async (t) => {
+  if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
+    t.skip("gen-corpus.mjs / config.mjs not landed yet");
+    return;
+  }
+  const { generateMemories, buildMemoryIndex, generateQueries, tier } = await loadFixture();
+  const memories = [...generateMemories(tier)];
+  const index = buildMemoryIndex(memories);
+  const byId = new Map(memories.map((m) => [m.id, m]));
+
+  let checked = 0;
+  for (const split of ["dev", "test"]) {
+    for (const q of generateQueries(tier, split, index)) {
+      if (q.family !== "date_filter") continue;
+      const { date_from: from, date_to: to } = q.declared_filters;
+      assert.ok(from && to, `${q.qid} must declare a closed date range, got ${from} .. ${to}`);
+      const target = byId.get(q.targets[0]);
+      const at = Date.parse(target.occurred_at);
+      // Half-open [from, to), matching engine.mjs's `m.occurred_at <@ q.span`
+      // with rangeLiteral's `[lower,upper)`.
+      assert.ok(
+        at >= Date.parse(from) && at < Date.parse(to),
+        `${q.qid} "${q.text}": target occurred_at ${target.occurred_at} is outside declared [${from}, ${to})`,
+      );
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, "the smoke tier must contain date_filter queries for this to mean anything");
+});
+
 // The invariant the whole paraphrase_nolex rewrite rests on. gen-corpus's
 // --self-check prints these overlaps; nothing asserted them, and an assertion
 // is what stops a future frame-table edit from quietly reintroducing a shared
