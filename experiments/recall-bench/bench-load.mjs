@@ -59,6 +59,7 @@ import { performance } from 'node:perf_hooks';
 
 import { config, resolveTier } from './config.mjs';
 import { assertBenchTarget, benchPool } from './lib/safety.mjs';
+import { loadTermStats } from './lib/term-stats.mjs';
 import { makeRng } from './lib/rng.mjs';
 import * as engine from './engine.mjs';
 import { rerank as rerankFn } from './rerank.mjs';
@@ -147,6 +148,20 @@ async function fetchTargetVectors(queryPool, pgPool, schema) {
 }
 
 async function buildVocab(pgPool, schema, tier) {
+  // Preferred path (DESIGN.md 6.6): read the exact per-schema term statistics
+  // load.mjs precomputed. This is not just cheaper setup -- the scale tier's
+  // rare-term anchoring needs an exact surface-word -> document-frequency
+  // lookup, and the sampled fallback below cannot provide one.
+  const precomputed = await loadTermStats(pgPool, tier);
+  if (precomputed) return precomputed;
+
+  if (tier.vector === 'synthetic') {
+    throw new Error(
+      `${schema}.term_stats is missing: the scale path's rare-term anchoring and spell correction ` +
+        `both read it. Build it with: node load.mjs --tier ${tier.name} --term-stats`,
+    );
+  }
+
   // ts_stat() scans whatever query it is given; TABLESAMPLE bounds the cost at the
   // 10M tier so vocab setup does not itself become the thing being measured. idf
   // only needs to be roughly right to gate the rareTermBoost heuristic, not exact.
@@ -520,7 +535,13 @@ async function main() {
 
     const vectors = await fetchTargetVectors(cappedPool, pgPool, tier.schema);
     const vocab = await buildVocab(pgPool, tier.schema, tier);
-    report.vocab = { totalDocs: vocab.totalDocs, terms: vocab.df.size, sampled: vocab.sampled, samplePct: vocab.samplePct };
+    report.vocab = {
+      totalDocs: vocab.totalDocs,
+      lexemes: vocab.df.size,
+      terms: vocab.terms ? vocab.terms.size : 0,
+      sampled: vocab.sampled,
+      samplePct: vocab.samplePct,
+    };
 
     const bufferBefore = await bufferHitRatio(pgPool, tier.schema);
 
