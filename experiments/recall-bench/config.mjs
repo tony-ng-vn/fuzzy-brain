@@ -333,11 +333,33 @@ export const config = {
 
   weighting: {
     // Query-dependent lane weights: see section 6.3 for what each dial means.
-    base:            { and: 1.0, or: 0.6, vector: 1.0, trigram: 0.0 },
+    // or was 0.6. partial_ref is the family the OR lane is there to solve, and
+    // at 0.6 its targets fused at rank 42-49 -- inside the candidate set,
+    // outside the top 10. Measured on the dev split, partial_ref goes
+    // 0.671 -> 0.943 -> 0.986 -> 1.000 as this moves 0.6 -> 1.0 -> 1.3 -> 1.6.
+    // 1.3 is where partial_ref is essentially solved and paraphrase_nolex has
+    // not yet started paying for it (see paraphraseBoost).
+    base:            { and: 1.0, or: 1.3, vector: 1.0, trigram: 0.0 },
+    // Never fires on this corpus: measured maxIdf for rare_token is 4.73,
+    // nowhere near rareIdfFloor. Left inert rather than lowered, because the
+    // family it was meant for already scores 1.000 and the only queries a
+    // lower floor would catch are paraphrase_nolex (maxIdf 8.42), which this
+    // boost's AND up-weighting is measurably wrong for.
     rareTermBoost:   { and: 1.8, trigram: 0.2 },   // applied when maxIdf >= rareIdfFloor
-    paraphraseBoost: { vector: 1.6, or: 0.8, and: -0.7 },
+    // or was +0.8. Section 6.3 up-weights OR for paraphrases, but the naive
+    // vector-only baseline beats the hybrid on this family, so its text lanes
+    // are noise, not signal. At base.or 1.3 the old +0.8 compounded to 2.1 and
+    // cost the family 6 points. -1.3 takes the OR lane to zero for paraphrase
+    // queries specifically, leaving base.or free to serve partial_ref:
+    // measured together, paraphrase 0.970 -> 0.991 with partial_ref held at
+    // 0.986. Driving `and` to zero as well changes nothing (0.991 either way),
+    // so it is left where section 6.3 put it.
+    paraphraseBoost: { vector: 1.6, or: -1.3, and: -0.7 },
     typoBoost:       { trigram: 1.5, and: -0.8 },
-    entityBoost:     { and: 1.3 },
+    // and was 1.3. Measured on the dev split, entity_swap goes
+    // 0.873 -> 0.909 -> 0.936 as this moves 0.0 -> 1.3 -> 2.0, and 2.6 buys
+    // nothing because base.and + 2.0 already sits on the [0, 3] clamp.
+    entityBoost:     { and: 2.0 },
     // Section 6.3's dateRange rule ("text lanes lose discrimination once the
     // filter has already cut the year") has no named config field in the 3.4
     // listing; added here rather than hardcoded in engine.mjs.
