@@ -266,7 +266,7 @@ async function runProfile({ client, queries, vectorsFor, profile, baseCtx }) {
   const results = [];
   for (let i = 0; i < queries.length; i++) {
     const q = queries[i];
-    const ctx = { ...baseCtx, profile, queryVector: vectorsFor(i) };
+    const ctx = { ...baseCtx, profile, queryVector: vectorsFor(q.vecIndex ?? i) };
     const filters = baseCtx.useDeclaredFilters ? q.declared_filters : undefined;
     const result = await retrieve(client, { text: q.text, filters }, ctx);
     const targetId = q.targets[0];
@@ -290,6 +290,12 @@ async function main() {
       out: { type: 'string' },
       taxonomy: { type: 'boolean', default: false },
       'declared-filters': { type: 'boolean', default: false },
+      // Dev-loop convenience: restrict the run to one or more comma-separated
+      // families so a per-family experiment does not pay for the whole split.
+      // Query SELECTION only -- computeMetrics is untouched, and the flag is
+      // rejected on the test split so a headline number can never come from a
+      // subset of it.
+      family: { type: 'string' },
     },
   });
 
@@ -332,7 +338,16 @@ async function main() {
   const vocab = buildMemoryIndex(memories);
 
   const queriesPath = path.join(outDir, `queries-${args.split}.jsonl`);
-  let queries = await loadJsonlArray(queriesPath);
+  // The query-vector cache is positional over the UNFILTERED split, so the
+  // original row index has to travel with the query or any subsetting below
+  // would silently pair each query with another query's embedding.
+  let queries = (await loadJsonlArray(queriesPath)).map((q, i) => ({ ...q, vecIndex: i }));
+  if (args.family) {
+    if (args.split === 'test') throw new Error('--family is a dev-loop flag; the test split is always run whole');
+    const wanted = new Set(args.family.split(',').map((f) => f.trim()).filter(Boolean));
+    queries = queries.filter((q) => wanted.has(q.family));
+    if (queries.length === 0) throw new Error(`--family "${args.family}" matched no queries in ${queriesPath}`);
+  }
   const limit = args.limit ? Number.parseInt(args.limit, 10) : null;
   if (limit) queries = queries.slice(0, limit);
 
