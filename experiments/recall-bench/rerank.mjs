@@ -54,6 +54,16 @@ function recencyDecay(features, cfg) {
 export function rerankFeatures(qf, candidate, cfg = defaultConfig) {
   const f = candidate.features ?? {};
   return {
+    // The fused RRF score, normalized per query in rerank() below.
+    //
+    // Section 6.5's formula has no fusion term, which makes the rerank a
+    // REPLACEMENT for the retrieval ranking rather than a refinement of it.
+    // Measured on the dev split, that is what it cost: the fused order already
+    // places the target in the top 10 for 98.9% of queries, and the target is
+    // inside the candidate set for 100% of them, but the best fit of the other
+    // eight features by coordinate descent reached only 0.873. A reranker that
+    // cannot see the retrieval score throws away the strongest signal it has.
+    fused: Number(candidate.rrf ?? 0),
     lexical: Number(f.lexical ?? 0),
     cosine: Number(f.cosine ?? 0),
     entity: entityMatch(qf, f),
@@ -82,6 +92,13 @@ export function rerank(qf, candidates, cfg = defaultConfig) {
   const maxLexical = Math.max(0, ...scored.map((s) => s.features.lexical));
   if (maxLexical > 0) {
     for (const s of scored) s.features.lexical /= maxLexical;
+  }
+
+  // RRF sums are only comparable within one query's candidate set, exactly
+  // like ts_rank_cd above, so the fusion prior is normalized the same way.
+  const maxFused = Math.max(0, ...scored.map((s) => s.features.fused));
+  if (maxFused > 0) {
+    for (const s of scored) s.features.fused /= maxFused;
   }
 
   // The near_dup unblocker (section 6.5): each further member of a dup_group

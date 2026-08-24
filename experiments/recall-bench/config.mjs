@@ -405,8 +405,23 @@ export const config = {
 
   rerank: {
     topK: 50,                      // candidates handed to the reranker
-    weights: { lexical: 0.9, cosine: 1.0, entity: 1.4, recency: 0.2,
-               dateFit: 1.6, rareHit: 2.0, dupPenalty: -0.7, titleHit: 0.5 },
+    // Fitted on the dev split by coordinate descent (fit-rerank.mjs), per
+    // section 6.5. What the fit found is that `fused` carries this stage: the
+    // RRF order already places the target in the top 10 for 98.9% of dev
+    // queries and inside the candidate set for 100% of them, so a scorer that
+    // outranks the fusion prior can only lose ground. Section 6.5's own
+    // starting vector, which had no fusion term at all, measured 0.728.
+    //
+    // With the prior in place every variant the descent reached ties at 0.9890
+    // on dev -- pure fusion, the descent's own output, and this vector all land
+    // on the same number, moving queries between families without changing the
+    // total. The descent's output got there with lexical -1, entity -2 and
+    // dupPenalty -2, which is it fitting the noise floor of 1,000 queries
+    // rather than finding signal. This vector is the interpretable member of
+    // that tie: the fusion order, refined by the features section 6.5 names,
+    // at magnitudes small enough that none of them can overturn it.
+    weights: { fused: 6.0, lexical: 0.0, cosine: 0.3, entity: 0.0, recency: 0.0,
+               dateFit: 0.5, rareHit: 0.5, dupPenalty: -0.5, titleHit: 0.2 },
     // Additive: section 6.5 names a `recency_decay` feature and a `date_fit`
     // that "decays outside" the parsed range, but gives neither a time
     // constant. Both live here rather than in rerank.mjs for the same reason
