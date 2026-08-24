@@ -44,7 +44,7 @@ import { config, resolveTier } from './config.mjs';
 import { makeRng } from './lib/rng.mjs';
 import { readJsonl, writeJsonl } from './lib/jsonl.mjs';
 import {
-  PEOPLE, PLACES, TOPICS, topicById, DISTINGUISHER_PHRASES, DETAIL_WORDS,
+  PEOPLE, PLACES, TOPICS, topicById, DISTINGUISHER_PHRASES, DETAIL_WORDS, CONCRETE_NOUNS,
   buildDateTemplate, makeRareToken, makeRareWord, PG_ENGLISH_STOPWORDS,
   PARAPHRASE_DOMAINS, PARAPHRASE_AFTERMATHS, PARAPHRASE_REFLECTIONS,
   PARAPHRASE_FILLERS_A, PARAPHRASE_TIME_WORDS_B,
@@ -629,15 +629,35 @@ function buildEntitySwapCase(r, tier, helpers) {
         date_to: null,
         people: swapPeople ? [targetEntity.slug] : [],
       },
+      // Everything the post-load re-target loop needs to rebuild this query
+      // against a DIFFERENT member of the same confusion set. The per-member
+      // entity is not stored: it is read back off each member's own
+      // people/places array through the memory index.
+      entitySwap: { mustInclude, swapPeople },
     },
   };
+}
+
+// The planted terms a confusion-set family's query is built out of, drawn per
+// config.corpus.mustIncludeVocab. A topic's own 7-noun pool is shared by every
+// same-topic filler memory, so a phrase built out of it addresses thousands of
+// documents at 50K; DETAIL_WORDS is planted only where a family asks for it.
+// See that config entry for the measured before/after.
+function drawMustInclude(r, topic, family) {
+  const recipe = config.corpus.mustIncludeVocab[family];
+  if (!recipe) throw new Error(`drawMustInclude: no mustIncludeVocab recipe for family "${family}"`);
+  return [
+    ...(recipe.topicNouns > 0 ? r.sample(topic.concreteNouns, recipe.topicNouns) : []),
+    ...(recipe.crossTopicNouns > 0 ? r.sample(CONCRETE_NOUNS, recipe.crossTopicNouns) : []),
+    ...(recipe.detailWords > 0 ? r.sample(DETAIL_WORDS, recipe.detailWords) : []),
+  ];
 }
 
 function buildNearDupCase(r, tier, helpers) {
   const topic = topicById(r.int(0, TOPICS.length - 1));
   const [gMin, gMax] = tier.dupGroupSize;
   const groupSize = r.int(gMin, gMax);
-  const mustInclude = r.sample(topic.concreteNouns, 3);
+  const mustInclude = drawMustInclude(r, topic, 'near_dup');
   const sharedCluster = randomClusterId(r, tier);
   const dupGroup = helpers.nextDupGroup();
   const distinguisher = r.pick(DISTINGUISHER_PHRASES);
@@ -677,7 +697,7 @@ function buildNearDupCase(r, tier, helpers) {
 
 function buildDateFilterCase(r, tier, helpers) {
   const topic = topicById(r.int(0, TOPICS.length - 1));
-  const mustInclude = r.sample(topic.concreteNouns, 2);
+  const mustInclude = drawMustInclude(r, topic, 'date_filter');
   const sharedCluster = randomClusterId(r, tier);
   const sharedPerson = pickPerson(r);
   const sharedPlace = pickPlace(r);
@@ -729,6 +749,10 @@ function buildDateFilterCase(r, tier, helpers) {
       distractorContentIds: contentIds.filter((_, i) => i !== targetIdx),
       difficulty: 2,
       declaredFilters: { date_from: dateTemplate.range.from, date_to: dateTemplate.range.to, people: [] },
+      // Enough to rebuild this query against a DIFFERENT year of the same
+      // recurring event post-load: the member's year is read back off its own
+      // occurred_at through the memory index.
+      dateFilter: { mustInclude, month, templateKind },
     },
   };
 }
@@ -738,8 +762,15 @@ const VAGUE_FILLER_WORDS = [
   'stuff', 'whatnot', 'situation', 'moment',
 ];
 
+// Every vague word is corpus-wide noise diluting the (detail, noun) pair that
+// carries the family's whole signal, so the count is a calibration dial
+// (config.corpus.partialRef.vagueWords) rather than a fixed three.
 export function renderPartialRefQuery(r, detail, noun) {
-  const vague = r.sample(VAGUE_FILLER_WORDS, 3);
+  const n = config.corpus.partialRef.vagueWords;
+  const vague = r.sample(VAGUE_FILLER_WORDS, Math.max(n, 1));
+  if (n <= 0) return `the ${detail} ${noun}`;
+  if (n === 1) return `${vague[0]} about the ${detail} ${noun}`;
+  if (n === 2) return `${vague[0]} about the ${detail} ${noun} or ${vague[1]}`;
   return `${vague[0]} about the ${detail} ${noun} or ${vague[1]}, ${vague[2]} like that`;
 }
 
@@ -1027,7 +1058,12 @@ function buildPlan(tier) {
     // objects in memory, so it is the one place a doomed target's content is
     // allowed to change (DESIGN.md 4.3.1's text-only boundary is about the
     // post-load loop specifically, not this one).
-    regen: c.frame ? { frame: c.frame } : c.typo ? { typo: c.typo } : c.partialRef ? { partialRef: c.partialRef } : null,
+    regen: c.frame ? { frame: c.frame }
+      : c.typo ? { typo: c.typo }
+      : c.partialRef ? { partialRef: c.partialRef }
+      : c.entitySwap ? { entitySwap: c.entitySwap }
+      : c.dateFilter ? { dateFilter: c.dateFilter }
+      : null,
   }));
   const finalMultiCases = multiCases.map((c) => ({
     split: c.split,
@@ -1746,6 +1782,104 @@ export function reverbalizeQuery(q, index, tier, round) {
     for (let attempt = 0; attempt < 6; attempt++) {
       const text = renderPartialRefQuery(r.fork(`attempt:${attempt}`), best.detail, best.noun);
       if (text !== q.text) return text;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+// Re-targeting: the escalation above re-verbalizing (DESIGN.md 4.3.1's repair
+// loop, evaluator calibration decision 2, 2026-08-24).
+//
+// Re-verbalizing only rephrases a query around the SAME target, so a query
+// whose target is unreachable however it is worded cannot converge -- measured
+// at 50K, re-verbalize left 54 paraphrase_nolex and 8 entity_swap queries
+// still failing after every round. Re-targeting instead picks a DIFFERENT
+// memory for the query to be about and regenerates the query against it, from
+// a forked seeded sub-stream so the choice is reproducible.
+//
+// The post-load boundary still holds: this changes the QUERY (its text, its
+// target, its declared filters), never a memory. Memories are already embedded
+// and in the database by the time this runs.
+//
+// `attempt` selects deterministically from a shuffled candidate list, so
+// attempt 0..n-1 walk distinct candidates rather than re-drawing the same one.
+// Returns null when the family has no honest re-target (near_dup's
+// distinguisher sits in the target's body, so re-targeting it would mean
+// rewriting a memory) or when no candidate is left.
+export function retargetQuery(q, index, tier, attempt, opts = {}) {
+  const r = makeRng(`${config.oracle.repairSeed}::retarget::${tier.name ?? 'adhoc'}::${q.qid}::attempt:${attempt}`);
+  const pickNth = (list) => (list.length === 0 ? null : r.shuffle([...list])[attempt % list.length]);
+
+  if (q.family === 'entity_swap') {
+    const planted = q.diagnostics?.regen?.entitySwap;
+    if (!planted) return null;
+    const candidate = pickNth(q.diagnostics.distractor_ids ?? []);
+    if (candidate == null) return null;
+    const member = index.byId.get(candidate);
+    if (!member) return null;
+    const slug = planted.swapPeople ? member.people[0] : member.places[0];
+    const entry = (planted.swapPeople ? PEOPLE_BY_SLUG : PLACES_BY_SLUG).get(slug);
+    if (!entry) return null;
+    return {
+      text: `the ${planted.mustInclude.join(' and the ')} with ${entry.name.toLowerCase()}`,
+      target: candidate,
+      declaredFilters: { date_from: null, date_to: null, people: planted.swapPeople ? [slug] : [] },
+    };
+  }
+
+  if (q.family === 'date_filter') {
+    const planted = q.diagnostics?.regen?.dateFilter;
+    if (!planted) return null;
+    const candidate = pickNth(q.diagnostics.distractor_ids ?? []);
+    if (candidate == null) return null;
+    const member = index.byId.get(candidate);
+    if (!member) return null;
+    const year = new Date(member.occurred_at).getUTCFullYear();
+    const { month, templateKind, mustInclude } = planted;
+    let tpl;
+    if (templateKind === 'inMonthYear') tpl = buildDateTemplate('inMonthYear', { year, monthIndex0: month });
+    else if (templateKind === 'inYear') tpl = buildDateTemplate('inYear', { year });
+    else {
+      const season = seasonForMonth(month);
+      const seasonYear = season === 'winter' && month <= 1 ? year - 1 : year;
+      tpl = buildDateTemplate('seasonOfYear', { season, year: seasonYear });
+    }
+    return {
+      text: `the ${mustInclude.join(' and the ')} ${tpl.text}`,
+      target: candidate,
+      declaredFilters: { date_from: tpl.range.from, date_to: tpl.range.to, people: [] },
+    };
+  }
+
+  if (q.family === 'paraphrase_nolex') {
+    // This family plants one memory per query, so there is no confusion set to
+    // move inside. The candidate pool is instead other paraphrase_nolex
+    // targets whose OWN query the oracle already reaches -- a memory a
+    // paraphrase query of that frame demonstrably ranks is the strongest
+    // available evidence that a fresh query off the same frame will rank it
+    // too. The caller supplies the pool (it is the only party that knows which
+    // queries currently pass) and claims each memory at most once, so repair
+    // does not pile several rewritten queries onto one memory.
+    const pool = opts.paraphrasePool ?? [];
+    const candidate = pickNth(pool);
+    if (!candidate) return null;
+    const target = index.byId.get(candidate.memoryId);
+    if (!target) return null;
+    const present = new Set(candidate.frame.present ?? ['action', 'prop', 'mishap', 'time']);
+    for (let i = 0; i < 8; i++) {
+      const drawn = renderParaphraseQuery(r.fork(`verbalize:${i}`), candidate.frame, present);
+      // DESIGN.md 4.2 rule 4 has to keep holding for the NEW pairing, not just
+      // the old one, or re-targeting would quietly turn the query lexical.
+      if (paraphraseOverlapStems(drawn.text, target).length > 0) continue;
+      if (drawn.text === q.text) continue;
+      return {
+        text: drawn.text,
+        target: candidate.memoryId,
+        declaredFilters: { date_from: null, date_to: null, people: [] },
+        frame: { ...candidate.frame, templateIdx: drawn.templateIdx, timeWord: drawn.timeWord, present: [...present] },
+      };
     }
     return null;
   }
