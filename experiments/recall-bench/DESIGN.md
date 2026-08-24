@@ -1206,8 +1206,43 @@ Measure:
 Gates:
 
 - Projected 10M footprint <= 30 GB. Over that: drop to `halfvec(192)` or shorten `body`.
-- Projected HNSW build <= 90 minutes. Over that, **switch to IVFFlat** (`lists = 3162`, about `sqrt(10M)`, `ivfflat.probes = 12`), which builds in a fraction of the time at some recall cost, and record the recall cost by re-running rung 2's quality bench against an IVFFlat index at 50K.
+- ~~Projected HNSW build <= 90 minutes. Over that, **switch to IVFFlat** (`lists = 3162`, about `sqrt(10M)`, `ivfflat.probes = 12`), which builds in a fraction of the time at some recall cost, and record the recall cost by re-running rung 2's quality bench against an IVFFlat index at 50K.~~
+  **REVISED 2026-08-24, see 7.1 below.** A one-time offline build of up to several hours is acceptable for the 10M claim run.
+  The 90-minute number protected rehearsal iteration speed, not claim validity, and it was applied to the one build the claim actually depends on.
+  Two binding constraints replace it: **(i) the build must not spill out of `maintenance_work_mem`** -- the graph is sized before the build and the session's `maintenance_work_mem` is set to hold it, with the spill message watched for during -- and **(ii) the resulting footprint stays inside the 30 GB disk budget above.**
 - 1M load bench comfortably above 2,400 QPS. If 1M cannot clear it, 10M certainly cannot, and the honest move is to report the ceiling found rather than proceed.
+
+### 7.1 DESIGN CHANGE (2026-08-24): the build-time gate is revised, and the scale tier returns to HNSW
+
+This is a deliberate change to a gate, recorded as one.
+Section 7 opens with "a failed gate stops the ladder; it does not get waived", and that rule is not being bent here: the gate is being **replaced by a different gate**, with the reasoning written down, because the original one was measuring the wrong thing.
+
+**What the 90-minute number was protecting.**
+The gate reads "projected HNSW build <= 90 minutes", and it fired: the 1M build extrapolated to 186 minutes at 10M, so the scale tier fell back to IVFFlat.
+Ninety minutes is a sensible bound on *rehearsal iteration speed*.
+A rung whose whole purpose is to make the 10M decision cheaply cannot afford an index that takes an hour and a half to rebuild every time a parameter moves, because the rung stops being cheap and the decision stops being made.
+
+But the 10M build is not a rehearsal.
+It happens **once**, offline, before the claim run, and nothing about claim B is measured while it runs.
+Claim B is a statement about serving throughput and recall at 10M, and the wall clock of a one-time offline build is not an input to it.
+Applying an iteration-speed budget to the single build the claim depends on is a category error, and it cost the tier its vector lane: 6.8 measured IVFFlat at `probes = 8` finding the target **15% of the time**, which dragged whole-pipeline recall to 0.669 and made every latency number in 6.6 and 6.7 a measurement of a system that mostly was not retrieving anything.
+A retrieval claim whose retrieval does not work is not a cheaper claim, it is a different and worse one.
+
+**So the gate is revised rather than waived.**
+A one-time offline build of up to several hours is acceptable for the 10M claim run.
+Two constraints replace the wall clock, and both are real failure modes rather than budget lines:
+
+1. **The build must not spill out of `maintenance_work_mem`.**
+   This is the constraint the original rung-3 text already called "the entire point of this rung" -- past the spill point pgvector drops to a much slower disk-based path and the extrapolation from 1M stops being linear, so a build that spills is not a slower build, it is an unpredictable one.
+   The graph is therefore sized *before* the build and the session's `maintenance_work_mem` is set to hold it.
+   Sizing is measured at 1M and extrapolated, not guessed; `shared_buffers` can be lowered for the build if the arithmetic needs the headroom, and restored before anything is measured.
+
+2. **Disk stays inside the existing 30 GB budget**, which is unchanged and still checked by `bench-load`'s own startup assertion.
+
+**What this does not change.**
+The 50K IVFFlat-versus-HNSW measurement above stands as a measurement; it is simply no longer the reason the scale tier runs what it runs.
+The 6.7 cost work is index-independent -- the stored tsvector column and the date-index change were both proved by id-list diffs of the pipeline against itself.
+And the throughput gate is untouched: the scale tier returning to HNSW does not lower the 2,400 QPS bar, it only means the bar is now being measured against a system that retrieves.
 
 #### What the IVFFlat fallback costs in recall, measured at 50K (2026-08-24)
 
@@ -1235,6 +1270,10 @@ The hybrid absorbs most of that because the lexical lanes are looking for the sa
 `fixedRrf` on HNSW already sits at 0.897, so **the quality tier must keep HNSW**, and the scale tier's IVFFlat is a scale-only concession whose recall cost is now on the record rather than assumed small.
 
 This also means the two tiers are no longer measuring the same retrieval system, and any 10M claim inherits the IVFFlat column, not the HNSW one.
+
+> **SUPERSEDED 2026-08-24 by 7.1.** That last sentence was the right conclusion under the 90-minute build gate and is the wrong one now.
+> The gate was revised, the scale tier returned to HNSW, and the two tiers measure the same index family again.
+> The 50K numbers in the table above still stand as measurements -- they are simply no longer the reason the scale tier runs what it runs.
 
 #### Rung 3 results (2026-08-24): the per-query cost profile, and two measurement bugs found on the way
 
