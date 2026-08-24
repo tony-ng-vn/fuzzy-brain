@@ -271,7 +271,8 @@ export async function createSchema(client, tier) {
          place_id    smallint not null,
          occurred_at date not null,
          cluster_id  int not null,
-         embedding   halfvec(${tier.dims})
+         embedding   halfvec(${tier.dims}),
+         fts         tsvector generated always as (to_tsvector('english', body)) stored
        )`
     : `create table if not exists ${tier.schema}.memories (
          id            bigint primary key,
@@ -433,9 +434,17 @@ export async function buildIndexes(client, tier, opts = {}) {
         { name: 'gin_trgm', sql: `create index if not exists memories_trgm_gin on ${table} using gin ((title || ' ' || body) gin_trgm_ops)` },
       ]
     : [
-        { name: 'gin_fts_expr', sql: `create index if not exists memories_fts_gin on ${table} using gin (to_tsvector('english', body))` },
+        { name: 'gin_fts', sql: `create index if not exists memories_fts_gin on ${table} using gin (fts)` },
         { name: `vector_${vectorIndexType}`, sql: vectorIndexSql, watchNotices: true },
-        { name: 'btree_occurred_at', sql: `create index if not exists memories_occurred_at_btree on ${table} (occurred_at)` },
+        // No btree on occurred_at here, unlike the real tier. The scale path
+        // only ever uses the date as a range alongside a selective FTS
+        // conjunction, and giving the planner the btree makes it build a
+        // BitmapAnd whose date side dominates: measured at 1M over 14
+        // date_filter queries, 8.99 ms median with the index against 6.46 ms
+        // without it, better at every quantile, because a year-wide range is
+        // ~125,000 rows of bitmap to intersect against a few hundred FTS hits.
+        // Applying the date as a heap recheck over the FTS bitmap is strictly
+        // cheaper at this shape. See DESIGN.md 6.7.
         { name: 'btree_person_occurred_at', sql: `create index if not exists memories_person_occurred_at_btree on ${table} (person_id, occurred_at)` },
       ];
 

@@ -108,7 +108,11 @@ create unlogged table :schema_name.memories (
 create index on :schema_name.memories using gin (fts);
 create index on :schema_name.memories using hnsw (embedding halfvec_cosine_ops)
   with (m = 16, ef_construction = 128);
-create index on :schema_name.memories (occurred_at);
+-- Deliberately no btree on occurred_at, unlike the real tier above: the scale
+-- path only uses the date as a range alongside a selective FTS conjunction, and
+-- the planner then builds a BitmapAnd whose date side dominates. Measured at 1M
+-- over 14 date_filter queries: 8.99 ms median with the index, 6.46 ms without.
+-- See DESIGN.md 6.7.
 create index on :schema_name.memories (person_id, occurred_at);
 
 \endif
