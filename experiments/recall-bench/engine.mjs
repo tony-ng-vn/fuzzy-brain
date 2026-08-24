@@ -489,11 +489,30 @@ function planStatement(tier, profile, cfg) {
     const orWeightParam = addSlot("orWeight");
     // Same fragment-bar mechanism as scripts/recall.mjs (deviation 2): a
     // plain disjunction for the match, a count subquery for the bar.
+    //
+    // The "lateral (select ${ftsExpr} as doc_tsv offset 0)" wrapper is a bug
+    // fix, not the original design (found running bench-load.mjs against
+    // bench_r1m, 2026-08-23): without it, the fragment-bar subquery below
+    // calls ${ftsExpr} once per unnested lexeme, and on a tier with no
+    // materialized fts column that means re-parsing the full document body
+    // from scratch up to 14 times per candidate row. Measured: a 14-term
+    // query against ~570K OR-matching rows took 75s. "OFFSET 0" is the
+    // standard Postgres idiom to fence a lateral subquery against subquery
+    // pullup, so the planner actually caches doc_tsv per row instead of
+    // inlining and re-evaluating ${ftsExpr} at every reference; measured
+    // down to ~10s for the same query. ${ftsExpr} is left as-is in the WHERE
+    // and ORDER BY clauses below (not routed through doc_tsv) because that
+    // is what keeps the primary match on the GIN expression index -- only
+    // the fragment-bar subquery, which the index cannot help with, needs
+    // the fence. The remaining cost is this lane's inherent shape (a broad
+    // OR over common terms with no index support for "at least N of them"),
+    // not this bug, and is reported rather than further optimized here.
     laneCtes.push(`or_lane as (
   select m.id, row_number() over (order by ts_rank_cd(${ftsExpr}, q.orq) desc, m.id) as rnk
-  from ${schema}.memories m, q
+  from ${schema}.memories m, q,
+       lateral (select ${ftsExpr} as doc_tsv offset 0) fts_doc
   where ${ftsExpr} @@ q.orq
-    and (select count(*) from unnest(${lexemesParam}::text[]) ql where ${ftsExpr} @@ to_tsquery('english', ql)) >= ${fragmentBarParam}${spanClause}${peopleClause}
+    and (select count(*) from unnest(${lexemesParam}::text[]) ql where fts_doc.doc_tsv @@ to_tsquery('english', ql)) >= ${fragmentBarParam}${spanClause}${peopleClause}
   order by ts_rank_cd(${ftsExpr}, q.orq) desc, m.id
   limit ${depth}
 )`);
