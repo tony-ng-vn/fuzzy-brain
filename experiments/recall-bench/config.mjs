@@ -188,7 +188,34 @@ export const config = {
     // Per tier: the quality tier can afford depth, the scale tier cannot.
     // These are the knobs that decide whether ~5 ms of CPU per query is enough,
     // so the scale values are priced for recall cost at the 1M rung (rung 3).
-    quality: { depth: 100, efSearch: 100, ivfProbes: 12 },
+    // efSearch was 100 and that was measuring the index, not the corpus.
+    // Measured 2026-08-24 at 50K, same queries and targets, vector Recall@10
+    // by exact cosine versus through the HNSW index:
+    //
+    //   family              exact   ef100   ef200   ef400   ef800
+    //   paraphrase_nolex    1.000   0.886   0.957   0.986   0.986
+    //   rare_token          0.929   0.914   0.929   0.929   0.929
+    //   entity_swap         0.529   0.529   0.529   0.529   0.529
+    //   near_dup            0.800   0.429   0.557   0.714   0.771
+    //   date_filter         0.429   0.357   0.400   0.414   0.429
+    //   partial_ref         0.357   0.343   0.357   0.357   0.357
+    //   typo_noisy          0.714   0.486   0.600   0.657   0.671
+    //   mix-weighted        0.752   0.639   0.693   0.729   0.741
+    //
+    // The loss lands exactly where this corpus plants dense near-duplicate
+    // clusters: a dup group renders identical prose, so its members' vectors
+    // sit on top of each other, the HNSW neighbour lists around them saturate
+    // with each other, and the search settles inside the cluster without
+    // reaching the one member the query asked for. That is an index-recall
+    // defect, not corpus difficulty -- the oracle certifies the same lane at
+    // 0.800 for near_dup by exact cosine (DESIGN.md 4.3.1: the gate is "a
+    // statement about the lane, not about the index"), and an ablation whose
+    // rung 0 is 37 points under its own lane is not measuring the rung.
+    //
+    // 400 is 4x the lane depth and recovers the bulk of it. Scale-tier
+    // efSearch is deliberately untouched: claim B's latency budget is priced
+    // at `lanes.scale`, and nothing here changes it.
+    quality: { depth: 100, efSearch: 400, ivfProbes: 12 },
     // The scale tier's extra knobs exist because ranking an unbounded candidate
     // set is what capped the 1M rehearsal at 10-16 QPS (measured 2026-08-24: an
     // OR over three common terms matched 862,972 of 1M rows and took 383 ms in
@@ -240,7 +267,13 @@ export const config = {
     // efSearch to apply when a metadata filter is present on the vector lane
     // (section 6.1: "hnsw.ef_search is raised to 200 when a filter is present
     // so a selective filter does not starve the lane"). Not filter-free depth.
-    filteredEfSearch: 200,
+    // Kept at 2x the unfiltered value it accompanies (was 200 against an
+    // unfiltered 100). Section 6.1 raises ef_search when a filter is present
+    // precisely so a selective filter does not starve the lane; leaving this
+    // at 200 while the unfiltered lane moved to 400 would invert that and make
+    // the filtered path the weaker one. Does not touch the naive profile,
+    // which runs with filters off.
+    filteredEfSearch: 800,
     // Section 6.2's OR-lane fragment bar ("a row counts only when it holds at
     // least min(2, terms) of the query's lexemes") has no tunable here on
     // purpose: engine.mjs computes the bar per query as min(2, contentTerms)
