@@ -710,7 +710,14 @@ function buildDateFilterCase(r, tier, helpers) {
   } else if (templateKind === 'inYear') {
     dateTemplate = buildDateTemplate('inYear', { year: targetYear });
   } else {
-    dateTemplate = buildDateTemplate('seasonOfYear', { season: seasonForMonth(month), year: targetYear });
+    // "that winter of Y" means the winter that STARTS in Y: Dec Y through Feb
+    // Y+1 (lib/lexicon.mjs's seasonRange, matched by engine.mjs's). So a
+    // January or February event belongs to the winter of the year before, and
+    // naming targetYear puts the target outside the range its own query
+    // declares -- which makes every range-filtered lane miss it.
+    const season = seasonForMonth(month);
+    const seasonYear = season === 'winter' && month <= 1 ? targetYear - 1 : targetYear;
+    dateTemplate = buildDateTemplate('seasonOfYear', { season, year: seasonYear });
   }
 
   const text = `the ${mustInclude.join(' and the ')} ${dateTemplate.text}`;
