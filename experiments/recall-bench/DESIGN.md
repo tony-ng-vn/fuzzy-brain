@@ -1012,6 +1012,37 @@ Vector lane alone, depth 30, 120 drifted test queries at 1M, `lists = 1000` (rep
 `hit@1` and `hit@30` are nearly equal at every probe count, and that is the tell: either the probed lists hold the target, in which case it ranks first because it ranks first exactly, or they do not, in which case it is absent altogether.
 Depth is not the constraint; list routing is.
 
+**The obvious explanation was tested and is only half right.**
+The index is built at `lists = 1000`, the textbook `sqrt(1M)`, while the corpus has **20,000 natural clusters of 50 rows each**.
+Each list therefore averages twenty unrelated cluster centroids, and a centroid that is a mean over twenty unrelated clusters sits near the global mean and carries little routing signal.
+That predicts right-sizing `lists` would fix it.
+It does not.
+
+| | `lists = 1000` | `lists = 4000` |
+| --- | --- | --- |
+| Build time at 1M | **66.3 s** | **812.8 s** (13.5 min) |
+| `probes = 8` | 0.150 @ 3.19 ms | 0.150 @ 1.75 ms |
+| `probes = 32` | 0.267 @ 11.31 ms | 0.292 @ 4.22 ms |
+| `probes = 100` | 0.475 @ 36.03 ms | 0.433 @ 10.26 ms |
+| `probes = 250` | 0.742 @ 95.63 ms | 0.517 @ 23.06 ms |
+
+At equal `probes`, more lists buys nothing in recall -- 0.150 either way at 8.
+What governs `hit@30` is the **fraction of the index scanned**, not the granularity of the partition: `lists = 1000` at `probes = 250` scans 25% of the index for 0.742, while `lists = 4000` at the same 250 scans 6.25% for 0.517.
+The routing signal really is weak, because a drifted query sits at cosine ~0.38 from its own target, and no partitioning of that space makes the target's list the obviously nearest one.
+
+What right-sizing does buy is the **recall-per-millisecond frontier**, because each probe touches fewer rows.
+At roughly 4 ms, `lists = 4000` at `probes = 32` scores 0.292 against `lists = 1000` at `probes = 8` scoring 0.150.
+At roughly 10 ms it is 0.433 against 0.267.
+**About 2x the recall for the same latency** -- real, worth having, and still nowhere near the exact lane's 0.992.
+
+Two hard costs come with it, and both are rung-3 gate inputs.
+The build is **12x slower** at 1M (66 s to 813 s), which is the same build-time gate that eliminated HNSW at 186 projected minutes.
+And `lists = 16000`, the value that would actually match the cluster count, **cannot be built on this machine at all**: pgvector reports `memory required is 50240 MB, maintenance_work_mem is 6144 MB`.
+
+One caveat that must not be lost in a write-up.
+The synthetic tier's vectors are *generated from* cluster centroids, so sizing `lists` to the cluster count is tuning the index to the corpus's own construction.
+That is legitimate for what rungs 3 and 4 measure, since both are synthetic, but it does not transfer to the 50K real-embedding arm, where `cluster_id` does not determine the vector.
+
 **What this means for everything else in this document.**
 The scale tier's vector lane costs about 3.0 ms and returns the right document 15% of the time.
 So the 1,805 QPS ceiling in the rung 3 results, and every per-family cost in 6.7, are measurements of a system whose ANN search mostly misses -- fast partly because it is not finding anything.
