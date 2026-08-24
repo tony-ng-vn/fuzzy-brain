@@ -20,10 +20,13 @@ const benchRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "experimen
 const { verifyOracle } = await import(pathToFileURL(join(benchRoot, "load.mjs")));
 const { config } = await import(pathToFileURL(join(benchRoot, "config.mjs")));
 
-// Matches load.mjs's private queryTextHash exactly (sha256 of the raw query
-// text) -- duplicated here rather than exported, since the checkpoint file's
-// on-disk shape is the actual contract this test pins, not the helper name.
-const textHash = (text) => createHash("sha256").update(text).digest("hex");
+// Matches load.mjs's private queryTextHash exactly -- duplicated here rather
+// than exported, since the checkpoint file's on-disk shape is the actual
+// contract this test pins, not the helper name. The TARGET is part of the
+// identity, not just the text: re-targeting changes which memory a query is
+// about, and a line matched on text alone would hand back ranks measured
+// against a different target.
+const textHash = (text, targets = []) => createHash("sha256").update(JSON.stringify({ text, targets })).digest("hex");
 
 function makeQuery(qid, text, target) {
   return {
@@ -54,7 +57,7 @@ test("a checkpointed query with a matching text hash is skipped, not re-measured
     const q2 = makeQuery("q2", "goodbye world", 102);
 
     await writeFile(checkpointPath, JSON.stringify({
-      qid: "q1", family: "rare_token", textHash: textHash(q1.text),
+      qid: "q1", family: "rare_token", textHash: textHash(q1.text, q1.targets),
       laneRanks: { and: 1, or: null, trigram: null, vector: 2 },
     }) + "\n");
 
@@ -119,7 +122,7 @@ test("a truncated trailing line in the checkpoint file is dropped, not thrown", 
     const q2 = makeQuery("q2", "goodbye world", 102);
 
     await writeFile(checkpointPath, JSON.stringify({
-      qid: "q1", family: "rare_token", textHash: textHash(q1.text),
+      qid: "q1", family: "rare_token", textHash: textHash(q1.text, q1.targets),
       laneRanks: { and: 1, or: null, trigram: null, vector: 2 },
     }) + "\n");
     // Simulate a crash mid-append: a partial JSON line with no trailing newline.
@@ -141,4 +144,89 @@ test("a truncated trailing line in the checkpoint file is dropped, not thrown", 
     // q2 gets freshly measured rather than the run failing outright.
     assert.equal(calls, 1, "q1 stays checkpointed; q2's truncated line falls back to a fresh measurement");
   });
+});
+
+test("a checkpoint line whose target no longer matches is not trusted, even when the text does", async () => {
+  await withTempDir(async (dir) => {
+    const checkpointPath = join(dir, "oracle-progress.jsonl");
+    const q1 = makeQuery("q1", "hello world", 101);
+
+    // Same text, different target: what a dead run's RE-TARGET round leaves
+    // behind. Trusting this line would score the oracle on ranks measured
+    // against a memory the query no longer points at.
+    await writeFile(checkpointPath, JSON.stringify({
+      qid: "q1", family: "rare_token", textHash: textHash(q1.text, [999]),
+      laneRanks: { and: 1, or: null, trigram: null, vector: 2 },
+    }) + "\n");
+
+    let calls = 0;
+    const client = {
+      query: async () => {
+        calls++;
+        return { rows: [{ and_rank: 3, or_rank: null, trg_rank: null, vector_rank: 9 }] };
+      },
+    };
+
+    await verifyOracle(client, tier, {
+      dev: [q1], test: [], vectors: vectors.subarray(0, dims), dims, cfg: config, repairRounds: 0, checkpointPath,
+    });
+
+    assert.equal(calls, 1, "a checkpoint line measured against a different target must be re-measured");
+  });
+});
+
+// The oracle-definition fix (evaluator calibration decision 1): a family that
+// plants a resolvable closed-world date constraint has its lane reachability
+// measured WITH the ground-truth range applied, because the engine genuinely
+// carries that mechanism. Both numbers are reported so the filter's worth is
+// visible rather than asserted.
+test("a date-constrained query is measured both with and without its range, and the gate uses the filtered ranks", async () => {
+  const dated = {
+    ...makeQuery("d1", "the trellis and the awning in March 2019", 101),
+    family: "date_filter",
+    declared_filters: { date_from: "2019-03-01T00:00:00.000Z", date_to: "2019-04-01T00:00:00.000Z", people: [] },
+  };
+
+  const seen = [];
+  const client = {
+    query: async (sql, params) => {
+      seen.push({ filtered: sql.includes("occurred_at <@"), params });
+      // Unfiltered the target is buried; under its own date range it is first.
+      return seen.length === 1
+        ? { rows: [{ and_rank: null, or_rank: null, trg_rank: null, vector_rank: 812 }] }
+        : { rows: [{ and_rank: 1, or_rank: 4, trg_rank: null, vector_rank: 2 }] };
+    },
+  };
+
+  const result = await verifyOracle(client, tier, {
+    dev: [dated], test: [], vectors: vectors.subarray(0, dims), dims, cfg: config,
+    repairRounds: 0, retargetAttempts: 0,
+  });
+
+  assert.equal(seen.length, 2, "a date-constrained query is measured twice: unfiltered, then filtered");
+  assert.equal(seen[0].filtered, false);
+  assert.equal(seen[1].filtered, true);
+  assert.equal(seen[1].params.at(-1), "[2019-03-01T00:00:00.000Z,2019-04-01T00:00:00.000Z)",
+    "the range is bound half-open, matching engine.mjs's rangeLiteral");
+
+  assert.equal(result.summary.overall.bestLaneRankAt10, 1, "the gate scores the filtered ranks");
+  assert.equal(result.summaryUnfiltered.overall.bestLaneRankAt10, 0, "the unfiltered ranks are reported alongside");
+});
+
+test("a query that plants no date constraint is never measured under a filter", async () => {
+  const plain = makeQuery("p1", "the reference code kbz-4417", 101);
+  const seen = [];
+  const client = {
+    query: async (sql) => {
+      seen.push(sql.includes("occurred_at <@"));
+      return { rows: [{ and_rank: 1, or_rank: null, trg_rank: null, vector_rank: 30 }] };
+    },
+  };
+
+  await verifyOracle(client, tier, {
+    dev: [plain], test: [], vectors: vectors.subarray(0, dims), dims, cfg: config,
+    repairRounds: 0, retargetAttempts: 0,
+  });
+
+  assert.deepEqual(seen, [false], "no date range in declared_filters means exactly one unfiltered measurement");
 });
