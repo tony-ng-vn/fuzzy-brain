@@ -40,21 +40,38 @@ export const config = {
     seedMemories: "fuzzy-brain-recall-bench-v1/memories",
     seedDev:      "fuzzy-brain-recall-bench-v1/queries/dev",
     seedTest:     "fuzzy-brain-recall-bench-v1/queries/test",
-    familyMix: { paraphrase_nolex: 0.20, rare_token: 0.15, entity_swap: 0.15,
-                 near_dup: 0.15, date_filter: 0.15, partial_ref: 0.10, typo_noisy: 0.10 },
-    // Big enough to actually crowd a top-10. A group of 3-8 cannot: siblings plus
-    // the target still fit in ten slots, so merely finding the group would score.
-    // Large groups stay solvable through the planted `distinguisher` (section 4.2).
+    // Shifted 2026-08-24 (DESIGN.md 4.4 step 4, the one knob that procedure
+    // names for moving naive). Measured per-family vector-only Recall@10 at
+    // 50K, post-repair: paraphrase 0.900, rare_token 0.920, entity_swap 0.553,
+    // near_dup 0.72, date_filter 0.535, partial_ref 0.230, typo_noisy 0.430.
     //
-    // Left at 12-20 during the 2026-08-24 naive calibration after measuring the
-    // dial to be inert. Excluding the whole dup group from the ranking, the
-    // target's rank among the REST of the corpus already scores 0.413 vector
-    // Recall@10 against 0.427 measured with the siblings present -- so the
-    // siblings cost the target essentially nothing, because the distinguisher
-    // the query names also moves the embedding. Shrinking the group to 3-5
-    // would buy under a point. Same finding for the other two crowding dials
-    // (entity_swap 2-4 members, date_filter 4-6 years): see DESIGN.md 4.1.
-    dupGroupSize: [12, 20],
+    // DESIGN.md 4.4 says to shift toward rare_token/typo_noisy/paraphrase to
+    // move naive, on the projection that rare_token's vector recall is 0.35.
+    // Measured it is 0.920, so the SAME knob moves naive the other way, and
+    // section 4.1 already records that inversion. Weight therefore moves TO
+    // rare_token and paraphrase_nolex (the two families the real embedder
+    // handles) FROM entity_swap, partial_ref and typo_noisy.
+    //
+    // Gate-safety of the shift: rare_token takes the largest share increase
+    // and its verified oracle is 1.000, so it cannot cost the 0.97 ceiling.
+    // paraphrase_nolex moves only 3 points because it is the family whose
+    // oracle depends on the repair loop converging.
+    familyMix: { paraphrase_nolex: 0.23, rare_token: 0.22, entity_swap: 0.11,
+                 near_dup: 0.15, date_filter: 0.15, partial_ref: 0.07, typo_noisy: 0.07 },
+    // Big enough to actually crowd a top-10, small enough that the group is
+    // findable at all. 12-20 was the first, and it was measured inert: with the
+    // whole group excluded from the ranking, the target already scored 0.413
+    // vector Recall@10 against 0.427 with the siblings present, because the
+    // confusion set was never in the top 10 to crowd anything.
+    //
+    // Once the planted terms became rare enough to address (mustIncludeVocab
+    // below), that reversed: the target's external-competition rank rose to
+    // 0.810 while measured recall stayed 0.427, so the siblings then cost the
+    // family 0.38. 4-8 is where both halves hold -- a group of 8 leaves two
+    // top-10 slots, so merely finding the group still does not score it, which
+    // is the property DESIGN.md 4.2 asks for and what gives the `dupPenalty`
+    // rerank feature something to earn back.
+    dupGroupSize: [4, 8],
     clusters: 400,                 // topic clusters at 50K; scaled to 20_000 at 10M
     multiTargetShare: 0.0,         // headline test split is single-target on purpose (section 5)
     multiTargetCount: 300,         // separate reported set -> queries-multi.jsonl
@@ -122,7 +139,13 @@ export const config = {
     // One detail word per memory creates no detail-detail co-occurrence at
     // all, and the pair rarity comes from the cross-topic noun instead.
     mustIncludeVocab: {
-      date_filter: { topicNouns: 0, crossTopicNouns: 1, detailWords: 1 },
+      // Three terms, not two. Measured against the loaded 50K corpus, holding
+      // the targets fixed and varying only the query: a two-term date query
+      // (cross-topic noun + detail word) scores 0.100 external Recall@10, a
+      // three-term one 0.544. Rarity alone was not enough -- one common noun
+      // still addresses the ~1,500 filler memories that use it as padding, and
+      // it takes a third term to make the combination specific.
+      date_filter: { topicNouns: 1, crossTopicNouns: 1, detailWords: 1 },
       near_dup:    { topicNouns: 1, crossTopicNouns: 1, detailWords: 1 },
     },
   },
