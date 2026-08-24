@@ -533,7 +533,17 @@ function planStatement(tier, profile, cfg) {
   const peopleSelectExpr = kind === "real" ? "m.people" : "'{}'::text[]";
   const tagsSelectExpr = kind === "real" ? "m.tags" : "'{}'::text[]";
 
-  const sql = `with q as (
+  // NOT MATERIALIZED (bug found running bench-load.mjs against bench_r1m,
+  // 2026-08-23): q is referenced by every lane CTE, so a plain "with q as
+  // (...)" gets materialized once Postgres 12+ sees more than one
+  // reference. Once q.vec comes from a materialized CTE Scan rather than
+  // an inlined subquery, the planner can no longer treat "embedding <=>
+  // q.vec" as index-orderable, so vec_lane falls back to a full Seq Scan
+  // plus an external disk sort instead of the HNSW index -- confirmed by
+  // EXPLAIN (measured: 560ms/query instead of the sub-10ms an inlined q
+  // gives). NOT MATERIALIZED forces per-reference inlining, so each lane
+  // (including vec_lane's ORDER BY) gets its own eligible plan again.
+  const sql = `with q as not materialized (
   select ${qParts.join(",\n         ")}
 ),
 ${laneCtes.join(",\n")},
