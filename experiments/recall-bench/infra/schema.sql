@@ -42,6 +42,12 @@ create schema if not exists :schema_name;
 -- replace a tier's table rather than fail on a leftover from a prior sweep.
 drop table if exists :schema_name.memories;
 
+-- The term-statistics side tables (DESIGN.md 6.6) are derived from memories,
+-- so they are dropped alongside it rather than left describing a corpus that
+-- no longer exists. load.mjs's buildTermStats rebuilds both after the load.
+drop table if exists :schema_name.term_stats;
+drop table if exists :schema_name.lexeme_stats;
+
 \if :is_real_vector
 
 -- Real-vector tiers (smoke1k, quality50k): 768-dim real embeddings, weighted

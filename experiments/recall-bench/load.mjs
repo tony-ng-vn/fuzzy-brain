@@ -80,6 +80,7 @@ import { assertBenchTarget, benchClient } from './lib/safety.mjs';
 import { hashString } from './lib/rng.mjs';
 import { memoryVector, toHalfvecLiteral } from './lib/synth-vectors.mjs';
 import { writeJsonl } from './lib/jsonl.mjs';
+import { buildTermStats } from './lib/term-stats.mjs';
 import { parseQueryFeatures, lexicalQueryParams } from './engine.mjs';
 import { buildMemoryIndex, reverbalizeQuery, retargetQuery } from './gen-corpus.mjs';
 import { embedDocuments, embedQuery } from '../../scripts/lib/embeddings.mjs';
@@ -1013,6 +1014,7 @@ async function main() {
       'vector-index': { type: 'string', default: 'hnsw' },
       resume: { type: 'boolean', default: false },
       'verify-oracle': { type: 'boolean', default: false },
+      'term-stats': { type: 'boolean', default: false },
       'repair-rounds': { type: 'string' },
     },
   });
@@ -1030,6 +1032,23 @@ async function main() {
 
   if (args['verify-oracle']) {
     await runVerifyOracle(tier, args);
+    return;
+  }
+
+  // Rebuilding the side tables against an already-loaded schema, without
+  // re-copying or re-embedding anything.
+  if (args['term-stats']) {
+    const client = benchClient();
+    await client.connect();
+    try {
+      const stats = await buildTermStats(client, tier);
+      console.log(
+        `  term stats: ${stats.terms} surface terms, ${stats.lexemes} lexemes, ` +
+          `${stats.totalDocs} docs, ${(stats.bytes / 1e6).toFixed(1)} MB in ${(stats.ms / 1000).toFixed(1)}s`,
+      );
+    } finally {
+      await client.end();
+    }
     return;
   }
 
@@ -1089,6 +1108,12 @@ async function main() {
     for (const t of report.timings) console.log(`  index ${t.name}: ${(t.ms / 1000).toFixed(1)}s`);
     for (const n of report.notices) console.log(`  notice: ${n}`);
     console.log(`  total relation size: ${(report.sizes.totalBytes / 1e9).toFixed(2)} GB`);
+
+    const stats = await buildTermStats(client, tier);
+    console.log(
+      `  term stats: ${stats.terms} surface terms, ${stats.lexemes} lexemes, ` +
+        `${(stats.bytes / 1e6).toFixed(1)} MB in ${(stats.ms / 1000).toFixed(1)}s`,
+    );
 
     console.log(`load.mjs done in ${((Date.now() - wallStarted) / 1000).toFixed(1)}s`);
   } finally {
