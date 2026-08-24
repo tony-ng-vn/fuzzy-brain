@@ -1601,6 +1601,47 @@ Footprint was never the binding constraint and still is not.
 
 ---
 
+#### The 10M go/no-go, decided 2026-08-24 after the HNSW rebuild: **NO-GO, on validity rather than on resources**
+
+The three resource gates were the reason this decision kept getting deferred, so they are answered first, with measurements rather than projections.
+All three pass, or pass with one caveat.
+
+| Gate | Projection to 10M | Verdict |
+| --- | --- | --- |
+| Disk footprint (<= 30 GB) | 1,831 MB at 1M on HNSW -> **~18.3 GB**, on a volume with 56 GB free | **pass** |
+| Build wall clock (7.1: several hours acceptable) | 6 min 43 s at 1M with 8 processes -> **~70 min linear, call it 2-3 hours with HNSW's superlinearity** | **pass** |
+| `maintenance_work_mem` must hold the graph (7.1 constraint (i)) | 1,227 bytes/tuple measured -> **~12.3 GB at 10M** | **tight, see below** |
+
+The memory gate is the only uncomfortable one and it deserves its number stated honestly rather than rounded into comfort.
+1,227 bytes/tuple was measured with `max_parallel_maintenance_workers = 0`, while the real build runs 8 processes sharing a DSM segment, so **12.3 GB is a lower bound on the requirement, not the requirement**; a 10M build should request nearer 16 GB.
+This machine has 24 GB total and was sitting at **79 MB unused with 10.8 GB held by the compressor** while the 1M build ran.
+`shared_buffers` is 6 GB and would have to come down for the build session, which needs a cluster restart rather than a `SET`.
+It is probably doable. It is not comfortable, and a build that spills is not a slower build but one whose duration stops extrapolating -- which is exactly what constraint (i) exists to prevent.
+
+**None of that is why the run does not proceed.**
+
+The 10M rung exists to produce claim B: a sustained rate at 10M for a *hybrid retrieval* system.
+7.2 establishes that at the synthetic tiers the vector lane's recall is not a property of the retrieval system at all.
+It is a property of `lib/synth-vectors.mjs`'s `jitter` and `drift` constants: the generator places every query beside exactly one point and leaves the other 999,999 as an undifferentiated noise floor, so no ANN index can route to the target and both IVFFlat and HNSW fail at it for different reasons.
+A 10M claim-B run would therefore produce a throughput figure attached to a recall figure that measures the corpus generator.
+Reporting that pair as evidence for hybrid retrieval at 10M would repeat, at ten times the cost, exactly the error deviation 2 already made once.
+
+**This is a stronger reason to stop than a resource gate, because it cannot be answered by buying hardware.**
+More cores raise the rate. They do not make the vector lane find anything.
+
+**What would make the 10M rung meaningful**, stated as a constraint rather than a tuned value, because the value has not been measured:
+
+> The generator's cluster structure has to exist in the vector space. Concretely, a same-cluster sibling must sit **above** the top-30 noise floor from the query's point of view. Today it sits below: sibling-to-query cosine is 0.185 against a rank-30 floor of 0.248. That means a materially smaller `DEFAULT_MEMORY_JITTER` -- the perturbation norm is `jitter * sqrt(dims)`, so 0.10 at 256 dims perturbs by 1.6 against a unit centroid, and the direction of the fix is toward roughly 0.03-0.05 -- and/or a smaller `DEFAULT_QUERY_DRIFT` so a query lands inside its target's neighbourhood rather than beside it.
+
+That is a Track 2 change to `gen-corpus.mjs` and `lib/synth-vectors.mjs`, it invalidates the existing 1M and 10M corpora, and it is the prerequisite for any recall claim at either synthetic tier.
+Until it lands, the rungs that can carry a recall claim are the real-embedding ones: rung 2 at 50K measures the same pipeline against real 768-dim vectors and reports fixedRrf Recall@10 of 0.897 on HNSW, which is the number that describes this retrieval system.
+
+**What the 1M rung does still establish**, and what a reader should take from it, is in the tables above and in section 8: the per-query cost profile, the closed-loop ceiling, the sustainable open-loop rate, and the recall each of those was produced at.
+Those are real measurements of a real system under a real query load.
+They are simply not a recall claim.
+
+---
+
 ## 8. Measuring claim B honestly
 
 ### 8.1 The client must not be the bottleneck
