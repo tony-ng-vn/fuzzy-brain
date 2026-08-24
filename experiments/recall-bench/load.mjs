@@ -502,46 +502,51 @@ export async function buildIndexes(client, tier, opts = {}) {
 // it is exact by construction.
 // ---------------------------------------------------------------------------
 
+// Lane predicates used to build off a shared `with q as (...)` CTE joined via
+// `from table m, q`. That cross join is what kept every lane's filter from
+// being pushed into a Parallel Seq Scan: Postgres will parallelize the raw
+// scan of `m` but leaves the join filter against the materialized CTE
+// evaluated serially on the leader, above the Gather, because a CTE Scan
+// (even a one-row one) isn't something the planner will run inside workers.
+// Binding $1/$2/etc. straight into each lane's own WHERE/ORDER BY -- no CTE
+// in between -- lets the whole predicate live inside the parallel portion.
+// Measured on this corpus: ~2.4s -> ~0.44s per query (DESIGN.md section 7
+// rung 2's 30-minute verify-oracle budget; see the repo's oracle speedup
+// validation for the before/after rank comparison across every family).
 function buildOracleSql(tier, depth, trigramThreshold) {
   const table = `${tier.schema}.memories`;
   const withTrigram = tier.vector === 'real';
-  const simExpr = `word_similarity(q.raw, m.title || ' ' || m.body)`;
+  const simExpr = `word_similarity($1::text, m.title || ' ' || m.body)`;
   const trigramCte = withTrigram
     ? `,
 trg_lane as (
   select m.id, row_number() over (order by ${simExpr} desc, m.id) as rnk
-  from ${table} m, q
+  from ${table} m
   where ${simExpr} >= ${trigramThreshold}
   order by ${simExpr} desc, m.id limit ${depth}
 )`
     : '';
   const trigramSelect = withTrigram ? `(select rnk from trg_lane where id = $4) as trg_rank` : `null::bigint as trg_rank`;
-  return `with q as (
-  select $1::text as raw,
-         websearch_to_tsquery('english', $1) as andq,
-         to_tsquery('english', $2) as orq,
-         $5::vector as vec
-),
-and_lane as (
-  select m.id, row_number() over (order by ts_rank_cd(m.fts, q.andq) desc, m.id) as rnk
-  from ${table} m, q
-  where m.fts @@ q.andq
-  order by ts_rank_cd(m.fts, q.andq) desc, m.id limit ${depth}
+  return `with and_lane as (
+  select m.id, row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery('english', $1)) desc, m.id) as rnk
+  from ${table} m
+  where m.fts @@ websearch_to_tsquery('english', $1)
+  order by ts_rank_cd(m.fts, websearch_to_tsquery('english', $1)) desc, m.id limit ${depth}
 ),
 or_lane as (
-  select m.id, row_number() over (order by ts_rank_cd(m.fts, q.orq) desc, m.id) as rnk
-  from ${table} m, q
-  where m.fts @@ q.orq
+  select m.id, row_number() over (order by ts_rank_cd(m.fts, to_tsquery('english', $2)) desc, m.id) as rnk
+  from ${table} m
+  where m.fts @@ to_tsquery('english', $2)
     and (select count(*) from unnest($3::text[]) ql where m.fts @@ to_tsquery('english', ql)) >= $6
-  order by ts_rank_cd(m.fts, q.orq) desc, m.id limit ${depth}
-)${trigramCte},
-tgt as (select embedding as vec from ${table} where id = $4)
+  order by ts_rank_cd(m.fts, to_tsquery('english', $2)) desc, m.id limit ${depth}
+)${trigramCte}
 select
   (select rnk from and_lane where id = $4) as and_rank,
   (select rnk from or_lane  where id = $4) as or_rank,
   ${trigramSelect},
-  (select count(*) + 1 from ${table} m, q, tgt
-     where m.embedding is not null and (m.embedding <=> q.vec) < (tgt.vec <=> q.vec)) as vector_rank`;
+  (select count(*) + 1 from ${table} m
+     where m.embedding is not null
+       and (m.embedding <=> $5::vector) < (select embedding <=> $5::vector from ${table} where id = $4)) as vector_rank`;
 }
 
 const laneRankNumber = (v) => (v === null || v === undefined ? null : Number(v));
@@ -719,6 +724,16 @@ async function runVerifyOracle(tier, args) {
 
   const client = benchClient();
   await client.connect();
+  // Session-only: infra/postgresql.bench.conf pins max_parallel_workers_per_gather
+  // to 0 for the load-test tiers, so this is set per-connection rather than in
+  // the conf file. Requires buildOracleSql's per-lane predicates to be free of
+  // the shared "q" CTE cross join -- see that function's comment -- or the
+  // planner has nothing parallelizable to push workers into.
+  await client.query('SET max_parallel_workers_per_gather = 6');
+  await client.query('SET max_parallel_workers = 8');
+  await client.query('SET min_parallel_table_scan_size = 0');
+  await client.query('SET parallel_setup_cost = 0');
+  await client.query('SET parallel_tuple_cost = 0');
   const started = Date.now();
   try {
     const result = await verifyOracle(client, tier, {
