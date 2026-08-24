@@ -785,6 +785,18 @@ function planStatement(tier, profile, cfg) {
     // Same fragment-bar mechanism as scripts/recall.mjs (deviation 2): a
     // plain disjunction for the match, a count subquery for the bar.
     //
+    // The bar stems each query term ONCE per query (bar_terms) and compares
+    // lexeme arrays, instead of calling to_tsquery per term per candidate row.
+    // Same reason the scale path carries q.bar_lex (DESIGN.md 6.6): a broad OR
+    // over common terms matches ~42K of the 50K rows, so a 13-term query ran
+    // ~540K to_tsquery parses. Measured on one such query: 451 ms -> 217 ms.
+    // Verified result-identical on the dev split (same recall@1/5/10/20, same
+    // MRR, and the same 86 failure records row for row), so the published
+    // fixedRrf test number is unaffected.
+    //
+    // A term that stems to no lexeme is dropped rather than counted, which is
+    // what `@@ to_tsquery` already did with the empty query it produced for one.
+    //
     // The "lateral (select ${ftsExpr} as doc_tsv offset 0)" wrapper is a bug
     // fix, not the original design (found running bench-load.mjs against
     // bench_r1m, 2026-08-23): without it, the fragment-bar subquery below
@@ -802,12 +814,17 @@ function planStatement(tier, profile, cfg) {
     // the fence. The remaining cost is this lane's inherent shape (a broad
     // OR over common terms with no index support for "at least N of them"),
     // not this bug, and is reported rather than further optimized here.
+    laneCtes.push(`bar_terms as materialized (
+  select tsvector_to_array(to_tsvector('english', t)) as lexemes
+  from unnest(${lexemesParam}::text[]) as t
+  where to_tsvector('english', t) != ''::tsvector
+)`);
     laneCtes.push(`or_lane as (
   select m.id, row_number() over (order by ts_rank_cd(${ftsExpr}, q.orq) desc, m.id) as rnk
   from ${schema}.memories m, q,
-       lateral (select ${ftsExpr} as doc_tsv offset 0) fts_doc
+       lateral (select tsvector_to_array(${ftsExpr}) as doc_lex offset 0) fts_doc
   where ${ftsExpr} @@ q.orq
-    and (select count(*) from unnest(${lexemesParam}::text[]) ql where fts_doc.doc_tsv @@ to_tsquery('english', ql)) >= ${fragmentBarParam}${spanClause}${peopleClause}
+    and (select count(*) from bar_terms bt where bt.lexemes <@ fts_doc.doc_lex) >= ${fragmentBarParam}${spanClause}${peopleClause}
   order by ts_rank_cd(${ftsExpr}, q.orq) desc, m.id
   limit ${depth}
 )`);
