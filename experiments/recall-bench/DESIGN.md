@@ -873,6 +873,112 @@ Whether it clears 2,400 QPS is section 8's question, and section 8 answers it wi
 
 ---
 
+### 6.7 ADDENDUM (2026-08-24, later the same day): where the remaining cost actually was
+
+Section 6.6 and the rung 3 results below record a 6.94 core-ms weighted profile and conclude that clearing 2,400 QPS needs roughly 2 core-ms cut out of every query.
+That conclusion was right about the size of the gap and wrong about where the gap lived.
+This section records what the cost turned out to be, the three changes that removed most of it, and one change that was tried and is much worse.
+
+Read the numbers below against a re-measured baseline, not against 6.94.
+Two things changed underneath that figure.
+The OR-bar fix (`perf(recall-bench): stem the OR fragment bar once per query`) landed after the per-family table was taken, which is why the table's `date_filter` reads 15.23 ms while the per-lane re-measurement immediately after it reads 10.30 ms.
+And `retrieve` timed itself with `Date.now()`, quantizing single-digit-millisecond queries to whole milliseconds; it now uses `performance.now()`.
+Re-measured on the same instrument, on the same query set, with none of this section's changes applied, the profile is **5.45 core-ms weighted median (5.51 mean)**, not 6.94.
+The original numbers are left in place as history; the 10M no-go rests on 6.94, and 6.94 was stale by about 1.4 core-ms.
+
+**The dominant cost was recomputing the tsvector, once per candidate row, on every query.**
+
+DESIGN.md 3.5 gave the synthetic tiers an expression index over `to_tsvector('english', body)` and no stored column, to save heap at 10M.
+That trade was made before anything measured what the recompute costs.
+Measured at 1M over a fixed 400-row candidate set, on an idle box:
+
+| Operation, 400 rows | Time |
+| --- | --- |
+| Read 400 bodies, no parsing | 0.195 ms |
+| `to_tsvector('english', body)` over the same 400 | 4.509 ms |
+| `ts_rank_cd` over an already-materialized tsvector | 0.299 ms |
+| `ts_rank_cd` over a recomputed one | 4.176 ms |
+
+So the parse is 10.4 us/row and the ranking it feeds is 0.68 us/row.
+Both lexical lanes cap at 400 candidates, so a query with a full AND lane was paying about 4.3 ms to reproduce something it could have read.
+The column costs 213 bytes/row: 227 MB at 1M (1,381 -> 1,608 MB), projecting to **about 16 GB at 10M against the 30 GB rung-3 footprint gate**, which the gate clears with room to spare.
+The reversal is recorded in `infra/schema.sql` and `load.mjs` next to the original reasoning.
+
+Proving it neutral was cheap and worth more than a recall number: a generated column produces the same lexemes as the expression, so both forms of the AND and OR lane were run against the same rows in the same session, and **274 of 274 lexical lanes returned identical ordered id lists**.
+
+**The date-constrained AND lane was not paying for the `BitmapAnd` in general -- it was paying for wide ranges.**
+
+The rung 3 results below attribute 6.52 ms marginal to a `BitmapAnd` of the `occurred_at` btree against the FTS GIN.
+On a one-month window that is wrong: the date bitmap costs 0.003 ms and returns 42 rows.
+On a whole-year window it is right and then some: the date bitmap costs 4.66 ms and covers 125,470 rows.
+The `date_filter` family is a mix of both, which is why its per-query spread ran 6 to 16 ms while every other family was tight.
+
+Three index shapes were priced against 14 `date_filter` queries, each inside a transaction that was rolled back, all on one connection so the comparison is same-session:
+
+| Shape | Median | Mean |
+| --- | --- | --- |
+| Baseline: `occurred_at` btree x FTS GIN, `BitmapAnd` | 8.99 ms | 8.94 ms |
+| **No date btree: FTS GIN alone, date as a heap recheck** | **6.46 ms** | **6.54 ms** |
+| `btree_gin` multicolumn `gin (fts, occurred_at)` | 58.33 ms | 57.33 ms |
+| `btree_gin` composite with the date btree also present | 58.31 ms | 57.40 ms |
+
+**`btree_gin` is a 6.5x regression, not an improvement.**
+A year-wide range makes GIN enumerate every date key in the range and merge their posting lists, which is far more work than the btree bitmap it replaces.
+It is recorded here so nobody prices it again.
+
+Removing the btree wins instead, and wins at every quantile, because the FTS conjunction is always the more selective side on this workload.
+The scale tier therefore has no `occurred_at` btree; the quality tier keeps its own.
+Results are unchanged: 280 of 280 test queries return identical ordered id lists and recall@10 holds at 0.9929.
+
+**The vector lane is worth nothing on a query that names something unique.**
+
+Section 6.6's gating policy asked for two query-dependent skips.
+Only one of them survives contact with the corpus.
+
+The one that works gates the *vector* lane, not a lexical one.
+The ANN search costs about 3.0 ms uniformly across every family, and on a `rare_token` query the AND lane already returns exactly the target.
+The trigger is the rarest query term's exact document frequency out of `term_stats`, and it separates cleanly -- measured over 60 test queries per family:
+
+| Family | rarest term df, min / median / max |
+| --- | --- |
+| rare_token | 1 / 1 / 1 |
+| paraphrase_nolex | 15 / 22 / 11,993 |
+| near_dup | 15 / 34 / 12,694 |
+| partial_ref | 37 / 59 / 75 |
+| date_filter | 231 / 24,762 / 48,906 |
+| entity_swap | 11,993 / 24,880 / 33,600 |
+| typo_noisy | 12,098 / 36,908 / 50,060 |
+
+A ceiling of 5 catches `rare_token` and nothing else, with the nearest other family 3x away.
+The client only decides that a query has that shape; whether the lane runs is decided in SQL against the AND lane's real row count, as the same one-time InitPlan filter the OR lane already uses, so a rare-token query whose conjunction came back empty still gets its vector lane.
+Measured back to back on one connection: **mix-weighted 4.16 -> 3.56 core-ms, `rare_token` 3.17 -> 0.36 ms**, with recall identical in every family (overall recall@10 0.9857 either way over 700 queries, `rare_token` at 1.000).
+
+**The other half of 6.6's gating policy cannot be built as specified, and this is why.**
+Skipping the lexical lanes for "no-rare-term paraphrase-shaped queries" needs a signal for paraphrase shape, and `looksParaphrase` is not it.
+It requires `maxIdf <= 6.0`, and measured over 60 queries per family it fires on **1 of 60 `paraphrase_nolex` queries and on 60 of 60 `entity_swap` and 60 of 60 `date_filter` queries**.
+Gating on it would skip the lexical lanes for exactly the two families that depend on them and leave the paraphrase family untouched.
+The threshold is miscalibrated against this corpus -- paraphrase queries carry moderately rare content words and sit at a median `maxIdf` of 10.77 -- and after the stored column landed the skip is worth about 0.2 core-ms anyway.
+Recalibrating `looksParaphrase` is a quality-tier question, since that is where it also drives `paraphraseBoost`; it is not attempted here.
+
+**`entity_swap`, priced and left alone.**
+It is the second most expensive family at about 5.2 ms, and the cost is not where a depth reduction would reach it: about 2.0 ms is the GIN posting-list merge for a conjunction of two nouns that each sit at df ~24,000, about 0.7 ms is ranking, and about 3.0 ms is the vector lane.
+Lane depth 30 -> 20 measures 0.16 core-ms weighted and a candidate cap of 150 measures 0.10, both inside this machine's run-to-run noise, and both spend fusion headroom to buy it.
+Neither is taken.
+
+**Where that leaves the profile.**
+
+| | Weighted median | Weighted mean |
+| --- | --- | --- |
+| Re-measured baseline, same instrument, none of the above | 5.45 | 5.51 |
+| After the stored tsvector column | 4.39 | 4.49 |
+| After the vector-lane gate | **3.56** | **3.53** |
+
+The date-index change is not a separate row because its effect is confined to one family and the same-session A/B above is the honest measurement of it: `date_filter` 8.99 -> 6.46 ms.
+
+Section 8 has the throughput this bought, and it is not the throughput this table predicts.
+
+---
+
 ## 7. The scale ladder
 
 Each rung has a gate.
@@ -1064,6 +1170,35 @@ The dispatch ticker does: it is scheduled every 10 ms, so a multi-second gap bet
 `caffeinate -s` asserts `PreventSystemSleep`, but the system-wide assertion still reads 0 while on battery -- macOS documents `-s` as valid only on AC power, and it is not honoring it.
 Until the machine is plugged in, no open-loop or closed-loop window on this box is trustworthy, so the knee sweep, the 2,400 QPS run, and the 10M rung are all gated on that.
 
+#### Re-measured after section 6.7's cost work (2026-08-24, on AC power)
+
+Every window below was taken on AC, on a box checked idle first, and every one of them came back `valid` -- no suspends, no overruns.
+
+| Concurrency | Completed QPS | p50 | p95 | p99 | server sqlMs | window |
+| --- | --- | --- | --- | --- | --- | --- |
+| 8 | 1,580 | 4.85 ms | 9.43 ms | 10.91 ms | 4.92 ms | valid |
+| 16 | 1,868 | 7.69 ms | 16.37 ms | 31.98 ms | 8.39 ms | valid |
+| 32 | 1,838 | 14.77 ms | 35.25 ms | 77.96 ms | 17.28 ms | valid |
+| 48 | 1,901 | 24.66 ms | 47.85 ms | 82.29 ms | 25.13 ms | valid |
+
+**The closed-loop ceiling moved from ~1,300 QPS to ~1,900**, a 46% gain, and the knee moved to concurrency 16: throughput is flat from 16 onward while latency keeps climbing.
+
+**The service-demand profile still overpredicts throughput, and by about the same margin as before.**
+12 cores divided by 3.56 core-ms predicts 3,371 QPS; the machine delivers 1,900.
+That is a 44% overprediction, against the 33% the 6.94 profile showed, so the per-query overhead the profile charges to no lane did not shrink with the SQL.
+Quoting the profile's projected QPS as a throughput result would repeat exactly the error the earlier 1,850 figure made, so it is not quoted as one here.
+
+**Open-loop is stricter than closed-loop, and it is the number that matters.**
+A closed-loop sweep reports what the machine completes when it is already saturated.
+Open-loop asks whether a fixed arrival rate is sustainable, and the gate includes an in-flight-growth check, so a window whose median still looks healthy fails when the queue is quietly growing behind it.
+Measured on the same clean period: **1,200 QPS offered sustained cleanly (p50 12.24 ms, p90 37.99 ms, gate PASS)**, while 1,400 offered failed on in-flight growth despite a p50 of 14.60 ms, and 1,616 offered collapsed to a p50 of 666 ms.
+
+**A note on contention, because it invalidated three windows before it was caught.**
+A tuning agent runs `bench-recall` against `bench_q50k` on this same cluster in bursts.
+Checking `pgrep` once before a window is not enough: a run that starts ten seconds in steals one of twelve cores for most of the measurement and the window still reports a plausible number.
+One `1,200 QPS` window read p50 12.24 ms clean and p50 13.01 ms with p90 1,073 ms while contended -- same rate, same code, same machine.
+`.out/rehearsal1m/open-bisect.sh` samples for competing processes every 5 seconds across the whole window and discards any result that shared the machine, which is the same discipline the suspend detector applies to sleeps.
+
 ### Rung 4: 10M full run -- **claim B**
 
 The claim run.
@@ -1071,10 +1206,22 @@ The claim run.
 
 Gate: sustained 2,400 QPS with offered == completed, p50 <= 41 ms.
 
-**Status (2026-08-24): not started, and rung 3's gate is not met.**
-Rung 3's third gate is "1M load bench comfortably above 2,400 QPS", and the corrected closed-loop sweep measures 1,300 QPS at 1M -- the target is 1.85x that.
-Section 7's rule is that a failed gate stops the ladder rather than getting waived, so the 10M build does not start until the 1M workload clears 2,400 QPS.
-The footprint half of the go/no-go does project cleanly -- 1,381 MB at 1M extrapolates to about 13.8 GB at 10M, inside the 30 GB budget, with 58 GB free on the volume -- but footprint was never the binding constraint.
+**Status (2026-08-24, updated after section 6.7's cost work): still not started, and rung 3's gate is still not met -- but by a much smaller margin.**
+
+Rung 3's third gate is "1M load bench comfortably above 2,400 QPS".
+The closed-loop ceiling is now ~1,900 QPS, up from 1,300, and the sustainable open-loop rate is ~1,200.
+Against the 2,400 QPS target that is 1.26x on the saturation ceiling and 2x on the sustainable rate.
+Section 7's rule is that a failed gate stops the ladder rather than getting waived, so the 10M build still does not start.
+
+What changed is that the gap is no longer obviously structural.
+The earlier reading was that 2,400 QPS was out of reach "at the recall the config pins", on the grounds that the remaining cost was the vector lane and the vector lane is already priced against recall.
+That reasoning held only while ~4.3 ms per query was being spent recomputing a tsvector, which cost recall nothing at all.
+With that gone, the honest position is narrower: the workload now costs 3.56 core-ms of service demand and the machine still only delivers 1,900 QPS, so **the binding constraint has moved out of the SQL and into per-query overhead the lane profile does not account for**.
+Section 8.1's `SELECT 1` probe still reports 92,000-110,000 QPS, so it is not the client and it is not the round trip.
+Finding it is the next question, and it is a different question from the one this section has been answering.
+
+The footprint half of the go/no-go still projects cleanly, with the stored tsvector column included: 1,608 MB at 1M extrapolates to about 16 GB at 10M, inside the 30 GB budget, with 56 GB free on the volume.
+Footprint was never the binding constraint and still is not.
 
 ---
 
