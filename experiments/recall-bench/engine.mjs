@@ -270,26 +270,56 @@ function escapeRe(s) {
 }
 
 function extractEntities(lowerText, vocab) {
-  const found = { people: extractOneKind(lowerText, vocab?.people), places: extractOneKind(lowerText, vocab?.places) };
-  return found;
+  const people = extractOneKind(lowerText, vocab?.people, vocab, vocab?.peopleDocs);
+  const places = extractOneKind(lowerText, vocab?.places, vocab, null);
+  return {
+    people: people.map((h) => h.slug),
+    places: places.map((h) => h.slug),
+    // Mentions confident enough to drive a HARD metadata filter. See
+    // extractOneKind for what makes one ambiguous.
+    peopleConfident: people.filter((h) => !h.ambiguous).map((h) => h.slug),
+  };
 }
 
-function extractOneKind(lowerText, mapOrObj) {
-  const hits = []; // { slug, index }
+// An alias that is also ordinary English costs more than it earns. This corpus
+// names people with Vietnamese given names, several of which are also common
+// words: "an" is the indefinite article, and "van" is a vehicle. Measured on
+// the dev split, those two alone produced 37 of the 98 person extractions and
+// 33 queries whose inferred people filter excluded their own ground-truth
+// target -- DESIGN.md 5.2's "most dangerous bucket".
+//
+// Two guards, because the two words fail differently:
+//   - A stopword alias carries no entity evidence at all, so "an" is dropped
+//     outright. No retrieval system should filter on the article "an".
+//   - A non-stopword alias is ambiguous when it appears in materially more
+//     documents than actually carry the person tag. Measured over this corpus,
+//     every genuine name has df exactly equal to its tagged-document count,
+//     while "van" sits at 2.3x. Ambiguous mentions still feed the entity
+//     rerank feature and the AND-lane boost, which only reorder; they are kept
+//     out of the hard filter and out of looksParaphrase, which delete.
+const AMBIGUOUS_ALIAS_DF_RATIO = 1.25;
+
+function extractOneKind(lowerText, mapOrObj, vocab, docCounts) {
+  const hits = []; // { slug, index, ambiguous }
   for (const [slug, aliasesRaw] of entriesOf(mapOrObj)) {
     const aliases = Array.isArray(aliasesRaw) ? aliasesRaw : [aliasesRaw];
     let earliest = -1;
+    let ambiguous = false;
     for (const alias of aliases) {
       const needle = String(alias ?? "").toLowerCase().trim();
-      if (!needle) continue;
+      if (!needle || STOPWORDS.has(needle)) continue;
       const re = new RegExp(`\\b${escapeRe(needle)}\\b`);
       const idx = lowerText.search(re);
-      if (idx >= 0 && (earliest === -1 || idx < earliest)) earliest = idx;
+      if (idx < 0) continue;
+      if (earliest === -1 || idx < earliest) earliest = idx;
+      const tagged = docCounts instanceof Map ? docCounts.get(slug) : docCounts?.[slug];
+      const df = dfLookup(vocab, stem(needle));
+      if (tagged > 0 && df !== undefined && df > tagged * AMBIGUOUS_ALIAS_DF_RATIO) ambiguous = true;
     }
-    if (earliest >= 0) hits.push({ slug, index: earliest });
+    if (earliest >= 0) hits.push({ slug, index: earliest, ambiguous });
   }
   hits.sort((a, b) => a.index - b.index);
-  return hits.map((h) => h.slug);
+  return hits;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +338,13 @@ export function parseQueryFeatures(text, vocab, cfg = defaultConfig) {
   // so a literal "2024" is always OOV and was silently forcing every
   // date_filter query to look typoSuspect regardless of its actual words.
   const contentTerms = terms.filter((t) => !STOPWORDS.has(t) && !/^\d+$/.test(t));
-  const stems = contentTerms.map(stem);
+  // Key df lookups with the SAME stemmer that built the index. This file's own
+  // stem() is a near-copy, but the two disagree on doubled consonants
+  // ("scrubbed" -> scrub here, scrubb there), and every disagreement reads as
+  // an out-of-vocabulary term that never happened -- which inflates oovRatio
+  // and suppresses maxIdf, the two features every weighting rule keys on.
+  const stemFor = typeof v.stem === "function" ? v.stem : stem;
+  const stems = contentTerms.map(stemFor);
 
   let idfSum = 0;
   let idfCount = 0;
@@ -334,12 +370,17 @@ export function parseQueryFeatures(text, vocab, cfg = defaultConfig) {
   const entities = extractEntities(lower, v);
   const dateRange = parseDateRange(lower, cfg);
 
+  // Confident mentions only: "our hired van showed up late" is a paraphrase
+  // query, and letting the vehicle disqualify it costs the whole vector
+  // up-weighting this family depends on.
   const looksParaphrase =
     terms.length >= w.paraphrase.minTerms &&
-    maxIdf <= w.paraphrase.maxIdfCeiling &&
-    entities.people.length === 0 &&
+    oovRatio >= w.paraphrase.oovFloor &&
+    entities.peopleConfident.length === 0 &&
     entities.places.length === 0;
-  const typoSuspect = oovRatio >= w.oovRatioFloor;
+  // Length is what separates a mistyped query from a reworded one; both are
+  // out-of-vocabulary, and only the short one wants the trigram lane.
+  const typoSuspect = oovRatio >= w.oovRatioFloor && terms.length <= w.typoMaxTerms;
 
   return {
     raw,
@@ -964,7 +1005,10 @@ function resolveFilters(profile, explicitFilters, features, kind) {
   const declared = explicitFilters ?? null;
   const dateFrom = declared?.date_from ?? (declared ? null : features.dateRange.from);
   const dateTo = declared?.date_to ?? (declared ? null : features.dateRange.to);
-  const people = declared?.people ?? (declared ? [] : features.entities.people);
+  // Inferred people drive a hard AND on m.people, so an ambiguous mention here
+  // deletes the target outright. Declared filters come from the caller and are
+  // taken at face value.
+  const people = declared?.people ?? (declared ? [] : features.entities.peopleConfident);
   return {
     span: rangeLiteral(dateFrom ?? null, dateTo ?? null),
     people: kind === "real" ? (people ?? []) : [],

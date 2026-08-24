@@ -344,10 +344,27 @@ export const config = {
     dateBoost:       { vector: 0.2 },
     rareIdfFloor: 9.5,             // ln(N/df); calibrated on the dev split only
     oovRatioFloor: 0.34,           // share of query terms absent from the corpus vocabulary
-    // looksParaphrase = "long, low maxIdf, no entities" (section 6.3 prose).
-    // These three thresholds are what that sentence cashes out to; tuned on
-    // the dev split alongside rareIdfFloor/oovRatioFloor.
-    paraphrase: { minTerms: 6, maxIdfCeiling: 6.0 },
+    // Section 6.3 defines looksParaphrase as "long, low maxIdf, no entities".
+    // Measured on the dev split, the middle clause is backwards for this
+    // corpus: paraphrase_nolex has the HIGHEST maxIdf of any family (median
+    // 8.42) and rare_token the near-lowest (4.73), because a paraphrase query
+    // is built to share no vocabulary with its target, so the terms it does
+    // share are incidental and rare. At maxIdfCeiling 6.0 the rule fired on
+    // 11 of 230 paraphrase queries and the family scored 0.170.
+    //
+    // What actually identifies the family is being LONG and mostly
+    // out-of-vocabulary: median 25 terms and oovRatio 0.76, against <= 12
+    // terms and oovRatio 0.00 for every family the rule must not catch.
+    // Measured separation at these values: 228 of 230 paraphrase queries, and
+    // zero queries from any other family.
+    paraphrase: { minTerms: 16, oovFloor: 0.5 },
+    // A typo and a paraphrase both look out-of-vocabulary, and oovRatio alone
+    // cannot tell them apart -- at oovRatioFloor 0.34 all 230 paraphrase
+    // queries were flagged typoSuspect and handed the trigram boost and the
+    // AND penalty meant for typos. Length separates them cleanly: typo_noisy
+    // runs 5 terms, paraphrase_nolex 25. With this ceiling the rule catches
+    // 70 of 70 typo_noisy queries and no paraphrase query at all.
+    typoMaxTerms: 8,
   },
 
   // Additive: the closed-world date parser (section 3.6) needs a reference
