@@ -552,7 +552,10 @@ async function main() {
   assertBenchTarget(connectionString);
 
   const connections = Number(values.connections ?? config.db.poolSize);
-  const pgPool = benchPool(connections);
+  // Pin the vector GUCs at connection creation rather than leaving them to
+  // engine.retrieve's per-pool cache, which only ever reached one connection.
+  const pgPool = benchPool(connections, config.db.url,
+    profile ? engine.vectorSessionSettings(tier, config, false) : null);
 
   try {
     await assertDiskBudget(pgPool, tier.schema);

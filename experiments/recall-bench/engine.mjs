@@ -53,6 +53,7 @@
 import { pathToFileURL } from "node:url";
 
 import { config as defaultConfig } from "./config.mjs";
+import { shouldIssueSessionSql } from "./lib/safety.mjs";
 
 // ---------------------------------------------------------------------------
 // Tokenizer + approximate stemmer (feature scoring only -- never touches SQL)
@@ -992,6 +993,10 @@ export function vectorSessionSettings(tier, cfg, filterActive) {
 }
 
 async function applyVectorGucs(client, settings) {
+  // A pool that pinned exactly these in its connect hook has already applied them
+  // to every connection it owns, which is the only way to get them onto all of
+  // them -- see lib/safety.mjs for the race this replaces.
+  if (!shouldIssueSessionSql(client, settings)) return;
   if (lastVectorGucs.get(client) === settings) return;
   await client.query(settings);
   lastVectorGucs.set(client, settings);
@@ -1028,8 +1033,25 @@ export async function retrieve(client, query, ctx) {
 
   const qf = parseQueryFeatures(text, vocab, cfg);
   const weights = laneWeights(qf, profile, cfg);
-  const plan = planStatement(tier, profile, cfg);
-  const resolved = resolveFilters(profile, filters, qf, kind);
+  // The trigram lane costs a word_similarity over every row the (unselective)
+  // trigram index hands back -- measured ~1.4 s of the ~1.76 s a tuned query
+  // took at 50K. Its base weight is 0, so on the ~85% of queries that are
+  // neither typoSuspect nor rare-term it contributes w = 0 to every RRF sum
+  // and pays that cost for nothing. Gating on the weight gives those queries a
+  // second prepared statement rather than a branch inside one.
+  //
+  // DESIGN.md 6.2 asks for one plan across the workload so the LOAD bench
+  // measures a single statement; that requirement is about the scale tier,
+  // which has no trigram lane at all. Recorded as a tunable rather than a pure
+  // optimization because it is not identity-preserving in principle: a zero-
+  // weight lane still contributes ids to the fused set, and when fewer than
+  // topK rows have rrf > 0 those ids can occupy trailing candidate slots that
+  // the reranker is then free to promote. Measured on dev (see DESIGN.md 6.7).
+  const effectiveProfile = cfg.lanes.trigramWhenWeighted && profile.lanes.includes("trigram") && weights.trigram === 0
+    ? { ...profile, lanes: profile.lanes.filter((lane) => lane !== "trigram") }
+    : profile;
+  const plan = planStatement(tier, effectiveProfile, cfg);
+  const resolved = resolveFilters(effectiveProfile, filters, qf, kind);
 
   const { contentTerms, orQuery, fragmentBar } = lexicalQueryParams(qf);
   const rareTokens = contentTerms.slice(0, 32);
@@ -1063,7 +1085,7 @@ export async function retrieve(client, query, ctx) {
   await applyVectorGucs(client, vectorSessionSettings(tier, cfg, filterActive));
 
   const sqlStart = Date.now();
-  const { rows } = await client.query({ name: statementName(tier, profile), text: plan.sql, values });
+  const { rows } = await client.query({ name: statementName(tier, effectiveProfile), text: plan.sql, values });
   const sqlMs = Date.now() - sqlStart;
 
   let candidates = rows.map((row) => ({

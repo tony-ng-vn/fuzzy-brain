@@ -65,7 +65,53 @@ export function benchClient(connectionString = config.db.url) {
   return new pg.Client({ connectionString });
 }
 
-export function benchPool(size = config.db.poolSize, connectionString = config.db.url) {
+// Session settings a pooled connection must carry before it serves anything.
+//
+// engine.applyVectorGucs caches on a WeakMap keyed by the `client` it is handed,
+// and both benches hand it the Pool -- so the cache goes per-pool while the SET
+// lands on one physical connection. Measured 2026-08-24 against bench_r1m (one
+// awaited query, then a concurrent burst): 1 of 8 backends carried the pinned
+// ivfflat.probes=8, and the other 7 ran pgvector's defaults, probes=1 with
+// hnsw.iterative_scan=off. A vector lane searching one list instead of eight is
+// quietly faster and much less accurate, so that race corrupts latency and recall
+// at the same time, in the flattering direction.
+//
+// A pool cannot know the tier's settings, so the caller passes them and the pool
+// applies them in its connect hook. node-postgres emits 'connect' with the new
+// client before handing it to whoever asked for it, and queries queue per client
+// in order, so the SET is always that connection's first statement.
+export function sessionSqlFor(pool, sessionSql) {
+  pool.__benchSessionSql = sessionSql;
+  return pool;
+}
+
+// Whether engine.applyVectorGucs still has to issue the settings itself. False
+// once the pool pinned exactly these, which is the steady state for a homogeneous
+// workload; true for a plain client, and true for the quality tier's filtered
+// ef_search, which differs from what the pool pinned and must still take effect.
+export function shouldIssueSessionSql(client, settings) {
+  return client?.__benchSessionSql !== settings;
+}
+
+// "SET a = 1; SET b = x" -> "-c a=1 -c b=x", Postgres's startup options form.
+// Applying the settings at session startup beats issuing them over a connect hook:
+// the server has them before the connection is handed out, so there is no window
+// where a query can run without them, it costs no round trip, and it cannot race
+// with the first user query. Every value here is a config integer or a fixed
+// keyword, so the naive split is safe -- none of them contain spaces or quotes.
+export function toStartupOptions(sessionSql) {
+  return sessionSql
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => `-c ${s.replace(/^SET\s+/i, '').replace(/\s*=\s*/, '=')}`)
+    .join(' ');
+}
+
+export function benchPool(size = config.db.poolSize, connectionString = config.db.url, sessionSql = null) {
   assertBenchTarget(connectionString);
-  return new pg.Pool({ connectionString, max: size });
+  const options = sessionSql ? { options: toStartupOptions(sessionSql) } : {};
+  const pool = new pg.Pool({ connectionString, max: size, ...options });
+  if (sessionSql) sessionSqlFor(pool, sessionSql);
+  return pool;
 }
