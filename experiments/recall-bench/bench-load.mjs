@@ -96,6 +96,42 @@ function mean(values) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+// Window validity (section 8.2's "any of them failing invalidates the run").
+//
+// Added 2026-08-24 after an overnight knee sweep and a closed-loop sweep both had
+// to be thrown away. This machine suspends while running on battery -- the battery
+// power profile carries `sleep 1` against AC's `sleep 0`, and the running
+// caffeinate holds only PreventUserIdleSystemSleep, which does not stop macOS's
+// Maintenance Sleep. pmset logged a 659-second sleep straight through a sweep. A
+// window spanning one reports a healthy-looking completed count with a p50 in the
+// hundreds of seconds.
+//
+// Comparing the wall clock against Node's monotonic clock does NOT detect this:
+// Darwin's clock keeps advancing across a suspend, so the two agree. What cannot
+// be faked is the dispatch ticker -- it is scheduled every 10ms, so a multi-second
+// gap between consecutive ticks means the machine stopped running us. That is the
+// suspend signal; wall time far past the schedule with no such gap is a genuine
+// throughput collapse. Either way the number is not a measurement of the server,
+// and the report has to say so itself rather than leave it to be inferred.
+const SUSPEND_STALL_SEC = 5;
+const OVERRUN_TOLERANCE = 0.25;
+
+export function assessWindow({ expectedSec, wallSec, perfSec, maxStallSec = 0 }) {
+  const overranBy = (wallSec - expectedSec) / expectedSec;
+  const clockSkewSec = wallSec - perfSec;
+  let reason = null;
+  if (maxStallSec > SUSPEND_STALL_SEC) {
+    reason =
+      `machine suspend during the window: the dispatch ticker stalled for ` +
+      `${maxStallSec.toFixed(1)}s (scheduled every 10ms)`;
+  } else if (overranBy > OVERRUN_TOLERANCE) {
+    reason =
+      `window overran its schedule: ${wallSec.toFixed(1)}s wall against ${expectedSec}s scheduled ` +
+      `(${(overranBy * 100).toFixed(0)}% over)`;
+  }
+  return { valid: reason === null, reason, wallSec, perfSec, clockSkewSec, overranBy, maxStallSec };
+}
+
 function parseVectorLiteral(text) {
   // pg returns vector/halfvec as a bracketed csv string absent a custom type parser;
   // this is the inverse of that literal, back into what engine.mjs's ctx.queryVector expects.
@@ -246,6 +282,7 @@ function makeQueryCycler(queryPool, rng) {
 async function runClosedLoop({ concurrency, durationSec, warmupSec, queryFn }) {
   const totalSec = warmupSec + durationSec;
   const startTime = performance.now();
+  const startWall = Date.now();
   const samples = [];
   let dispatched = 0;
   let completed = 0;
@@ -271,8 +308,25 @@ async function runClosedLoop({ concurrency, durationSec, warmupSec, queryFn }) {
     }
   }
 
+  // The closed loop has no dispatch ticker of its own, so it carries a bare timer
+  // purely as the suspend detector (see assessWindow).
+  let maxStallSec = 0;
+  let lastTick = performance.now();
+  const watchdog = setInterval(() => {
+    const tickNow = performance.now();
+    maxStallSec = Math.max(maxStallSec, (tickNow - lastTick) / 1000);
+    lastTick = tickNow;
+  }, 10);
+
   await Promise.all(Array.from({ length: concurrency }, worker));
-  return { samples, dispatched, completed };
+  clearInterval(watchdog);
+  const window = assessWindow({
+    expectedSec: totalSec,
+    wallSec: (Date.now() - startWall) / 1000,
+    perfSec: (performance.now() - startTime) / 1000,
+    maxStallSec,
+  });
+  return { samples, dispatched, completed, window };
 }
 
 async function runOpenLoop({ offeredQps, durationSec, warmupSec, queryFn }) {
@@ -283,6 +337,7 @@ async function runOpenLoop({ offeredQps, durationSec, warmupSec, queryFn }) {
   const totalSec = warmupSec + durationSec;
   const totalRequests = Math.round(totalSec * offeredQps);
   const startTime = performance.now();
+  const startWall = Date.now();
   const samples = [];
   const inFlightSnapshots = [];
   let dispatched = 0;
@@ -315,8 +370,13 @@ async function runOpenLoop({ offeredQps, durationSec, warmupSec, queryFn }) {
       });
   }
 
+  let maxStallSec = 0;
+  let lastTick = performance.now();
   await new Promise((resolve) => {
     const ticker = setInterval(() => {
+      const tickNow = performance.now();
+      maxStallSec = Math.max(maxStallSec, (tickNow - lastTick) / 1000);
+      lastTick = tickNow;
       const elapsedMs = performance.now() - startTime;
       const due = Math.min(totalRequests, Math.floor(elapsedMs / intervalMs) + 1);
       while (dispatched < due) dispatchOne(dispatched);
@@ -328,7 +388,13 @@ async function runOpenLoop({ offeredQps, durationSec, warmupSec, queryFn }) {
     }, 10);
   });
 
-  return { samples, dispatched, completed, inFlightSnapshots };
+  const window = assessWindow({
+    expectedSec: totalSec,
+    wallSec: (Date.now() - startWall) / 1000,
+    perfSec: (performance.now() - startTime) / 1000,
+    maxStallSec,
+  });
+  return { samples, dispatched, completed, inFlightSnapshots, window };
 }
 
 async function selectOneCeiling(pgPool, { durationSec = 5, concurrency = 32 } = {}) {
@@ -404,6 +470,9 @@ function printSummary(report) {
   }
   if (report.open) {
     const o = report.open;
+    if (o.window && !o.window.valid) {
+      console.log(`WINDOW INVALID -- ${o.window.reason}. Rerun; this number measures nothing.`);
+    }
     console.log(
       `open-loop: offered ${o.offeredQps} qps, completed ${o.qpsCompleted.toFixed(1)} qps ` +
         `(${o.completed}/${o.dispatched}, ${o.errors} errors)`,
@@ -572,7 +641,7 @@ async function main() {
       const durationSec = Number(values.duration ?? config.load.durationSec);
       const warmupSec = Number(values.warmup ?? config.load.warmupSec);
 
-      const { samples, dispatched, completed, inFlightSnapshots } = await runOpenLoop({
+      const { samples, dispatched, completed, inFlightSnapshots, window } = await runOpenLoop({
         offeredQps,
         durationSec,
         warmupSec,
@@ -598,6 +667,7 @@ async function main() {
         completed,
         offeredMatchesCompleted,
         inFlightGrowing,
+        window,
         ...summary,
         laneRowsExamined: summarizeLanes(samples),
       };
@@ -608,6 +678,7 @@ async function main() {
         p50TargetMs: config.load.latencyBudgetMs.p50,
         p50ActualMs: summary.latencyMs.p50,
         pass:
+          window.valid &&
           offeredMatchesCompleted &&
           !inFlightGrowing &&
           summary.qpsCompleted >= offeredQps * 0.995 &&
@@ -623,17 +694,19 @@ async function main() {
 
       report.closedSweep = [];
       for (const concurrency of sweep) {
-        const { samples, dispatched, completed } = await runClosedLoop({
+        const { samples, dispatched, completed, window } = await runClosedLoop({
           concurrency,
           durationSec: sweepDuration,
           warmupSec: sweepWarmup,
           queryFn,
         });
         const summary = summarizeSamples(samples, sweepDuration);
+        if (!window.valid) console.log(`  concurrency ${concurrency}: WINDOW INVALID -- ${window.reason}`);
         report.closedSweep.push({
           concurrency,
           dispatched,
           completed,
+          window,
           ...summary,
           laneRowsExamined: summarizeLanes(samples),
         });
