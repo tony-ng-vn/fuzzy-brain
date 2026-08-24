@@ -264,6 +264,11 @@ export const config = {
     },
     rrfK: { and: 60, or: 60, vector: 60, trigram: 60 },
     trigramThreshold: 0.3,
+    // Skip the trigram lane entirely on queries whose trigram weight is 0
+    // (neither typoSuspect nor rare-term), instead of running it and
+    // multiplying its RRF contribution by zero. See engine.mjs's comment in
+    // retrieve() for why this is a tunable rather than a pure optimization.
+    trigramWhenWeighted: true,
     // efSearch to apply when a metadata filter is present on the vector lane
     // (section 6.1: "hnsw.ef_search is raised to 200 when a filter is present
     // so a selective filter does not starve the lane"). Not filter-free depth.
@@ -356,6 +361,32 @@ export const config = {
     latencyBudgetMs: { p50: 41 },
   },
 };
+
+// Dev-loop sweep hook: BENCH_CONFIG_OVERRIDE is a JSON object deep-merged into
+// the config above, so a weight sweep is a shell loop rather than an edit to
+// this file between every run.
+//
+// This does not weaken the audit trail. bench-recall.mjs derives the config
+// hash it writes to TEST-RUNS.log from config.weighting, config.rerank and
+// config.lanes AFTER this merge, so an overridden run logs a different hash
+// than the committed defaults and is visible as its own configuration. The
+// committed values stay the reproducible ones: DESIGN.md 6.5 requires the
+// fitted vector to live in this file, so anything that survives tuning is
+// written back here rather than left in an environment variable.
+function deepMerge(target, patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {
+      deepMerge(target[key], value);
+    } else {
+      target[key] = value;
+    }
+  }
+  return target;
+}
+
+if (process.env.BENCH_CONFIG_OVERRIDE) {
+  deepMerge(config, JSON.parse(process.env.BENCH_CONFIG_OVERRIDE));
+}
 
 // Composes a config.tiers[name] entry with the corpus-wide knobs it needs.
 //
