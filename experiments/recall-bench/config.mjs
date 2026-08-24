@@ -45,6 +45,15 @@ export const config = {
     // Big enough to actually crowd a top-10. A group of 3-8 cannot: siblings plus
     // the target still fit in ten slots, so merely finding the group would score.
     // Large groups stay solvable through the planted `distinguisher` (section 4.2).
+    //
+    // Left at 12-20 during the 2026-08-24 naive calibration after measuring the
+    // dial to be inert. Excluding the whole dup group from the ranking, the
+    // target's rank among the REST of the corpus already scores 0.413 vector
+    // Recall@10 against 0.427 measured with the siblings present -- so the
+    // siblings cost the target essentially nothing, because the distinguisher
+    // the query names also moves the embedding. Shrinking the group to 3-5
+    // would buy under a point. Same finding for the other two crowding dials
+    // (entity_swap 2-4 members, date_filter 4-6 years): see DESIGN.md 4.1.
     dupGroupSize: [12, 20],
     clusters: 400,                 // topic clusters at 50K; scaled to 20_000 at 10M
     multiTargetShare: 0.0,         // headline test split is single-target on purpose (section 5)
@@ -70,6 +79,51 @@ export const config = {
       // that pair co-occurs in more documents than the lane can rank, the
       // target is not findable however good the engine is.
       maxPairCoOccurrence: 10,
+      // How many vague filler words the query wraps the (detail, noun) pair in.
+      // Was 3. Measured 2026-08-24 over 120 partial_ref queries against the
+      // loaded 50K corpus, varying ONLY the filler count and holding the pair
+      // and the target fixed: vector Recall@10 went 0.283 (3 words) -> 0.317
+      // (2) -> 0.333 (1) -> 0.375 (0). Every filler word is corpus-wide noise
+      // that dilutes the two terms carrying the family's actual signal. One is
+      // kept because DESIGN.md 4.1 defines the family as "one true detail plus
+      // vague framing" -- at zero there is no framing left and the family
+      // stops being a half-remembered reference.
+      vagueWords: 1,
+    },
+
+    // Which pool each confusion-set family draws its planted `mustInclude`
+    // terms from (measured calibration, 2026-08-24 -- see DESIGN.md 4.1).
+    //
+    // A topic's `concreteNouns` pool is 7 words wide and 50,000 memories share
+    // 32 topics, so ~1,560 memories draw padding sentences from the same 7
+    // nouns. A query built out of two of them names a phrase that thousands of
+    // unrelated filler memories also contain, and the vector lane cannot find
+    // the target's confusion set at all -- not because the family's planted
+    // mechanism is hard, but because the corpus vocabulary is too dense to
+    // address. `buildMultiTargetCase` already hit this and already moved to
+    // DETAIL_WORDS (40-word pool, planted only where a family asks for it) for
+    // exactly this reason; these two families follow it.
+    //
+    // Measured, same corpus, same targets, varying only the query vocabulary:
+    // a date-shaped query over a (detail, noun) pair scores 0.412 vector
+    // Recall@10 against 0.025 for today's two-topic-noun text. The planted
+    // mechanism is untouched: every year still renders identical prose and the
+    // date is still the only thing separating them.
+    // `topicNouns` draws from the target's own topic (the dense 7-word
+    // window), `crossTopicNouns` from the whole CONCRETE_NOUNS pool (106
+    // words, so the two terms usually belong to different topics and almost
+    // nothing contains both), `detailWords` from DETAIL_WORDS.
+    //
+    // At most ONE detail word per family, deliberately: a near_dup group
+    // shares its mustInclude across all 12-20 members, so planting two detail
+    // words there put the same detail PAIR in 16 memories at once and blew the
+    // (noun, detail, detail) rarity that multi_target's own certificate
+    // depends on -- measured, 16/300 multi-target queries went unreachable.
+    // One detail word per memory creates no detail-detail co-occurrence at
+    // all, and the pair rarity comes from the cross-topic noun instead.
+    mustIncludeVocab: {
+      date_filter: { topicNouns: 0, crossTopicNouns: 1, detailWords: 1 },
+      near_dup:    { topicNouns: 1, crossTopicNouns: 1, detailWords: 1 },
     },
   },
 
@@ -80,7 +134,17 @@ export const config = {
     // Rounds of re-verbalize -> re-embed -> re-verify the repair loop will run
     // before it reports a family as non-converging. Bounded on purpose: a
     // family that cannot converge is a finding, not something to loop on.
-    repairRounds: 3,
+    repairRounds: 4,
+    // Rounds of RE-TARGET the repair loop escalates to once re-verbalizing has
+    // run out. Re-verbalizing only rephrases a query around the same target,
+    // so a target that is unreachable however the question is worded cannot
+    // converge -- measured at 50K, re-verbalize left 54 paraphrase_nolex and
+    // 8 entity_swap queries failing after every round. Re-targeting picks a
+    // different memory (a different member of the same confusion set, or a
+    // different paraphrase frame) from a forked sub-stream, so it is as
+    // reproducible as the first draft. Still bounded: a query that cannot
+    // converge across 4 re-verbalizations x 5 re-targets is a finding.
+    retargetAttempts: 5,
     // Re-verbalization draws from a seeded sub-stream keyed by qid and round,
     // so a repaired corpus is as reproducible as an unrepaired one.
     repairSeed: "fuzzy-brain-recall-bench-v1/repair",
