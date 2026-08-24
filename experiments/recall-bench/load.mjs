@@ -68,7 +68,7 @@ import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, appendFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -605,9 +605,44 @@ function summarizeOracle(records, tier, cfg) {
   };
 }
 
+// A crash mid-append leaves at most one truncated trailing line -- drop it
+// rather than throw, or the resumability feature would make a crash
+// unrecoverable. Later lines win on a duplicate qid, since repair appends an
+// updated line for a query it just re-verbalized and re-measured.
+async function loadOracleCheckpoint(checkpointPath) {
+  const map = new Map();
+  if (!checkpointPath || !existsSync(checkpointPath)) return map;
+  const text = await readFile(checkpointPath, 'utf8');
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const rec = JSON.parse(line);
+      map.set(rec.qid, rec);
+    } catch {
+      // truncated tail from an interrupted run; skip it.
+    }
+  }
+  return map;
+}
+
+function queryTextHash(text) {
+  return createHash('sha256').update(text).digest('hex');
+}
+
 // Bounded on purpose (config.oracle.repairRounds). A family that will not
 // converge is a finding to report, not something to loop on: repairing forever
 // would just be searching for a corpus that flatters the harness.
+//
+// opts.checkpointPath, if given, makes this resumable: every freshly measured
+// query's lane ranks are appended immediately, keyed by qid and a hash of the
+// query TEXT (not vector) it was measured against. On restart, a checkpoint
+// line is only trusted if its text hash matches the query text on disk right
+// now -- which is what makes a crash mid-repair safe. Repair mutates
+// `entry.q.text` in memory and only the very end of runVerifyOracle writes
+// that back to the query files, so a checkpoint line written during a dead
+// run's repair round carries a text hash for text that never reached disk;
+// the mismatch against the (still-original) on-disk text correctly forces a
+// re-measure against what's actually there instead of trusting orphaned work.
 export async function verifyOracle(client, tier, opts) {
   const cfg = opts.cfg ?? config;
   const { dev, test, vectors, dims, onLog = () => {} } = opts;
@@ -615,13 +650,30 @@ export async function verifyOracle(client, tier, opts) {
   const offsetOf = (entry) => (entry.block === 'dev' ? entry.i : dev.length + entry.i) * dims;
   const vectorOf = (entry) => vectors.subarray(offsetOf(entry), offsetOf(entry) + dims);
 
+  const checkpointPath = opts.checkpointPath ?? null;
+  const checkpoint = await loadOracleCheckpoint(checkpointPath);
+  const appendCheckpoint = checkpointPath
+    ? (rec) => appendFile(checkpointPath, JSON.stringify({
+        qid: rec.qid, family: rec.family, textHash: queryTextHash(rec.entry.q.text), laneRanks: rec.laneRanks,
+      }) + '\n')
+    : () => Promise.resolve();
+
+  let skipped = 0;
   const records = new Map();
   for (const entry of all) {
-    records.set(entry.q.qid, {
-      qid: entry.q.qid, family: entry.q.family, entry,
-      laneRanks: await measureLaneRanks(client, tier, entry.q, vectorOf(entry), cfg),
-    });
+    const qid = entry.q.qid;
+    const textHash = queryTextHash(entry.q.text);
+    const cached = checkpoint.get(qid);
+    if (cached && cached.textHash === textHash) {
+      records.set(qid, { qid, family: entry.q.family, entry, laneRanks: cached.laneRanks });
+      skipped++;
+      continue;
+    }
+    const rec = { qid, family: entry.q.family, entry, laneRanks: await measureLaneRanks(client, tier, entry.q, vectorOf(entry), cfg) };
+    records.set(qid, rec);
+    await appendCheckpoint(rec);
   }
+  if (skipped > 0) onLog(`  resumed from checkpoint: ${skipped}/${all.length} queries already verified`);
 
   const k = cfg.oracle.bestLaneRankAt;
   const bestOf = (rec) => {
@@ -654,6 +706,7 @@ export async function verifyOracle(client, tier, opts) {
       const base = offsetOf(rec.entry);
       for (let d = 0; d < dims; d++) vectors[base + d] = vec[d];
       rec.laneRanks = await measureLaneRanks(client, tier, rec.entry.q, vectorOf(rec.entry), cfg);
+      await appendCheckpoint(rec);
     }
 
     const stillFailing = rewritten.filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
@@ -739,6 +792,7 @@ async function runVerifyOracle(tier, args) {
     const result = await verifyOracle(client, tier, {
       dev, test, vectors, dims: tier.dims, index, cfg: config,
       repairRounds: args['repair-rounds'] ? Number.parseInt(args['repair-rounds'], 10) : config.oracle.repairRounds,
+      checkpointPath: join(outDir, 'oracle-progress.jsonl'),
       onLog: (line) => console.log(line),
     });
 
