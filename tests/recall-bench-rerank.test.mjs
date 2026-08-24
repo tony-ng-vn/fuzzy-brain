@@ -103,7 +103,7 @@ test("dateFit is 1 inside the parsed range and decays outside instead of zeroing
 
 test("rerankScore is the dot product of features and the configured weights", () => {
   const features = {
-    lexical: 1, cosine: 1, entity: 1, recency: 1,
+    fused: 1, lexical: 1, cosine: 1, entity: 1, recency: 1,
     dateFit: 1, rareHit: 1, titleHit: 1, dupPenalty: 1,
   };
   const expected = Object.values(config.rerank.weights).reduce((a, b) => a + b, 0);
