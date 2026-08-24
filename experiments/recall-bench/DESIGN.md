@@ -467,13 +467,13 @@ Each family is chosen because it breaks a *specific* lane, so improving it requi
 
 | Family | Share | What it plants | Which lane it breaks | Which mechanism earns it back |
 | --- | --- | --- | --- | --- |
-| `paraphrase_nolex` | 20% | Query drawn from the topic's **paraphrase vocabulary**, which shares no stems with the memory vocabulary. Jaccard overlap is asserted to be 0. | FTS AND returns nothing; OR returns noise | Vector lane, up-weighted when `looksParaphrase` |
-| `rare_token` | 15% | A globally unique token (`kbz-4417`, an odd surname, a one-off product name) present in exactly one memory | Vector lane: a rare token barely moves a 768-dim sentence embedding, so cosine ranks topical neighbors above the exact match | AND lane up-weighted on high `maxIdf`, plus the `rareHit` rerank feature |
-| `entity_swap` | 15% | 2-4 memories identical in topic and phrasing, differing only in the person or place | Vector lane: near-identical sentences, cosine cannot separate them | Entity extraction + `entity` rerank feature + AND-lane boost |
-| `near_dup` | 15% | A `dup_group` of 3-8 near-identical memories; only one carries the `distinguisher` the query mentions | Both lexical and vector: the siblings crowd the top 10 | `dupPenalty` rerank feature (demote later members of an already-represented group) + the distinguisher term |
-| `date_filter` | 15% | The same recurring event across 4-6 years; the query names one year or month | Every lane without metadata: all years look identical | Closed-world date parsing -> `occurred_at` range filter + `dateFit` rerank feature |
-| `partial_ref` | 10% | A half-remembered reference: one true detail plus vague framing ("the thing I said about the kitchen after we moved") | AND lane (too few matching terms) | OR lane with a fragment bar, fused with vector |
-| `typo_noisy` | 10% | 1-2 character-level corruptions on the discriminating term | AND lane returns nothing; OR lane returns noise | Trigram lane, activated when `oovRatio` crosses the floor |
+| `paraphrase_nolex` | 23% | Query drawn from the topic's **paraphrase vocabulary**, which shares no stems with the memory vocabulary. Jaccard overlap is asserted to be 0. | FTS AND returns nothing; OR returns noise | Vector lane, up-weighted when `looksParaphrase` |
+| `rare_token` | 22% | A globally unique token (`kbz-4417`, an odd surname, a one-off product name) present in exactly one memory | Vector lane: a rare token barely moves a 768-dim sentence embedding, so cosine ranks topical neighbors above the exact match | AND lane up-weighted on high `maxIdf`, plus the `rareHit` rerank feature |
+| `entity_swap` | 11% | 2-4 memories identical in topic and phrasing, differing only in the person or place | Vector lane: near-identical sentences, cosine cannot separate them | Entity extraction + `entity` rerank feature + AND-lane boost |
+| `near_dup` | 15% | A `dup_group` of 4-8 near-identical memories; only one carries the `distinguisher` the query mentions | Both lexical and vector: the siblings crowd the top 10 | `dupPenalty` rerank feature (demote later members of an already-represented group) + the distinguisher term |
+| `date_filter` | 15% | The same recurring event across 4-6 years; the query names one year or month, alongside three planted terms | Every lane without metadata: all years look identical | Closed-world date parsing -> `occurred_at` range filter + `dateFit` rerank feature |
+| `partial_ref` | 7% | A half-remembered reference: one true detail plus vague framing ("the thing I said about the kitchen after we moved") | AND lane (too few matching terms) | OR lane with a fragment bar, fused with vector |
+| `typo_noisy` | 7% | 1-2 character-level corruptions on the discriminating term | AND lane returns nothing; OR lane returns noise | Trigram lane, activated when `oovRatio` crosses the floor |
 
 The projected naive score, family by family (vector-only top-10 over the full corpus): 0.20 x 0.95 + 0.15 x 0.35 + 0.15 x 0.50 + 0.15 x 0.55 + 0.15 x 0.45 + 0.10 x 0.80 + 0.10 x 0.60 = **~0.61**.
 That is a projection, not a result.
@@ -485,6 +485,48 @@ The `entity_swap` result was checked rather than assumed: its group members now 
 There is also an arithmetic floor under naive that no dial reaches.
 `paraphrase_nolex` is 20% of the mix and the vector lane is its only lane, so the 0.97 ceiling gate forces its vector recall to ~0.97 and it contributes ~0.194 to naive unconditionally; naive <= 0.85 therefore requires the other 80% to average <= 0.82, and measured they average 0.89.
 Two resolutions exist and both change a frozen contract, so neither is taken here: shift the mix away from `paraphrase_nolex` toward the families a non-vector lane solves (4.4's own prescription, but it invalidates the projections above), or accept that the smoke band was set against a projection the real embedder disproves and re-check the band at 50K, where competitor density is 50x higher.
+
+#### 4.1.1 The 2026-08-24 calibration: which dials moved naive, and which did not
+
+The 50K corpus first measured naive at 0.530, well under the 0.60-0.80 gate, and the obvious dials turned out to be the wrong ones.
+Every number below is measured against the loaded 50K corpus, holding targets fixed and varying one thing.
+
+**The three crowding dials were inert, and the measurement says why.**
+The way to see it is to rank the target with its own confusion set excluded, which separates "the group crowds the target" from "the group was never in the top 10 to crowd anything".
+
+| Crowding dial | Recall@10 with the group excluded | Measured with the group present | Read |
+| --- | --- | --- | --- |
+| `near_dup` group of 12-20 | 0.413 | 0.427 | siblings cost ~0; the group was unreachable |
+| `entity_swap` 2-4 members | 0.540 | 0.520 | shrinking to 2-3 buys 0.007 |
+| `date_filter` 4-6 years | 0.073 | 0.053 | shrinking to 3-4 buys 0.005 |
+
+**The dial that binds is vocabulary density.**
+50,000 memories share 32 topics, and a topic's `concreteNouns` pool is 7 words wide, so ~1,560 memories draw padding sentences from the same seven nouns.
+A query naming two of them addresses thousands of unrelated filler memories, and the vector lane never finds the confusion set at all -- not because the family's planted mechanism is hard, but because the corpus vocabulary is too dense to address.
+`buildMultiTargetCase` had already hit this and already moved to `DETAIL_WORDS` for exactly this reason.
+
+Rarity alone was not the fix, though, and that took two measurements to learn.
+A two-term query built from a cross-topic noun plus a rare detail word scored **0.100**; the same query with a third term scored **0.544**.
+One common noun still addresses every filler memory that uses it as padding, so the combination has to be specific, not merely rare in one of its halves.
+
+| Dial | Before -> after | Measured |
+| --- | --- | --- |
+| `date_filter` planted terms | 2 topic nouns -> topic noun + cross-topic noun + detail word | external Recall@10 0.100 (2 terms) -> 0.544 (3 terms) |
+| `near_dup` planted terms | 3 topic nouns -> topic noun + cross-topic noun + detail word | external Recall@10 0.413 -> 0.810 |
+| `near_dup` group size | 12-20 -> 4-8 | only live *after* the terms got rare: 0.810 external against 0.427 measured meant the siblings then cost 0.38 |
+| `partial_ref` vague filler words | 3 -> 1 | 0.283 -> 0.317 (2 words) -> 0.333 (1 word) -> 0.375 (0 words) |
+| family mix | see `config.corpus.familyMix` | arithmetic on the measured per-family values |
+
+Two dials were deliberately left alone after being measured inert: `entity_swap`'s 2-4 members and `date_filter`'s 4-6 years.
+Changing either would move naive by under a point while making the table above disagree with the code, which is a worse trade than leaving a dial where the design put it.
+
+One dial the measurements argued *against* changing: `partial_ref`'s noun.
+Moving it to a cross-topic noun scored 0.133, worse than the 0.230 it already had, because a two-term query does not discriminate however rare its terms are.
+
+**The mix shift, and why it runs opposite to 4.4's prescription.**
+4.4 says to shift weight toward `rare_token`, `typo_noisy` and `paraphrase_nolex` to bring naive *down*, on the projection that `rare_token`'s vector recall is 0.35.
+Measured it is 0.920, so the same knob moves naive *up*, and weight moves toward those families to raise naive rather than lower it.
+`rare_token` takes the largest increase because its verified oracle is 1.000, so the shift cannot cost the 0.97 ceiling; `paraphrase_nolex` moves only 3 points because it is the family whose oracle depends on the repair loop converging.
 
 ### 4.2 The solvability certificate
 
@@ -510,6 +552,18 @@ This is what an ideal fusion could achieve if it always picked the right lane, a
 The second number is depth-100 reachability -- the fraction of queries where some lane surfaces the target anywhere in its candidate list.
 That one is reported as a weaker diagnostic and is **not** a gate, because certificate rule 3 guarantees it, so gating on it would be gating on a tautology.
 
+#### The date-constrained families are scored with their date applied (added 2026-08-24)
+
+Certificate rule 1 lists "a resolvable date constraint" as a planted signal on equal footing with a distinguishing token and a unique entity, and rule 2 asks whether *some lane* reaches the target.
+For a family that plants a date, those two only agree if lane reachability is measured with the date applied, so `date_filter` queries are scored that way.
+
+This is a definition fix, not a loosening, because the engine genuinely carries the mechanism end to end: the closed-world parser (section 3.6, its templates enumerated by `tests/recall-bench-*.test.mjs`) resolves the range out of the query text, and section 6.1 pushes that range into every lane's own `WHERE` clause rather than applying it after fusion.
+Scoring the lanes without it measures the corpus against a question the engine answers.
+The filter is bound half-open, `[from, to)`, matching `engine.mjs`'s `m.occurred_at <@ q.span`; a different inclusivity would certify a filter the engine does not have.
+
+Only families that plant a date get one -- `declared_filters` carries a closed range only where a builder set it -- and `oracle.json` reports the filtered and unfiltered numbers side by side under `overall`/`perFamily` and `unfiltered`, so the mechanism's worth is visible rather than asserted.
+Measured at 50K: 1.0000 filtered against 0.9965 unfiltered overall, and 1.000 against 0.977 for `date_filter` itself.
+
 **Gate: best-lane-rank@10 >= 0.97 at the 1K smoke tier and again at 50K.**
 Below that, the corpus is too hard for the claim and the mix must be loosened *before* any engine tuning happens -- which is allowed, because at that point no tuned number exists to steer toward.
 
@@ -532,6 +586,13 @@ So certification is split by what each half can actually prove:
 A query no lane reaches is re-verbalized against the *same* target from a seeded sub-stream, re-embedded in place, and re-measured.
 Repair is text-only by construction: the query-vector cache's offsets are derived from the dev and test file lengths, so adding or removing a query would shift every offset after it.
 Repair belongs before the freeze in 4.4 step 6, and `CORPUS.lock` now hashes the query files as well as `memories.jsonl` so that ordering is checkable rather than a convention.
+Re-verbalizing alone could not converge 54 `paraphrase_nolex` and 8 `entity_swap` queries at 50K, because it only rephrases a query around the *same* target and a target that is unreachable however it is worded has nothing left to try.
+So the loop escalates to **re-targeting** (`config.oracle.retargetAttempts`): it picks a different memory for the query to be about and regenerates the query against it, from a forked seeded sub-stream, bounded at 4 re-verbalizations x 5 re-targets.
+`entity_swap` and `date_filter` move to another member of their own confusion set, and the old target becomes a distractor so `declared_filters` and the `crowded_by_dups` taxonomy bucket keep describing the query.
+`paraphrase_nolex` has no confusion set to move inside, so its candidate pool is other paraphrase targets *within the same split* whose own query the oracle already reaches -- the strongest available evidence that a fresh query off that frame will rank that memory -- with each memory claimed at most once.
+`near_dup` is deliberately refused: its distinguisher lives in the target's body, so re-targeting it would mean rewriting a memory that is already embedded and loaded, which the post-load boundary forbids.
+The checkpoint's identity therefore covers the target as well as the text, or a resumed run could score ranks measured against a memory the query no longer points at.
+
 A family that will not converge inside the bound is reported as a finding, not looped on.
 
 ### 4.4 Calibration procedure, with the freeze point marked
