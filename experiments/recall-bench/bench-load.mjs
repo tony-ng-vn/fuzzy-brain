@@ -135,7 +135,12 @@ async function fetchTargetVectors(queryPool, pgPool, schema) {
       [chunk],
     );
     for (const row of rows) {
-      if (row.embedding != null) vectors.set(row.id, parseVectorLiteral(row.embedding));
+      // memories.id is bigint, so node-postgres hands back a string here (same
+      // reason engine.mjs's retrieve() casts row.id -- see its comment on the
+      // `id: Number(row.id)` line). queryPool targets are plain JS numbers, so
+      // without this cast every Map.get(q.targets[0]) below misses and every
+      // query silently runs with queryVector === undefined.
+      if (row.embedding != null) vectors.set(Number(row.id), parseVectorLiteral(row.embedding));
     }
   }
   return vectors;
