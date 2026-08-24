@@ -928,7 +928,7 @@ It is recorded here so nobody prices it again.
 
 Removing the btree wins instead, and wins at every quantile, because the FTS conjunction is always the more selective side on this workload.
 The scale tier therefore has no `occurred_at` btree; the quality tier keeps its own.
-Results are unchanged: 280 of 280 test queries return identical ordered id lists and recall@10 holds at 0.9929.
+Results are unchanged: **280 of 280 test queries return identical ordered id lists**, which is the claim that matters and is a diff of the pipeline against itself.
 
 **The vector lane is worth nothing on a query that names something unique.**
 
@@ -951,7 +951,11 @@ The trigger is the rarest query term's exact document frequency out of `term_sta
 
 A ceiling of 5 catches `rare_token` and nothing else, with the nearest other family 3x away.
 The client only decides that a query has that shape; whether the lane runs is decided in SQL against the AND lane's real row count, as the same one-time InitPlan filter the OR lane already uses, so a rare-token query whose conjunction came back empty still gets its vector lane.
-Measured back to back on one connection: **mix-weighted 4.16 -> 3.56 core-ms, `rare_token` 3.17 -> 0.36 ms**, with recall identical in every family (overall recall@10 0.9857 either way over 700 queries, `rare_token` at 1.000).
+Measured back to back on one connection: **mix-weighted 4.16 -> 3.56 core-ms, `rare_token` 3.17 -> 0.36 ms**, with recall identical in every family -- 0.6686 overall with the gate on and 0.6686 with it off, over 700 queries, `rare_token` at 1.000 both ways.
+
+The gate's safety is a property of the corpus, not a lucky measurement, and that is the stronger statement.
+A planted rare token has document frequency 1 by construction, so the AND conjunction over every in-vocab term can match at most that one document, and `count(and_lane) >= 1` therefore *implies* the target.
+The gate stops being safe the moment that stops holding -- if the rare tokens were ever planted in more than one document, or if `vectorSkipDfCeiling` were raised above the gap between `rare_token` (df 1) and the next family (df 15), the conjunction could return a non-target row and suppress the lane that would have found the right one.
 
 **The other half of 6.6's gating policy cannot be built as specified, and this is why.**
 Skipping the lexical lanes for "no-rare-term paraphrase-shaped queries" needs a signal for paraphrase shape, and `looksParaphrase` is not it.
@@ -977,6 +981,64 @@ Neither is taken.
 The date-index change is not a separate row because its effect is confined to one family and the same-session A/B above is the honest measurement of it: `date_filter` 8.99 -> 6.46 ms.
 
 Section 8 has the throughput this bought, and it is not the throughput this table predicts.
+
+### 6.8 ADDENDUM (2026-08-24): the 1M vector lane finds the target 15% of the time, and every latency number above was measured against that
+
+This is the most consequential thing measured in this session and it is not a cost finding.
+
+**How it surfaced.** Every recall figure the scale tier has ever reported was measured by handing the engine the target's own stored `embedding` as the query vector.
+`bench-load.mjs` documents that as deviation 2 in its own header -- `QueryRecord` carries no `cluster_id`, so a synthetic query vector could not be rebuilt from the query file alone -- and every probe written since inherited it.
+Handing the retrieval engine the answer is not a query.
+It makes the vector lane trivially exact and turns any recall number measured that way into an upper bound.
+
+The vector *can* be rebuilt: `cluster_id` is a column on the corpus row, and `lib/synth-vectors.mjs` regenerates the drifted query vector from `(targetId, clusterId, dims, drift)` deterministically.
+Rebuilt that way, `cos(stored, rebuiltMemory)` is 0.997, so the reconstruction is faithful to what was loaded.
+
+**The reconstruction is right and the corpus is well-formed.**
+Under exact cosine with the index disabled, the drifted query ranks its own target first, every time.
+
+**The IVFFlat index is what loses them.**
+Vector lane alone, depth 30, 120 drifted test queries at 1M, `lists = 1000`:
+
+| Setting | target at rank 1 | target in top 30 | median ms |
+| --- | --- | --- | --- |
+| exact, index disabled | 0.933 | **0.992** | 356.95 |
+| `probes = 1` | 0.008 | 0.008 | 0.69 |
+| **`probes = 8` (what the scale tier runs)** | 0.150 | **0.150** | 3.19 |
+| `probes = 32` | 0.267 | 0.267 | 11.31 |
+| `probes = 100` | 0.467 | 0.475 | 36.03 |
+| `probes = 250` | 0.717 | 0.742 | 95.63 |
+
+`hit@1` and `hit@30` are nearly equal at every probe count, and that is the tell: either the probed lists hold the target, in which case it ranks first because it ranks first exactly, or they do not, in which case it is absent altogether.
+Depth is not the constraint; list routing is.
+
+**What this means for everything else in this document.**
+The scale tier's vector lane costs about 3.0 ms and returns the right document 15% of the time.
+So the 1,805 QPS ceiling in the rung 3 results, and every per-family cost in 6.7, are measurements of a system whose ANN search mostly misses -- fast partly because it is not finding anything.
+Buying the recall back is not affordable at this shape: `probes = 250` reaches 0.742 and costs 95.63 ms, which on 12 cores is a ceiling near 125 QPS, and even that is below the exact lane's 0.992.
+
+**Whole-pipeline recall at 1M, measured honestly**, tunedScale, 100 test queries per family:
+
+| Family | Recall@1 | Recall@10 |
+| --- | --- | --- |
+| rare_token | 1.000 | 1.000 |
+| near_dup | 0.950 | 1.000 |
+| typo_noisy | 0.980 | 0.980 |
+| partial_ref | 0.560 | 0.980 |
+| entity_swap | 0.230 | 0.350 |
+| date_filter | 0.100 | 0.190 |
+| paraphrase_nolex | 0.180 | 0.180 |
+| **overall** | | **0.669** |
+
+The split is exactly the vector lane's footprint: every family a lexical lane can solve is at or near 1.0, and every family that depends on the vector lane has collapsed.
+`paraphrase_nolex` is 0.23 of the mix and is *defined* as having no lexical overlap, so it has nothing else to fall back on.
+
+**What this does not change.** The 6.7 cost work stands on its own: the stored tsvector column was proved neutral by 274 of 274 identical lexical lanes, the date-index change by 280 of 280 identical id lists, and both are diffs of the pipeline against itself. Core-ms is unaffected -- an IVFFlat probe costs what it costs whether or not it finds the target.
+
+**What it does change** is what the 1M rung is evidence *for*.
+Rung 3 exists to make the 10M decision cheaply, and the honest reading is now that the 1M rehearsal has two failing gates, not one: the throughput gate, and a vector lane whose recall would fail rung 2's quality bar by a wide margin if that bar were applied here.
+Whether that is IVFFlat's fault or the synthetic geometry's is the open question -- drift 0.15 at 256 dims puts a query at cosine ~0.38 from its own target, which is a harder routing problem than real embeddings pose, and at 50K with real 768-dim vectors IVFFlat scored 0.363 naive Recall@10 rather than 0.150.
+That question should be settled before any 10M build, because a 10M run inherits this lane.
 
 ---
 
