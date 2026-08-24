@@ -1019,7 +1019,10 @@ export function lexicalQueryParams(qf) {
 }
 
 export async function retrieve(client, query, ctx) {
-  const t0 = Date.now();
+  // performance.now(), not Date.now(): these timings are single-digit
+  // milliseconds and whole-millisecond quantization is ~20% error on a 5 ms
+  // query -- enough to hide the per-lane deltas this tier is tuned against.
+  const t0 = performance.now();
   // Section 3.2's hard rule: engine.mjs sees {text, filters} and nothing
   // else. Destructure once, never touch `query` again, so a full query
   // record carrying certificate/diagnostics cannot leak into retrieval.
@@ -1084,9 +1087,9 @@ export async function retrieve(client, query, ctx) {
   const filterActive = Boolean(resolved.span) || resolved.people.length > 0;
   await applyVectorGucs(client, vectorSessionSettings(tier, cfg, filterActive));
 
-  const sqlStart = Date.now();
+  const sqlStart = performance.now();
   const { rows } = await client.query({ name: statementName(tier, effectiveProfile), text: plan.sql, values });
-  const sqlMs = Date.now() - sqlStart;
+  const sqlMs = performance.now() - sqlStart;
 
   let candidates = rows.map((row) => ({
     // memories.id is a bigint column, and node-postgres returns bigint as a
@@ -1116,9 +1119,9 @@ export async function retrieve(client, query, ctx) {
 
   let rerankMs = 0;
   if (typeof ctx.rerank === "function" && profile.rerank) {
-    const rerankStart = Date.now();
+    const rerankStart = performance.now();
     candidates = await ctx.rerank(qf, candidates, cfg);
-    rerankMs = Date.now() - rerankStart;
+    rerankMs = performance.now() - rerankStart;
     candidates = [...candidates].sort((a, b) => (b.rerankScore ?? -Infinity) - (a.rerankScore ?? -Infinity));
   }
 
@@ -1133,7 +1136,7 @@ export async function retrieve(client, query, ctx) {
     lanes[lane] = lanes[lane].map((e) => e.id);
   }
 
-  return { hits: candidates, lanes, timings: { sqlMs, rerankMs, totalMs: Date.now() - t0 } };
+  return { hits: candidates, lanes, timings: { sqlMs, rerankMs, totalMs: performance.now() - t0 } };
 }
 
 // ---------------------------------------------------------------------------
