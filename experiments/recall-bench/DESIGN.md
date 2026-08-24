@@ -982,7 +982,7 @@ Multiple client processes would buy nothing; the work is in Postgres.
 **The target is above the machine's measured ceiling, and by a knowable amount.**
 2,400 QPS on 12 cores allows roughly 5 core-ms per query (section 6.6's own arithmetic).
 The workload costs 6.94.
-That is a 39% overshoot, and it is consistent with the closed-loop ceiling of ~1,850 QPS measured earlier: 12 cores / 6.94 ms = 1,729 QPS of pure service capacity.
+That is a 39% overshoot: 12 cores / 6.94 ms is 1,729 QPS of pure service capacity, and the corrected closed-loop sweep below measures 1,300.
 **Clearing 2,400 QPS at 1M requires cutting roughly 2 core-ms per query, not tuning the pool.**
 `date_filter` is where that cut has to come from: 15% of the mix carrying 33% of the total cost.
 
@@ -1034,6 +1034,23 @@ That is luck, and a pool that grows after warmup loses it.
 **Every open-loop number recorded before this fix is optimistic and was measured at an unknown vector recall**, including the 700 and 900 QPS passes.
 The fix applies the settings as Postgres startup `options` on the connection string, so the server has them before the connection is handed out: no round trip, no window in which a query can run without them, and nothing to race. Re-measured: 8 of 8 backends.
 
+**The corrected closed-loop ceiling.**
+Re-measured after the GUC fix, on an idle machine, with every window's suspend detector reading clean (max ticker stall 0.01-0.07 s):
+
+| Concurrency | Completed QPS | p50 | p99 | server sqlMs | window |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 1,012 | 6.92 ms | 19.58 ms | 7.70 ms | valid |
+| 16 | 1,249 | 10.20 ms | 49.12 ms | 12.58 ms | valid |
+| 32 | 1,300 | 17.93 ms | 106.76 ms | 24.49 ms | valid |
+
+Throughput is flat by concurrency 32 while latency is still climbing, which is the saturation knee.
+**The ceiling is ~1,300 QPS, not the ~1,850 recorded before.**
+The earlier figure was measured while most pooled connections were running `ivfflat.probes = 1` instead of 8 -- the bug below -- so it was reading a cheaper and less accurate vector lane and reporting it as the system.
+1,300 QPS also brackets the 1,729 that 12 cores / 6.94 core-ms predicts, the gap being per-query overhead the profile does not charge to any single lane.
+
+**Claim B's target is 1.85x the measured ceiling at 1M.**
+That is the finding, and no pool size reaches it: at concurrency 8 the pool is nowhere near saturated and the machine is already at 1,012 QPS.
+
 **Bug 2: a measurement window that spans a machine suspend still reports a number.**
 This machine runs on battery, and its battery power profile carries `sleep 1` against AC's `sleep 0`.
 `pmset` logged repeated `Maintenance Sleep` entries during measurement, including one of **659 seconds** that landed inside a closed-loop sweep.
@@ -1054,8 +1071,8 @@ The claim run.
 
 Gate: sustained 2,400 QPS with offered == completed, p50 <= 41 ms.
 
-**Status (2026-08-24): not started, and rung 3's gate is not yet met.**
-Rung 3's third gate is "1M load bench comfortably above 2,400 QPS", and the measured per-query cost puts 1M at roughly 1,729 QPS of service capacity.
+**Status (2026-08-24): not started, and rung 3's gate is not met.**
+Rung 3's third gate is "1M load bench comfortably above 2,400 QPS", and the corrected closed-loop sweep measures 1,300 QPS at 1M -- the target is 1.85x that.
 Section 7's rule is that a failed gate stops the ladder rather than getting waived, so the 10M build does not start until the 1M workload clears 2,400 QPS.
 The footprint half of the go/no-go does project cleanly -- 1,381 MB at 1M extrapolates to about 13.8 GB at 10M, inside the 30 GB budget, with 58 GB free on the volume -- but footprint was never the binding constraint.
 
