@@ -1347,6 +1347,46 @@ That is roughly seven times the entire per-query budget, and it caps throughput 
 Build cost scales with it: 2.6x at 1M, which extrapolates past 7 hours at 10M for m = 64, the next rung up.
 The tier therefore keeps m = 16, not because m = 32 is worse, but because neither reaches a recall floor and m = 16 is the cheaper way to not reach it.
 
+**The whole-pipeline frontier, which is what decision 3 actually asked for.**
+The vector-lane tables above price the lane. This prices the system: `bench-load` at concurrency 1, real drifted query vectors, `recall-sample-rate 1.0`, a full pass over the 4,000 distinct queries per point, every window `valid` (reproduce: `scripts/pipeline-ef-sweep.sh`).
+One instrument produces both columns, so the recall and the latency cannot drift apart by having been measured differently.
+
+| `ef_search` | R@10 mix-weighted | R@10 unweighted | R@1 mix | **single-stream p50** | single-stream QPS |
+| --- | --- | --- | --- | --- | --- |
+| **40** (pinned) | 0.584 | 0.646 | 0.508 | **3.11 ms** | 270 |
+| 64 | 0.595 | 0.655 | 0.521 | 3.68 ms | 251 |
+| 100 | 0.608 | 0.666 | 0.534 | 4.35 ms | 225 |
+| 200 | 0.657 | 0.709 | 0.590 | 7.13 ms | 144 |
+| 400 | 0.719 | 0.762 | 0.664 | 12.47 ms | 84 |
+
+**No point reaches 0.90, so decision 3 has no answer to give.**
+The curve is also flatter than the vector-lane table alone suggests, and one reason is structural rather than physical: `filteredEfSearch` and `filteredMaxScanTuples` are separate knobs and stay pinned while `efSearch` sweeps, so `date_filter` -- 15% of the mix and the worst family -- sits at its own setting throughout and contributes a fixed floor to every row. The flat portion is that floor, not `ef_search` saturating.
+
+**The latency half of the same table is the good news, and it retires decision 4 before the cut hunt starts.**
+The rung-3 arithmetic said 2,400 QPS needs a single-stream p50 at or under **3.28 ms** against the 4.18 ms IVFFlat measured.
+At `ef_search` 40 the pipeline now measures **3.11 ms**, so `7.86 x 1000 / 3.11` projects about **2,527 QPS** of peak capacity.
+The 22% cut that section was hunting was delivered by the index change itself; **no candidate-count or projection cut was required to get there**, and the honest reading is that the cut hunt was chasing a number that HNSW handed over for free.
+
+The cuts were priced anyway, and neither is worth taking:
+
+- **`rerank.topK` 50 -> 25 is provably free and unnecessary.** Across every frontier run above, over 7,000 to 13,000 probes each, the count of final top-10 rows that came from past fused rank 25 is **0**, and the deepest surviving fused rank is **13** at every single `ef_search`. Truncating at 25 could not have changed an answer. It also could not have saved much: the plan profile puts the whole final join at 0.06-0.10 ms.
+- **Narrowing the final projection is worth about 0.1 ms.** The `memories_pkey` scan that serves the join costs 0.077-0.100 ms across families, and the scale path's projection already emits literals for `dup_group`, `rare_token`, `people` and `tags`, so the only live columns are `occurred_at` (which `dateFit` reads at weight 0.5) and the cosine recompute.
+
+**Where the time actually is**, from `EXPLAIN (ANALYZE, BUFFERS)` on the real statement, 8 queries per family at `ef_search` 40 (reproduce: `scripts/explain-scale.mjs`):
+
+| Family | exec ms | of which the HNSW index scan |
+| --- | --- | --- |
+| rare_token | **0.07** | lane skipped by the vector gate |
+| typo_noisy | 1.89 | 1.69 |
+| partial_ref | 2.32 | 1.68 |
+| near_dup | 2.76 | 1.95 |
+| paraphrase_nolex | 3.38 | 2.59 |
+| entity_swap | 4.59 | 2.12 |
+| date_filter | 6.92 | 4.23 |
+
+The vector lane is the dominant line item in every family that runs it, and 6.7's vector-lane gate is visible as `rare_token` at 0.07 ms -- the whole statement, because the ANN search is skipped and the conjunction already holds the answer.
+So the remaining cost is exactly the cost the recall floor forbids cheapening, which is the shape 6.8 predicted and the reason the cut hunt has nowhere else to go.
+
 **This retires 6.8's open question in the sharper direction.**
 6.8 asked whether the 15% vector recall was "IVFFlat's fault or the synthetic geometry's" and said the question "should be settled before any 10M build".
 It is settled: **the geometry's.**
