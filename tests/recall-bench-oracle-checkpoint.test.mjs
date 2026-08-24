@@ -1,0 +1,144 @@
+// Covers the resumability contract load.mjs's verifyOracle grew for the
+// quality50k tier (DESIGN.md section 4.3.1, section 7 rung 2): a checkpoint
+// at .out/<tier>/oracle-progress.jsonl is appended per-query as ranks are
+// measured, an already-checkpointed query is skipped on restart, and a
+// checkpoint line is trusted only when its query-text hash still matches the
+// text on disk -- which is what makes a crash mid-repair safe (see the
+// comment above verifyOracle in load.mjs).
+//
+// No DB and no embedding model: verifyOracle takes a client, and here it's a
+// fake whose .query() call count is the load-bearing assertion. Runs with no DB.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { mkdtemp, rm, readFile, writeFile, appendFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+
+const benchRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "experiments", "recall-bench");
+const { verifyOracle } = await import(pathToFileURL(join(benchRoot, "load.mjs")));
+const { config } = await import(pathToFileURL(join(benchRoot, "config.mjs")));
+
+// Matches load.mjs's private queryTextHash exactly (sha256 of the raw query
+// text) -- duplicated here rather than exported, since the checkpoint file's
+// on-disk shape is the actual contract this test pins, not the helper name.
+const textHash = (text) => createHash("sha256").update(text).digest("hex");
+
+function makeQuery(qid, text, target) {
+  return {
+    qid, split: "dev", family: "rare_token", text, targets: [target],
+    declared_filters: { date_from: null, date_to: null, people: [] },
+    certificate: { solvable: true, signals: [], pending_lanes: ["vector"] },
+    diagnostics: { distractor_ids: [], difficulty: 1, repair_round: 0 },
+  };
+}
+
+const tier = { schema: "test_schema", vector: "real", laneDepth: 10, dims: 2 };
+const dims = 2;
+const vectors = new Float32Array([0.1, 0.2, 0.3, 0.4]); // 2 queries x dims=2
+
+async function withTempDir(fn) {
+  const dir = await mkdtemp(join(tmpdir(), "oracle-checkpoint-"));
+  try {
+    await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a checkpointed query with a matching text hash is skipped, not re-measured", async () => {
+  await withTempDir(async (dir) => {
+    const checkpointPath = join(dir, "oracle-progress.jsonl");
+    const q1 = makeQuery("q1", "hello world", 101);
+    const q2 = makeQuery("q2", "goodbye world", 102);
+
+    await writeFile(checkpointPath, JSON.stringify({
+      qid: "q1", family: "rare_token", textHash: textHash(q1.text),
+      laneRanks: { and: 1, or: null, trigram: null, vector: 2 },
+    }) + "\n");
+
+    let calls = 0;
+    const client = {
+      query: async () => {
+        calls++;
+        return { rows: [{ and_rank: 5, or_rank: null, trg_rank: null, vector_rank: 20 }] };
+      },
+    };
+
+    const result = await verifyOracle(client, tier, {
+      dev: [q1, q2], test: [], vectors, dims, cfg: config, repairRounds: 0, checkpointPath,
+    });
+
+    // Only q2 should have hit the database -- q1 was satisfied from the checkpoint.
+    assert.equal(calls, 1, "checkpointed query must not re-run measureLaneRanks");
+    assert.equal(result.summary.overall.n, 2);
+
+    const lines = (await readFile(checkpointPath, "utf8")).trim().split("\n");
+    assert.equal(lines.length, 2, "checkpoint gains exactly one new line, for the query actually measured");
+    const q2Line = JSON.parse(lines[1]);
+    assert.equal(q2Line.qid, "q2");
+    assert.deepEqual(q2Line.laneRanks, { and: 5, or: null, trigram: null, vector: 20 });
+  });
+});
+
+test("a checkpoint line whose text hash no longer matches on-disk text is not trusted", async () => {
+  await withTempDir(async (dir) => {
+    const checkpointPath = join(dir, "oracle-progress.jsonl");
+    const q1 = makeQuery("q1", "hello world", 101);
+
+    // Checkpoint line was written against different text -- e.g. a dead run's
+    // repair round rewrote it in memory, checkpointed the rewrite, and then
+    // crashed before the query files on disk were updated (see verifyOracle's
+    // comment: repair only reaches disk at the very end of runVerifyOracle).
+    await writeFile(checkpointPath, JSON.stringify({
+      qid: "q1", family: "rare_token", textHash: textHash("some other repaired text"),
+      laneRanks: { and: 1, or: null, trigram: null, vector: 2 },
+    }) + "\n");
+
+    let calls = 0;
+    const client = {
+      query: async () => {
+        calls++;
+        return { rows: [{ and_rank: 3, or_rank: null, trg_rank: null, vector_rank: 9 }] };
+      },
+    };
+
+    await verifyOracle(client, tier, {
+      dev: [q1], test: [], vectors: vectors.subarray(0, dims), dims, cfg: config, repairRounds: 0, checkpointPath,
+    });
+
+    assert.equal(calls, 1, "a stale checkpoint entry (text hash mismatch) must be re-measured against on-disk text, never trusted");
+  });
+});
+
+test("a truncated trailing line in the checkpoint file is dropped, not thrown", async () => {
+  await withTempDir(async (dir) => {
+    const checkpointPath = join(dir, "oracle-progress.jsonl");
+    const q1 = makeQuery("q1", "hello world", 101);
+    const q2 = makeQuery("q2", "goodbye world", 102);
+
+    await writeFile(checkpointPath, JSON.stringify({
+      qid: "q1", family: "rare_token", textHash: textHash(q1.text),
+      laneRanks: { and: 1, or: null, trigram: null, vector: 2 },
+    }) + "\n");
+    // Simulate a crash mid-append: a partial JSON line with no trailing newline.
+    await appendFile(checkpointPath, '{"qid":"q2","family":"rare_token","textHa');
+
+    let calls = 0;
+    const client = {
+      query: async () => {
+        calls++;
+        return { rows: [{ and_rank: 4, or_rank: null, trg_rank: null, vector_rank: 8 }] };
+      },
+    };
+
+    await assert.doesNotReject(verifyOracle(client, tier, {
+      dev: [q1, q2], test: [], vectors, dims, cfg: config, repairRounds: 0, checkpointPath,
+    }));
+
+    // q1's valid line survives; q2's truncated line is treated as absent, so
+    // q2 gets freshly measured rather than the run failing outright.
+    assert.equal(calls, 1, "q1 stays checkpointed; q2's truncated line falls back to a fresh measurement");
+  });
+});
