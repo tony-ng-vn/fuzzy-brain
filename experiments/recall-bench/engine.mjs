@@ -946,16 +946,31 @@ const lastVectorGucs = new WeakMap();
 // It is scale-path only, so the quality tier's filtered lane behaves exactly as
 // it did before.
 export function vectorSessionSettings(tier, cfg, filterActive) {
-  const laneCfg = tierKind(tier) === 'real' ? cfg.lanes.quality : cfg.lanes.scale;
-  const scaleFiltered = tierKind(tier) === 'synthetic' && filterActive;
-  const efSearch = filterActive
-    ? (scaleFiltered ? laneCfg.filteredEfSearch : cfg.lanes.filteredEfSearch)
-    : laneCfg.efSearch;
+  const scale = tierKind(tier) === 'synthetic';
+  if (scale) {
+    // Deliberately independent of filterActive. The settings differ per query
+    // only when they have to, and here they do not: iterative scan costs an
+    // unfiltered lane nothing (measured, 1M: 0.79 ms with it against 1.60 ms
+    // without, the difference being noise on a warm index, both returning the
+    // full 30). Making the string constant means the SET fires once per
+    // physical connection instead of every time a date-filtered query follows
+    // an unfiltered one on the same connection -- which, with 15% of the
+    // workload carrying a date and 96 pooled connections, was turning roughly a
+    // quarter of all queries into two round trips instead of one.
+    const s = cfg.lanes.scale;
+    return [
+      `SET hnsw.ef_search = ${s.efSearch}`,
+      `SET ivfflat.probes = ${s.ivfProbes}`,
+      `SET hnsw.iterative_scan = ${s.filteredIterativeScan}`,
+      `SET hnsw.max_scan_tuples = ${s.filteredMaxScanTuples}`,
+    ].join('; ');
+  }
+  const laneCfg = cfg.lanes.quality;
   return [
-    `SET hnsw.ef_search = ${efSearch}`,
+    `SET hnsw.ef_search = ${filterActive ? cfg.lanes.filteredEfSearch : laneCfg.efSearch}`,
     `SET ivfflat.probes = ${laneCfg.ivfProbes}`,
-    `SET hnsw.iterative_scan = ${scaleFiltered ? laneCfg.filteredIterativeScan : 'off'}`,
-    `SET hnsw.max_scan_tuples = ${scaleFiltered ? laneCfg.filteredMaxScanTuples : 20000}`,
+    `SET hnsw.iterative_scan = off`,
+    `SET hnsw.max_scan_tuples = 20000`,
   ].join('; ');
 }
 

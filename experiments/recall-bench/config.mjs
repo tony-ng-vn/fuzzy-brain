@@ -226,11 +226,14 @@ export const config = {
       // not: ef_search 200 returned 5 rows of 30 and cost 8 ms, ef_search 40
       // returned 0 rows. pgvector's own answer, iterative scan, returns the full
       // 30 in 3.8 ms with the scan bounded at 5,000 tuples -- better on both
-      // axes than the number the design guessed. maxScanTuples is the bound that
-      // keeps it from becoming the 21 ms it costs at 20,000.
+      // axes than the number the design guessed. maxScanTuples is the bound
+      // that keeps it from becoming the 21 ms it costs at 20,000; 2,000 was
+      // then measured to still return the full 30 at roughly a third of the
+      // 5,000 cost, and the load report's per-lane row count is what keeps that
+      // claim honest across the whole workload rather than one query.
       filteredEfSearch: 40,
       filteredIterativeScan: 'relaxed_order',
-      filteredMaxScanTuples: 5_000,
+      filteredMaxScanTuples: 2_000,
     },
     rrfK: { and: 60, or: 60, vector: 60, trigram: 60 },
     trigramThreshold: 0.3,

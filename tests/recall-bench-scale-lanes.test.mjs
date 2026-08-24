@@ -210,9 +210,11 @@ test('the filtered vector lane uses iterative scan at scale and the old ef_searc
   const scaleFiltered = vectorSessionSettings(scaleTier, config, true);
   assert.match(scaleFiltered, new RegExp(`hnsw.iterative_scan = ${scaleCfg.filteredIterativeScan}`));
   assert.match(scaleFiltered, new RegExp(`hnsw.max_scan_tuples = ${scaleCfg.filteredMaxScanTuples}`));
-  assert.match(scaleFiltered, new RegExp(`hnsw.ef_search = ${scaleCfg.filteredEfSearch}`));
+  assert.match(scaleFiltered, new RegExp(`hnsw.ef_search = ${scaleCfg.efSearch}`));
 
-  assert.match(vectorSessionSettings(scaleTier, config, false), /hnsw.iterative_scan = off/);
+  // Constant across filtered and unfiltered on purpose, so the SET fires once
+  // per connection rather than every time the two kinds of query alternate.
+  assert.equal(vectorSessionSettings(scaleTier, config, false), scaleFiltered);
 
   const qualityFiltered = vectorSessionSettings(qualityTier, config, true);
   assert.match(qualityFiltered, new RegExp(`hnsw.ef_search = ${config.lanes.filteredEfSearch}`));
