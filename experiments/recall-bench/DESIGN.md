@@ -1042,6 +1042,64 @@ That question should be settled before any 10M build, because a 10M run inherits
 
 ---
 
+### 6.9 ADDENDUM (2026-08-24): claim A tuned, and where the points actually came from
+
+The tuned profile was measured before any tuning and scored **0.717** on the dev split -- twenty points *below* the `fixedRrf` baseline it is supposed to beat.
+Every change below came out of the dev failure taxonomy rather than intuition, and each one is recorded with the dev delta it produced.
+The test split was run once for the finished configuration and once for the ablation ladder.
+
+**The taxonomy said the rerank was the problem, and it was.**
+227 of the 283 dev failures were `lost_in_rerank`: the target reached the fused top 10 and the reranker pushed it out.
+Section 6.5's feature list has no fusion term, so the rerank was *replacing* the retrieval ranking rather than refining it.
+Fitting the eight listed features by coordinate descent could not repair that -- their best fit reached 0.873 while the un-reranked rung 4 reached 0.989.
+Giving the scorer the fused RRF score as a ninth feature is what fixed it, and after that the fitted vector matches rung 4 exactly.
+On this corpus the reranker's honest job is to preserve the fusion order, and the ablation reports that plainly: rung 5 buys 0.002 over rung 4.
+
+**Three query-feature defects, each measured, each worth more than any weight.**
+
+| Defect | What it did | Dev effect |
+| --- | --- | --- |
+| The indefinite article `an` extracted as a person | This corpus names people with Vietnamese given names; `an` and `van` are also ordinary English words. An inferred people filter is a hard AND, so it deleted the query's own target. | 33 queries filtered out their own target; `filter_excluded` 30 -> 0 |
+| `looksParaphrase` keyed on *low* maxIdf | Backwards for this corpus: paraphrase_nolex has the **highest** maxIdf of any family (median 8.42) and rare_token the near-lowest (4.73), because a query built to share no vocabulary with its target shares only incidental rare words. The rule fired on 11 of 230 paraphrase queries. | paraphrase_nolex 0.170 -> 0.987 |
+| `typoSuspect` keyed on OOV share alone | A typo and a paraphrase both look out-of-vocabulary, so all 230 paraphrase queries were flagged as typos and handed the trigram boost and AND penalty. Length separates them: 5 terms against 25. | typo_noisy 0.557 -> 1.000 |
+
+Two lane weights then moved, both because a family's designated solving lane was under-weighted.
+`base.or` 0.6 -> 1.3, because partial_ref is the family the OR lane exists to solve and its targets were fusing at rank 42-49 (0.686 -> 0.986).
+`paraphraseBoost.or` +0.8 -> -1.3, because the naive vector-only baseline *beats* the hybrid on paraphrase_nolex, so its text lanes are noise; zeroing OR for those queries specifically is what let `base.or` serve partial_ref without a trade-off between the two.
+`entityBoost.and` 1.3 -> 2.0 took entity_swap 0.909 -> 0.936, which is where base + boost meets the [0, 3] clamp.
+
+**The ablation ladder, test split, one run per rung.**
+
+| Rung | Configuration | Recall@10 | Recall@5 | MRR@10 |
+| --- | --- | --- | --- | --- |
+| 0 | `naive` | 0.697 | 0.592 | 0.462 |
+| 1 | `fixedRrf` | 0.897 | 0.805 | 0.701 |
+| 2 | + query-dependent lane weights | 0.934 | 0.853 | 0.736 |
+| 3 | + trigram lane | 0.967 | 0.888 | 0.762 |
+| 4 | + metadata filters | 0.975 | 0.897 | 0.774 |
+| 5 | `tuned` | **0.977** | 0.898 | 0.775 |
+
+Rungs 0 and 1 reproduce the previously published baselines exactly (0.697 and 0.897), which is the check that none of the tuning disturbed the things it is measured against.
+
+**Claim A, stated exactly.**
+Recall@10 on the 1,000-query test split is **0.977, 95% bootstrap CI [0.968, 0.986]** over 10,000 resamples.
+Section 5 allows the 0.91 claim only when the lower bound also clears 0.91; it clears it by 5.8 points.
+Per-family: paraphrase_nolex 0.996, rare_token 1.000, entity_swap 0.818, near_dup 1.000, date_filter 1.000, partial_ref 0.971, typo_noisy 1.000.
+The `not_retrieved` gate is empty.
+
+**What is still failing, and it is one family.**
+23 of 1,000 test queries miss: 22 `lost_in_fusion` and 1 `date_misparse`.
+20 of the 23 are entity_swap, the only family still under 0.97.
+That family's distractors carry the *same* person as the target, so the people filter and the entity rerank feature -- the two mechanisms section 4.1 assigns to it -- cannot separate target from distractor once both are inside the filter.
+The dev fit confirms it rather than contradicting it: coordinate descent drove the `entity` rerank weight *negative*, because post-filter the feature is pure noise.
+Separating those would need the distinguisher term, not the entity, and that is a lane question rather than a weight question.
+
+**Two performance fixes were needed before any of this was measurable**, and both are recorded because they changed the cost of the bench, not its numbers.
+The OR lane's fragment bar rebuilt `to_tsquery('english', term)` per term per candidate row; a broad OR matches ~42K of the 50K rows, so a 13-term query ran roughly 540K parses inside one statement (451 ms -> 217 ms after stemming the terms once, verified result-identical on dev down to the same 86 failure records).
+The trigram lane ran a `word_similarity` over every row on every query even when its weight was zero, which is the case for ~85% of queries; gating it on the weight is a 2.4x speedup on the dev split and is recorded as a tunable (`lanes.trigramWhenWeighted`) rather than a pure optimization, because a zero-weight lane can still contribute trailing candidate ids.
+
+---
+
 ## 7. The scale ladder
 
 Each rung has a gate.
