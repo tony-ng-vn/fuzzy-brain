@@ -998,7 +998,7 @@ Rebuilt that way, `cos(stored, rebuiltMemory)` is 0.997, so the reconstruction i
 Under exact cosine with the index disabled, the drifted query ranks its own target first, every time.
 
 **The IVFFlat index is what loses them.**
-Vector lane alone, depth 30, 120 drifted test queries at 1M, `lists = 1000`:
+Vector lane alone, depth 30, 120 drifted test queries at 1M, `lists = 1000` (reproduce with `experiments/recall-bench/scripts/probe-recall.mjs`):
 
 | Setting | target at rank 1 | target in top 30 | median ms |
 | --- | --- | --- | --- |
@@ -1124,7 +1124,7 @@ Gates:
 
 The HNSW build blew the 90-minute gate, so the scale tier runs IVFFlat, and the gate above owes a number for what that costs.
 Here it is.
-Reproduce with `.out/quality50k/ivf-vs-hnsw.sh`.
+Reproduce with `experiments/recall-bench/scripts/ivf-vs-hnsw.sh`.
 
 Method, because the obvious version of this experiment is confounded.
 The 50K table was cloned once into a throwaway schema and **both** arms ran there, so the only difference between the two columns is which vector index exists -- not the schema, not the row order, not the planner's statistics.
@@ -1262,7 +1262,7 @@ Until the machine is plugged in, no open-loop or closed-loop window on this box 
 
 #### Re-measured after section 6.7's cost work (2026-08-24, on AC power)
 
-Reproduce with `.out/rehearsal1m/full-validation.sh`, which enforces all three validity conditions this machine can violate: AC power, the suspend verdict, and a contention sampler that watches for the tuning agent's `bench_q50k` bursts every 5 seconds across the whole window.
+Reproduce with `experiments/recall-bench/scripts/full-validation.sh`, which enforces all three validity conditions this machine can violate: AC power, the suspend verdict, and a contention sampler that watches for the tuning agent's `bench_q50k` bursts every 5 seconds across the whole window.
 
 **The closed-loop ceiling sweep.**
 Every window 60 s warmup plus 120 s measured, every window `valid`, and the sweep as a whole recorded zero contended samples.
@@ -1297,6 +1297,54 @@ Offering it produces a p50 of 91 seconds and a window that overruns its own sche
 12 cores divided by 3.64 core-ms predicts 3,297 QPS; the machine delivers 1,805 closed-loop and 1,200 to 1,400 sustainable.
 That is a 45% overprediction against the 33% the 6.94 profile showed, so the per-query overhead the lane profile charges to no lane did not shrink when the SQL did -- it is now the larger half of the story.
 Quoting the profile's projected QPS as a throughput result would repeat exactly the error the retracted 1,850 figure made, so it is not quoted as one here.
+
+#### What the machine is actually short of (2026-08-24)
+
+The gap between 3.64 core-ms of sequential service demand and 1,805 QPS measured is not a Postgres contention problem, and it is not memory bandwidth.
+It is core count, and the count is not 12.
+
+**There is no contended Postgres resource.**
+`pg_stat_activity` sampled at 15 Hz for 45 s across the bench's own backends during a concurrency-32 window, 20,724 backend-observations (reproduce with `experiments/recall-bench/scripts/wait-sample.mjs`):
+
+| Wait state | Share |
+| --- | --- |
+| ON CPU, no wait event | 53.0% |
+| `Client` / `ClientRead` (idle between queries) | 47.0% |
+| Locks, LWLocks, IO, buffer pins, everything else | **0.0%** |
+
+Not one observation of a lock, a latch, or an IO wait.
+Every backend is either running on a core or waiting for the client to speak.
+There is nothing inside Postgres to tune here.
+
+**It is not memory bandwidth either, and a low-concurrency sweep is what separates the two.**
+A saturating shared resource inflates latency from the very first added stream.
+This does not:
+
+| Concurrency | Completed QPS | p50 | Throughput vs single-stream |
+| --- | --- | --- | --- |
+| 1 | 228.3 | 4.18 ms | 1.00x |
+| 2 | 450.8 | 4.29 ms | 1.97x |
+| 4 | 867.9 | 4.32 ms | 3.80x |
+| 8 | 1,517.0 | 5.04 ms | 6.64x |
+| 12 | 1,794.8 | 6.46 ms | 7.86x |
+
+p50 is flat from 1 to 4 streams -- 4.18 ms to 4.32 ms, 3% -- and scaling is near-linear at 3.80x of 4.
+Degradation begins only as the machine runs out of fast cores.
+
+**The hardware fact the 2,400 QPS arithmetic missed.**
+This is an Apple M4 Pro: `hw.perflevel0.logicalcpu` is **8 performance cores** and `hw.perflevel1.logicalcpu` is **4 efficiency cores**.
+Section 6.6's budget of "roughly 5 core-ms per query, 2,400 QPS on 12 cores" treats all twelve as equal.
+They are not, and the measurement agrees: twelve concurrent streams deliver 7.86 single-stream equivalents, not 12.
+
+**What that implies for claim B, stated as arithmetic rather than as a verdict.**
+Usable parallelism is about 7.9x, so peak throughput is roughly `7.86 x 1000 / p50_single_stream`.
+Hitting 2,400 QPS needs a single-stream p50 at or under **3.28 ms**, against the 4.18 ms measured now.
+That is a 22% cut, not the 2x the raw core arithmetic implied -- so the target is closer than the ceiling suggests.
+
+**But the cheap 22% is not available, and 6.8 is why.**
+The obvious levers are all vector-lane levers: fewer probes, shallower lanes, a smaller final candidate set.
+The vector lane already returns the target 15% of the time at `probes = 8`, so spending its recall to buy latency is spending something the tier does not have.
+The honest options are the ones that cost no recall -- narrowing the final projection to the columns rerank actually reads, and anything else provably neutral by the id-list diff method 6.7 used -- and whether those add up to 22% is an open measurement, not a prediction.
 
 **A note on contention, because it invalidated two windows before it was caught.**
 A tuning agent runs `bench-recall` against `bench_q50k` on this same cluster in bursts.
