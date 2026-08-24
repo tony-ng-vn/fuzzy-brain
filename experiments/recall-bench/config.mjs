@@ -166,7 +166,49 @@ export const config = {
     // These are the knobs that decide whether ~5 ms of CPU per query is enough,
     // so the scale values are priced for recall cost at the 1M rung (rung 3).
     quality: { depth: 100, efSearch: 100, ivfProbes: 12 },
-    scale:   { depth: 30,  efSearch: 40,  ivfProbes: 8  },
+    // The scale tier's extra knobs exist because ranking an unbounded candidate
+    // set is what capped the 1M rehearsal at 10-16 QPS (measured 2026-08-24: an
+    // OR over three common terms matched 862,972 of 1M rows and took 383 ms in
+    // the index+heap scan alone, before a single ts_rank_cd ran). Every number
+    // below is a bound on how much work ONE query may do, priced against the
+    // ~5 core-ms per query that 2,400 QPS on 12 cores allows. See DESIGN.md 6.6.
+    scale: {
+      depth: 30, efSearch: 40, ivfProbes: 8,
+      // Hard row caps applied BEFORE ranking, as an unordered LIMIT inside the
+      // candidate CTE so the bitmap heap scan stops early. Measured cost of a
+      // scale-tier candidate row (to_tsvector recompute + ts_rank_cd + the
+      // fragment bar) is ~13 us, so 400 rows is ~5 ms of worst-case lane work.
+      andCandidateCap: 400,
+      orCandidateCap: 400,
+      // Rare-term anchoring (WAND-style): the OR tsquery is built from only the
+      // highest-IDF query terms, rarest first, while their cumulative document
+      // frequency stays inside this budget. That is what bounds the OR lane's
+      // match count by construction rather than by truncation.
+      orAnchorMaxTerms: 3,
+      orAnchorDfBudget: 300,
+      // The OR lane only runs when the AND lane came back with fewer than this
+      // many rows. Expressed in SQL as a one-time InitPlan filter so the whole
+      // thing still travels as one prepared statement (DESIGN.md 6.1).
+      andFirstThreshold: 10,
+      // At most this many out-of-vocabulary terms get spell-corrected against
+      // the trigram-indexed term_stats table inside the same statement.
+      spellMaxTerms: 3,
+      // pg_trgm similarity floor a correction candidate must clear. Below this
+      // the term is dropped rather than "corrected" to something unrelated.
+      spellMinSimilarity: 0.3,
+      // Filtered vector lane. DESIGN.md 6.1 assumed raising ef_search to 200
+      // would keep a date-filtered lane from starving and said the 1M rehearsal
+      // would measure whether that is enough. It was measured (2026-08-24, one
+      // three-month window over the ten-year corpus, ~2.5% selective) and it is
+      // not: ef_search 200 returned 5 rows of 30 and cost 8 ms, ef_search 40
+      // returned 0 rows. pgvector's own answer, iterative scan, returns the full
+      // 30 in 3.8 ms with the scan bounded at 5,000 tuples -- better on both
+      // axes than the number the design guessed. maxScanTuples is the bound that
+      // keeps it from becoming the 21 ms it costs at 20,000.
+      filteredEfSearch: 40,
+      filteredIterativeScan: 'relaxed_order',
+      filteredMaxScanTuples: 5_000,
+    },
     rrfK: { and: 60, or: 60, vector: 60, trigram: 60 },
     trigramThreshold: 0.3,
     // efSearch to apply when a metadata filter is present on the vector lane

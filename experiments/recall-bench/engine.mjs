@@ -413,7 +413,302 @@ function laneDepthCfg(tier, cfg) {
 // Builds the SQL text and the ordered list of bind-parameter slots. Shared
 // by buildRetrievalSql (public contract) and retrieve (which needs the
 // same slot order to bind values) so the two can never drift apart.
+// ---------------------------------------------------------------------------
+// Scale-path lexical planning (DESIGN.md 6.6)
+//
+// Everything below applies to the synthetic-vector tiers only. The quality
+// tier keeps planStatement's original shape untouched, because rung 2's
+// numbers are being calibrated against it and a "neutral" change to its SQL
+// would have to be proved, not asserted.
+// ---------------------------------------------------------------------------
+
+// A lexeme no 'english' tsvector can hold (the parser never emits a lexeme
+// containing '~'), so a lane whose term list came out empty matches nothing
+// instead of matching everything. NULL would be worse than useless here: a
+// NULL tsquery makes the GIN index unusable and the planner falls back to a
+// sequential scan that recomputes to_tsvector for all 1M rows.
+const NO_MATCH_FRAG = "'zzz~nomatch~zzz'";
+
+function termLookup(terms, word) {
+  if (!terms) return undefined;
+  if (terms instanceof Map) return terms.get(word);
+  return Object.prototype.hasOwnProperty.call(terms, word) ? terms[word] : undefined;
+}
+
+// Turns a parsed query into the bind values the scale statement needs.
+//
+// The OR lane's term list is the whole point. Ranking every row that shares
+// ANY query word is what made the 1M rehearsal unservable: a three-common-term
+// disjunction matches 862,972 of 1M rows (measured), and no amount of ranking
+// speed rescues that. So the disjunction is rebuilt from the rarest terms
+// only, added rarest-first while their cumulative document frequency stays
+// inside `orAnchorDfBudget`. That bounds the lane's match count by the
+// frequency of the terms in it rather than by truncating a huge result, which
+// is the standard WAND-style move: the terms that were dropped are exactly the
+// ones that carry no discrimination.
+//
+// The single rarest term is always kept even when its own df blows the budget,
+// so a query made entirely of common words still has an OR lane; the row cap
+// in the SQL is what bounds that case, and it is honestly a truncation.
+export function scaleQueryParams(qf, vocab, cfg = defaultConfig) {
+  const scale = cfg.lanes.scale;
+  const terms = vocab?.terms;
+  const seen = new Set();
+  const inVocab = [];
+  const oov = [];
+
+  for (const t of qf.terms) {
+    if (STOPWORDS.has(t) || seen.has(t)) continue;
+    seen.add(t);
+    const entry = termLookup(terms, t);
+    if (entry && entry.frag) inVocab.push({ term: t, ...entry });
+    else oov.push(t);
+  }
+
+  // Rarest first; ties broken by the term itself so the same query always
+  // produces the same statement parameters.
+  const byRarity = [...inVocab].sort((a, b) => a.ndoc - b.ndoc || (a.term < b.term ? -1 : 1));
+  const anchors = [];
+  let anchorDf = 0;
+  for (const entry of byRarity) {
+    if (anchors.length >= scale.orAnchorMaxTerms) break;
+    if (anchors.length > 0 && anchorDf + entry.ndoc > scale.orAnchorDfBudget) break;
+    anchors.push(entry);
+    anchorDf += entry.ndoc;
+  }
+
+  // The lane only runs when its anchor is genuinely selective, and this is the
+  // honest half of the design. When even the rarest term in the query appears
+  // in more documents than the candidate cap -- measured on this corpus, the
+  // cross-topic nouns entity_swap and typo_noisy queries are built from sit at
+  // df ~24,000 of 1M -- the lane cannot return a ranked top-30 of the matches.
+  // It can only return whichever 400 rows the heap scan reached first, which
+  // gives a roughly 1.7% chance of touching the target while costing 4.4 ms of
+  // to_tsvector recompute (measured). Running it would be paying real time for
+  // noise, so the lane stands down and the AND and vector lanes carry the
+  // query. Every dropped lane is visible in the load report's per-lane row
+  // counts rather than being silently absorbed.
+  const orSelective = anchors.length > 0 && anchorDf <= scale.orCandidateCap;
+
+  // Out-of-vocabulary terms are only worth correcting when enough of the query
+  // is unrecognizable to look like a typo rather than a proper noun the corpus
+  // simply does not contain. Same threshold parseQueryFeatures uses, but over
+  // the exact vocabulary rather than the approximate stemmer's df lookup.
+  const total = inVocab.length + oov.length;
+  const oovRatio = total > 0 ? oov.length / total : 0;
+  const correcting = oovRatio >= cfg.weighting.oovRatioFloor;
+
+  return {
+    andFrags: inVocab.map((e) => `(${e.frag})`).join(' & ') || null,
+    orFrags: orSelective ? anchors.map((e) => `(${e.frag})`).join(' | ') : null,
+    baseLexemes: [...new Set(inVocab.flatMap((e) => e.lexemes ?? []))],
+    oovTerms: correcting ? oov.slice(0, scale.spellMaxTerms) : [],
+    anchorTerms: orSelective ? anchors.map((e) => e.term) : [],
+    anchorDf,
+    orSelective,
+    oovRatio,
+  };
+}
+
+function planScaleStatement(tier, profile, cfg) {
+  const lanes = new Set(profile.lanes);
+  if (lanes.has('trigram')) {
+    throw new Error('planStatement: trigram lane requested on a synthetic-vector tier, which has no trigram index (DESIGN.md 6.2)');
+  }
+  const hasAnd = lanes.has('and');
+  const hasOr = lanes.has('or');
+  const hasFilters = Boolean(profile.filters);
+  const schema = tier.schema;
+  const scale = cfg.lanes.scale;
+  const depth = scale.depth;
+  const rrfK = cfg.lanes.rrfK;
+  const topK = cfg.rerank.topK;
+  const doc = "to_tsvector('english', m.body)";
+
+  const slots = [];
+  const addSlot = (key) => {
+    slots.push({ key });
+    return `$${slots.length}`;
+  };
+
+  const andFragsParam = hasAnd || hasOr ? addSlot('andFrags') : null;
+  const orFragsParam = hasOr ? addSlot('orFrags') : null;
+  const baseLexParam = hasOr ? addSlot('baseLexemes') : null;
+  const oovParam = hasAnd || hasOr ? addSlot('oovTerms') : null;
+  const vecParam = addSlot('vector');
+  const spanParam = hasFilters ? addSlot('span') : null;
+
+  // Every lane reads the vector and the date range straight off the bind
+  // parameter instead of through a CTE. That is deliberate: routing the query
+  // vector through a CTE is what turned vec_lane into a sequential scan plus an
+  // external sort at 1M (the NOT MATERIALIZED note on the quality-tier plan
+  // below), and reading the Param directly makes the lane's plan independent of
+  // how the tsquery CTEs happen to be materialized.
+  const spanClause = spanParam
+    ? `\n    and (${spanParam}::daterange is null or m.occurred_at <@ ${spanParam}::daterange)`
+    : '';
+
+  const ctes = [];
+
+  if (hasAnd || hasOr) {
+    // Spell correction, inside the same round trip. `oovTerms` is empty for the
+    // overwhelming majority of queries, and unnest of an empty array produces
+    // no rows at all, so the lateral below never executes for them. When it
+    // does, it is a handful of trigram-index probes against a table with about
+    // 1,700 rows at 1M -- the GIN index lives on this table and nowhere else,
+    // which is the whole reason the scale tier can afford typo tolerance
+    // without the 5-8 GB document trigram index DESIGN.md 6.2 ruled out.
+    ctes.push(`fixed as materialized (
+  select f.frag, f.lexemes, f.ndoc
+  from unnest(${oovParam}::text[]) as t
+  cross join lateral (
+    select v.frag, v.lexemes, v.ndoc
+    from ${schema}.term_stats v
+    where v.term % t and similarity(v.term, t) >= ${scale.spellMinSimilarity}
+    order by similarity(v.term, t) desc, v.term
+    limit 1
+  ) f
+)`);
+
+    const andSource = hasAnd
+      ? `concat_ws(' & ', nullif(${andFragsParam}::text, ''), (select string_agg(frag, ' & ') from fixed))`
+      : null;
+    // A correction only joins the OR lane when the word it corrected TO is
+    // itself selective enough for the lane to stay exact -- the same rule
+    // scaleQueryParams applies to the anchors it can see, applied here to the
+    // one term it cannot (the correction is chosen inside this statement).
+    const orSource = hasOr
+      ? `concat_ws(' | ', nullif(${orFragsParam}::text, ''), (select string_agg('(' || frag || ')', ' | ') from fixed where ndoc <= ${scale.orCandidateCap}))`
+      : null;
+
+    const qParts = [];
+    if (hasAnd) qParts.push(`to_tsquery('simple', coalesce(nullif(${andSource}, ''), ${quoteSql(NO_MATCH_FRAG)})) as andq`);
+    if (hasOr) {
+      qParts.push(`to_tsquery('simple', coalesce(nullif(${orSource}, ''), ${quoteSql(NO_MATCH_FRAG)})) as orq`);
+      // The fragment bar counts against the corrected term list, not the
+      // original: a typo query whose only recognizable word is one term would
+      // otherwise face a bar of 2 it can never clear, and the OR lane would
+      // return nothing for the entire typo_noisy family.
+      qParts.push(`(${baseLexParam}::text[] || coalesce((select array_agg(l) from fixed, unnest(fixed.lexemes) l), '{}'::text[])) as bar_lex`);
+    }
+    ctes.push(`q as materialized (\n  select ${qParts.join(',\n         ')}\n)`);
+  }
+
+  const fusedBranches = [];
+
+  if (hasAnd) {
+    const andWeightParam = addSlot('andWeight');
+    // The cap is an unordered LIMIT, which is what makes the bitmap heap scan
+    // stop early instead of materializing every match before ranking. It only
+    // binds for queries whose AND still matches more rows than the cap; for
+    // everything else the lane is exact.
+    ctes.push(`and_cand as materialized (
+  select m.id, ${doc} as doc
+  from ${schema}.memories m, q
+  where ${doc} @@ q.andq${spanClause}
+  limit ${scale.andCandidateCap}
+)`);
+    // ts_rank_cd is projected once per candidate and ordered by output position,
+    // so the rank is not recomputed for the window and again for the sort.
+    ctes.push(`and_lane as (
+  select id, score, row_number() over (order by score desc, id) as rnk
+  from (
+    select c.id, ts_rank_cd(c.doc, q.andq) as score
+    from and_cand c, q
+    order by 2 desc, 1
+    limit ${depth}
+  ) s
+)`);
+    fusedBranches.push(`select id, rnk, score, 'and' as lane, ${andWeightParam}::float / (${rrfK.and} + rnk) as w from and_lane`);
+  }
+
+  if (hasOr) {
+    const orWeightParam = addSlot('orWeight');
+    // AND-first (DESIGN.md 6.6): the disjunction only runs when the conjunction
+    // came back thin. The subquery is uncorrelated, so Postgres evaluates it
+    // once as an InitPlan and hangs a One-Time Filter over the scan -- the scan
+    // is skipped outright, not run and discarded.
+    const andFirstGate = hasAnd
+      ? `\n    and (select count(*) from and_lane) < ${scale.andFirstThreshold}`
+      : '';
+    // The lexeme array is projected alongside the tsvector through an OFFSET 0
+    // lateral so to_tsvector runs once per candidate rather than once per
+    // reference. The fragment bar then reads that array instead of parsing a
+    // fresh tsquery per query term per row, which is what the bar used to do
+    // (measured over a fixed 500-row candidate set: 4.7 ms for the old bar
+    // against 1.8 ms for this one).
+    ctes.push(`or_cand as materialized (
+  select m.id, d.doc, tsvector_to_array(d.doc) as lex
+  from ${schema}.memories m, q,
+       lateral (select ${doc} as doc offset 0) d
+  where ${doc} @@ q.orq${andFirstGate}${spanClause}
+  limit ${scale.orCandidateCap}
+)`);
+    ctes.push(`or_lane as (
+  select id, score, row_number() over (order by score desc, id) as rnk
+  from (
+    select c.id, ts_rank_cd(c.doc, q.orq) as score
+    from or_cand c, q
+    where (select count(*) from unnest(q.bar_lex) x where x = any(c.lex)) >= least(2, cardinality(q.bar_lex))
+    order by 2 desc, 1
+    limit ${depth}
+  ) s
+)`);
+    fusedBranches.push(`select id, rnk, score, 'or' as lane, ${orWeightParam}::float / (${rrfK.or} + rnk) as w from or_lane`);
+  }
+
+  const vectorWeightParam = addSlot('vectorWeight');
+  ctes.push(`vec_lane as (
+  select m.id, row_number() over (order by m.embedding <=> ${vecParam}::halfvec) as rnk, null::real as score
+  from ${schema}.memories m
+  where m.embedding is not null${spanClause}
+  order by m.embedding <=> ${vecParam}::halfvec
+  limit ${depth}
+)`);
+  fusedBranches.push(`select id, rnk, score, 'vector' as lane, ${vectorWeightParam}::float / (${rrfK.vector} + rnk) as w from vec_lane`);
+
+  // The lexical rerank feature rides out of the lanes instead of being
+  // recomputed over the final 50 rows. Recomputing it meant 50 more
+  // to_tsvector calls per query (~0.55 ms at 11 us each, measured). The one
+  // behavioural difference: a row that reached the top only through the vector
+  // lane now scores 0 lexically rather than whatever ts_rank_cd would have
+  // said, which is why this is scale-path only.
+  const sql = `with ${ctes.join(',\n')},
+fused as (
+  select id, sum(w) as rrf, jsonb_object_agg(lane, rnk) as lane_ranks, max(score) as lexical
+  from (
+    ${fusedBranches.join('\n    union all\n    ')}
+  ) all_lanes
+  group by id
+),
+top as (
+  select id, rrf, lane_ranks, lexical from fused order by rrf desc, id limit ${topK}
+)
+select t.id, t.rrf, t.lane_ranks,
+       1 - (m.embedding <=> ${vecParam}::halfvec) as cosine,
+       coalesce(t.lexical, 0)::real as lexical,
+       m.occurred_at,
+       null::int as dup_group,
+       null::text as rare_token,
+       false as rare_hit,
+       false as title_hit,
+       '{}'::text[] as people,
+       '{}'::text[] as tags
+from top t
+join ${schema}.memories m on m.id = t.id
+order by t.rrf desc, t.id`;
+
+  return { kind: 'synthetic', hasAnd, hasOr, hasTrigram: false, hasFilters, hasPeopleFilter: false, slots, sql };
+}
+
+function quoteSql(literal) {
+  // NO_MATCH_FRAG is already a tsquery-quoted lexeme; this wraps it as a SQL
+  // string constant, doubling the single quotes it contains.
+  return `'${literal.replace(/'/g, "''")}'`;
+}
+
 function planStatement(tier, profile, cfg) {
+  if (tierKind(tier) === 'synthetic') return planScaleStatement(tier, profile, cfg);
   const kind = tierKind(tier);
   const lanes = new Set(profile.lanes);
   const hasAnd = lanes.has("and");
@@ -638,12 +933,36 @@ function resolveFilters(profile, explicitFilters, features, kind) {
 // not accept $N placeholders -- the value is always a plain config integer,
 // never user input, so inlining it is safe. Cached per physical connection
 // so a homogeneous workload issues the SET almost never (advisor guidance).
-const lastEfSearch = new WeakMap();
+const lastVectorGucs = new WeakMap();
 
-async function applyEfSearch(client, value) {
-  if (lastEfSearch.get(client) === value) return;
-  await client.query(`SET hnsw.ef_search = ${value}`);
-  lastEfSearch.set(client, value);
+// ivfflat.probes rides along in the same statement rather than a second round
+// trip: rung 3's gate can swap the vector index to IVFFlat (DESIGN.md section
+// 7), and the engine has no way to tell which index the schema currently
+// carries. Setting all of them is one string, costs nothing, and means the same
+// prepared workload runs correctly against either index.
+//
+// hnsw.iterative_scan is the measured fallback DESIGN.md 6.1 left open for the
+// filtered lane; see config.lanes.scale.filteredIterativeScan for the numbers.
+// It is scale-path only, so the quality tier's filtered lane behaves exactly as
+// it did before.
+export function vectorSessionSettings(tier, cfg, filterActive) {
+  const laneCfg = tierKind(tier) === 'real' ? cfg.lanes.quality : cfg.lanes.scale;
+  const scaleFiltered = tierKind(tier) === 'synthetic' && filterActive;
+  const efSearch = filterActive
+    ? (scaleFiltered ? laneCfg.filteredEfSearch : cfg.lanes.filteredEfSearch)
+    : laneCfg.efSearch;
+  return [
+    `SET hnsw.ef_search = ${efSearch}`,
+    `SET ivfflat.probes = ${laneCfg.ivfProbes}`,
+    `SET hnsw.iterative_scan = ${scaleFiltered ? laneCfg.filteredIterativeScan : 'off'}`,
+    `SET hnsw.max_scan_tuples = ${scaleFiltered ? laneCfg.filteredMaxScanTuples : 20000}`,
+  ].join('; ');
+}
+
+async function applyVectorGucs(client, settings) {
+  if (lastVectorGucs.get(client) === settings) return;
+  await client.query(settings);
+  lastVectorGucs.set(client, settings);
 }
 
 // The AND/OR lane bind parameters, derived from parsed query features.
@@ -683,6 +1002,7 @@ export async function retrieve(client, query, ctx) {
   const { contentTerms, orQuery, fragmentBar } = lexicalQueryParams(qf);
   const rareTokens = contentTerms.slice(0, 32);
   const titlePatterns = qf.quoted.slice(0, 16).map((q) => `%${q}%`);
+  const scaleParams = kind === "synthetic" ? scaleQueryParams(qf, vocab, cfg) : null;
 
   const values = plan.slots.map(({ key }) => {
     switch (key) {
@@ -690,6 +1010,10 @@ export async function retrieve(client, query, ctx) {
       case "orQuery": return orQuery;
       case "lexemes": return contentTerms;
       case "fragmentBar": return fragmentBar;
+      case "andFrags": return scaleParams.andFrags;
+      case "orFrags": return scaleParams.orFrags;
+      case "baseLexemes": return scaleParams.baseLexemes;
+      case "oovTerms": return scaleParams.oovTerms;
       case "vector": return toVectorLiteral(ctx.queryVector);
       case "span": return resolved.span;
       case "people": return resolved.people;
@@ -704,8 +1028,7 @@ export async function retrieve(client, query, ctx) {
   });
 
   const filterActive = Boolean(resolved.span) || resolved.people.length > 0;
-  const baseEfSearch = laneDepthCfg(tier, cfg).efSearch;
-  await applyEfSearch(client, filterActive ? cfg.lanes.filteredEfSearch : baseEfSearch);
+  await applyVectorGucs(client, vectorSessionSettings(tier, cfg, filterActive));
 
   const sqlStart = Date.now();
   const { rows } = await client.query({ name: statementName(tier, profile), text: plan.sql, values });
