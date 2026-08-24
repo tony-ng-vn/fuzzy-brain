@@ -1325,6 +1325,28 @@ That is the hardest possible case for any approximate nearest-neighbour method, 
 
 Different mechanisms, identical symptom, which is exactly why "switch the index" was never going to work and why the frontier climbs only as fast as brute force does: `ef_search` 40 to 400 is a 10x scan for 4x the recall, and reaching 0.90 needs a scan fraction that is not an index at all.
 
+**Graph degree was tested too, and it matters more than the paragraph above implies.**
+The mechanism argument predicts that a denser graph should not help much, since the problem is described as an absent gradient rather than a crowded neighbour list.
+That prediction is **wrong**, and the measurement is recorded here rather than quietly dropped.
+Same corpus, same 200 drifted queries, `ef_construction` 200 held, varying only `m`:
+
+| `ef_search` | m = 16 hit@30 | m = 16 ms | **m = 32 hit@30** | m = 32 ms |
+| --- | --- | --- | --- | --- |
+| 40 | 0.085 | 2.09 | **0.125** | 3.92 |
+| 100 | 0.155 | 3.91 | **0.290** | 7.52 |
+| 400 | 0.335 | 11.93 | **0.620** | 25.28 |
+| build wall clock at 1M | 6 min 43 s | | **17 min 12 s** | |
+| index size at 1M | 794 MB | | **981 MB** | |
+
+Doubling `m` roughly **doubles hit@30 at equal `ef_search`**, and it wins on the recall-per-millisecond frontier too, not just at equal `ef_search`.
+So degree is a real axis here and the honest statement of the mechanism is the weaker one: the geometry makes this a hard ANN problem -- an isolated spike with no neighbourhood structure to descend -- and *within* that regime, recall tracks how much of the index the search touches, which both `m` and `ef_search` buy.
+
+It still does not reach the floor at any affordable point.
+m = 32 at `ef_search` 400 is the best measured setting anywhere in this document, and it costs **25.28 ms of vector lane alone** for a lane that still misses 38% of targets.
+That is roughly seven times the entire per-query budget, and it caps throughput near `7.86 x 1000 / 25.3` -- about **310 QPS** -- against a 2,400 QPS claim.
+Build cost scales with it: 2.6x at 1M, which extrapolates past 7 hours at 10M for m = 64, the next rung up.
+The tier therefore keeps m = 16, not because m = 32 is worse, but because neither reaches a recall floor and m = 16 is the cheaper way to not reach it.
+
 **This retires 6.8's open question in the sharper direction.**
 6.8 asked whether the 15% vector recall was "IVFFlat's fault or the synthetic geometry's" and said the question "should be settled before any 10M build".
 It is settled: **the geometry's.**
