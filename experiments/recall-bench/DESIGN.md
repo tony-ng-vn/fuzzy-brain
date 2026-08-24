@@ -716,6 +716,100 @@ score = 0.9*lexical_norm + 1.0*cosine + 1.4*entity_match + 0.2*recency_decay
 
 Weights are fit on the dev split by coordinate descent over a small grid, and the fitted vector is written into `config.rerank.weights` and committed, so the reported run is reproducible from the repo alone.
 
+### 6.6 ADDENDUM (2026-08-24): the scale path is candidate-bounded, and this is what it costs
+
+Sections 6.1 and 6.2 describe lanes that rank whatever matches.
+At 50K that is fine.
+At 1M it is not, and the rehearsal measured exactly how badly.
+
+**What was measured on `bench_r1m`, before any of this landed.**
+
+| Thing measured | Number |
+| --- | --- |
+| OR lane, disjunction over three common terms (`took \| watch \| work`) | 862,972 of 1,000,000 rows matched, 383 ms in the bitmap index and heap scan alone |
+| OR lane, disjunction over three rare terms | 43 rows, 0.065 ms |
+| 18-term AND via `websearch_to_tsquery` (GIN fast scan) | 0.375 ms |
+| `to_tsvector('english', body)` recompute, per row | 11 us |
+| `ts_rank_cd` over an already-materialized tsvector, per row | 1.1 us |
+| Old fragment bar (`to_tsquery('english', ql)` per term per row), 500 rows x 18 terms | 4.7 ms |
+| Vector lane, HNSW, `ef_search` 40, depth 30, unfiltered | 1.0-5.0 ms |
+| Whole-workload result | 10-16 QPS ceiling, p50 428 ms at 3 offered QPS |
+
+The 2,400 QPS target on 12 cores allows roughly **5 core-ms per query**.
+One lane was spending seconds.
+Ranking an unbounded candidate set is not a tuning problem, it is the wrong shape, so the scale tier changed shape.
+The quality tier did not: rung 2's numbers are calibrated against the SQL in 6.1 and that SQL is unchanged there.
+
+**What the scale path does instead.**
+
+1. **Term statistics are precomputed, not sampled.**
+   `lib/term-stats.mjs` writes two tables per schema after the load: `lexeme_stats(lexeme, ndoc)` for exact document frequency, and `term_stats(term, lexemes, frag, ndoc)` mapping a surface query word to the lexemes Postgres's parser really produces for it, a ready-made tsquery fragment over them, and the frequency of the rarest one.
+   The engine loads both at startup.
+   The surface form matters twice: anchoring picks terms by frequency and needs an exact lookup (the engine's own `stem()` is a documented approximation and disagrees with snowball often enough to make it unreliable), and spell correction matches typos against real words rather than truncated stems.
+   The fragment matters because one query word is not always one lexeme -- a planted rare token like `fwz-0218` parses to `'fwz' & '-0218'`.
+   Measured at 1M: 1,682 surface terms, 2,205 lexemes, 0.8 MB, 37.7 s to build.
+
+2. **The OR lane is rare-term anchored (WAND-style), and honestly approximate.**
+   The disjunction is rebuilt from only the highest-IDF query terms, added rarest first while their cumulative document frequency stays inside `lanes.scale.orAnchorDfBudget` (300), capped at `orAnchorMaxTerms` (3).
+   Common terms are dropped from the lane entirely.
+   That bounds the lane's match count by term rarity rather than by truncating a huge result -- the terms dropped are exactly the ones carrying no discrimination.
+
+   **The approximation, stated plainly.** When even the rarest term in a query appears in more documents than the candidate cap, the lane cannot return a real ranked top-30 of the matches. On this corpus the cross-topic nouns the `entity_swap`, `typo_noisy` and `date_filter` families are built from sit at df ~24,000 of 1M. Running the lane there would return whichever 400 rows the heap scan reached first -- about a 1.7% chance of touching the target -- for 4.4 ms of `to_tsvector` recompute. So the lane stands down and the AND and vector lanes carry the query. This is a deliberate top-N candidate-bounded design, standard in production retrieval, and it is a real recall concession, not a free one. Every lane that stood down is visible in the load report's per-lane row counts.
+
+3. **The AND lane runs first and caps its candidates.**
+   `websearch_to_tsquery` is unchanged; a hard `LIMIT` inside the candidate CTE stops the bitmap heap scan early instead of materializing every match before ranking.
+   The OR lane then runs only when the AND lane came back with fewer than `andFirstThreshold` (10) rows.
+   That gate is an uncorrelated subquery, so Postgres evaluates it once as an InitPlan and hangs a One-Time Filter over the OR scan; `EXPLAIN` reports the scan as `never executed`.
+   **This keeps the one-round-trip property of 6.1 intact** -- it is still a single prepared statement, not a client-side branch.
+
+4. **The fragment bar survives, bounded and cheapened.**
+   It is still `min(2, terms)`, and it is applied inside the capped candidate set.
+   It now compares the query's lexemes against `tsvector_to_array(doc)` instead of parsing a fresh `to_tsquery` per query term per row.
+   The corrected spelling of a typo counts toward the bar, or a query whose only recognizable word is one term would face a bar of 2 it could never clear.
+
+5. **Typo tolerance moves to the query side.**
+   6.2 ruled out a document trigram index at 10M (5-8 GB, over the disk budget), which left `typo_noisy` with no lane at scale.
+   Instead, out-of-vocabulary terms are corrected against the trigram-indexed `term_stats` table inside the same statement -- a GIN trigram index on ~1,700 rows rather than 10M documents.
+   Correction only fires when the share of unrecognized terms clears `weighting.oovRatioFloor`, so a query naming something the corpus does not contain is not "corrected" into something it does.
+   A correction joins the OR lane only if the word it corrected *to* is itself selective, by the same rule as the anchors.
+
+6. **The lexical rerank feature rides out of the lanes.**
+   6.1's final projection recomputed `ts_rank_cd` over the top 50, which at scale is 50 more `to_tsvector` calls (~0.55 ms).
+   The lanes now carry their own score into `fused`.
+   One behavioural difference, scale-path only: a row that reached the top through the vector lane alone scores 0 lexically instead of whatever `ts_rank_cd` would have said.
+
+7. **The query vector and the date range are read straight off the bind parameters**, not through the `q` CTE.
+   6.1's `NOT MATERIALIZED` note exists because a materialized `q` made `embedding <=> q.vec` un-orderable by the HNSW index.
+   Reading the Param directly makes each lane's plan independent of how the tsquery CTEs happen to materialize, which is the more robust form of the same fix.
+
+8. **The filtered vector lane uses iterative scan, measured rather than assumed.**
+   6.1 said `ef_search` is raised to 200 when a filter is present "so a selective filter does not starve the lane", and that the 1M rehearsal would measure whether that is enough.
+   It was measured, on one three-month window over the ten-year corpus (~2.5% selective):
+
+   | Setting | Rows returned (of 30) | Warm latency |
+   | --- | --- | --- |
+   | `ef_search` 200, iterative off (the design's guess) | 5 | 8.1 ms |
+   | `ef_search` 40, iterative off | 0 | 0.9 ms |
+   | `ef_search` 40, `iterative_scan = relaxed_order`, `max_scan_tuples` 20,000 | 30 | 21.2 ms |
+   | `ef_search` 40, `iterative_scan = relaxed_order`, `max_scan_tuples` 5,000 | 30 | 3.8 ms |
+
+   The design's number was both insufficient and expensive.
+   The last row is what the scale tier now runs.
+   The quality tier keeps `ef_search` 200 and no iterative scan, unchanged.
+
+**What it bought, per family, at 1M** (one connection, mean over 10 test-split queries each, measured while another CPU-heavy job shared the machine -- so pessimistic):
+
+| Family | Before this section | After |
+| --- | --- | --- |
+| typo_noisy | 11.0 ms, OR lane returning nothing | 1.7 ms, OR lane returning the corrected term |
+| paraphrase_nolex | 5.7 ms | 4.4 ms |
+| entity_swap | 7.1 ms | 7.0 ms |
+| date_filter | 21.2 ms, vector lane returning 10.7 of 30 | 16.2 ms, vector lane returning 27.6 of 30 |
+| Weighted mean | 8.4 ms | 5.6 ms |
+
+Against the earlier whole-system state -- 10-16 QPS, p50 428 ms at 3 offered QPS -- this is a different machine.
+Whether it clears 2,400 QPS is section 8's question, and section 8 answers it with the number that was measured.
+
 ---
 
 ## 7. The scale ladder
