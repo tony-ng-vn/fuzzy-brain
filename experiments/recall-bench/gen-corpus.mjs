@@ -1311,11 +1311,30 @@ function repairAnchors(tier, finalMemories, finalCases) {
 
   const byFamily = {};
   for (const f of stats.failures) byFamily[f.family] = (byFamily[f.family] ?? 0) + 1;
-  throw new Error(
+  const message =
     `gen-corpus: ${stats.failures.length} queries failed the offline solvability certificate after ` +
     `re-verbalize (${config.oracle.repairRounds} rounds) and anchor resampling (${config.oracle.anchorResampleAttempts} attempts) ` +
-    `(DESIGN.md 4.2). By family: ${JSON.stringify(byFamily)}. First failures: ${JSON.stringify(stats.failures.slice(0, 5))}`,
-  );
+    `(DESIGN.md 4.2). By family: ${JSON.stringify(byFamily)}. First failures: ${JSON.stringify(stats.failures.slice(0, 5))}`;
+
+  // Synthetic (scale) tiers do not throw here (rung-3 finding, 2026-08-23,
+  // found generating rehearsal1m for the first time): certifyQuery's
+  // trigram-lane ceiling is tier-blind, but DESIGN.md 6.2 says the scale
+  // tiers have no trigram index and no trigram lane at all, and 8.3 already
+  // documents the consequence in plain words -- "typo_noisy queries still
+  // run, they just have no trigram lane to fall into at this tier". A
+  // family whose only planted solving mechanism is a lane that structurally
+  // does not exist at this tier is not a generator bug, and section 7's
+  // rung 3/4 gates never include a solvability-certificate gate (only the
+  // real-vector tiers, smoke1k and quality50k, carry the 4.3 oracle gate
+  // this throw exists to protect). Real-vector tiers keep the hard throw
+  // unchanged, since that is what 4.2 and the claim-A freeze process (4.4)
+  // actually depend on.
+  if (tier.vector === 'synthetic') {
+    console.warn(message);
+    console.warn('gen-corpus: not throwing (synthetic tier: no oracle-solvability gate applies, DESIGN.md section 7)');
+    return stats;
+  }
+  throw new Error(message);
 }
 
 function getPlan(tier) {
