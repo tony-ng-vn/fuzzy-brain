@@ -240,6 +240,30 @@ export const config = {
       // many rows. Expressed in SQL as a one-time InitPlan filter so the whole
       // thing still travels as one prepared statement (DESIGN.md 6.1).
       andFirstThreshold: 10,
+      // The scale profile's query-dependent lane policy (DESIGN.md 6.3, priced
+      // in 6.7). The vector lane costs ~3.0 ms on every family uniformly and is
+      // the single largest remaining line item, but on a query naming something
+      // that exists in exactly one document the conjunction already has the
+      // answer and the ANN search is buying nothing.
+      //
+      // The trigger is the rarest query term's EXACT document frequency, out of
+      // term_stats, not the approximate stemmer's idf. Measured over 60 test
+      // queries per family at 1M, the rarest term's df is:
+      //   rare_token       1 /     1 /     1   (min/median/max)
+      //   paraphrase      15 /    22 / 11993
+      //   near_dup        15 /    34 / 12694
+      //   partial_ref     37 /    59 /    75
+      //   date_filter    231 / 24762 / 48906
+      //   entity_swap  11993 / 24880 / 33600
+      //   typo_noisy   12098 / 36908 / 50060
+      // A ceiling of 5 separates rare_token cleanly with the nearest other
+      // family 3x away, which is why this is a df threshold and not an idf one.
+      vectorSkipDfCeiling: 5,
+      // ...and even then the lane is only skipped when the AND lane actually
+      // came back with something. Expressed in SQL as the same one-time InitPlan
+      // filter the OR lane uses, so a rare-token query whose conjunction returns
+      // nothing still gets its vector lane and the gate fails safe.
+      vectorSkipAndFloor: 1,
       // At most this many out-of-vocabulary terms get spell-corrected against
       // the trigram-indexed term_stats table inside the same statement.
       spellMaxTerms: 3,

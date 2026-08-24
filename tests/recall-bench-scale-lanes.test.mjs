@@ -159,6 +159,47 @@ test('the OR lane is gated on the AND lane through a single uncorrelated subquer
   );
 });
 
+test('the lexical lanes read the stored tsvector rather than recomputing it', () => {
+  // Measured at 1M over a fixed 400-row candidate set: 4.51 ms to recompute
+  // to_tsvector for 400 rows against 0.20 ms to read the same bodies. Every
+  // candidate a lexical lane caps at pays it, so a regression here is worth
+  // ~4 ms per query and would not show up as anything but "slower".
+  assert.match(scaleSql, /select m\.id, m\.fts as doc/);
+  assert.match(scaleSql, /m\.fts @@ q\.andq/);
+  assert.match(scaleSql, /tsvector_to_array\(m\.fts\) as lex/);
+  assert.doesNotMatch(scaleSql, /to_tsvector\('english', m\.body\)/);
+});
+
+test('the rarest term document frequency is reported off the exact term stats', () => {
+  // The vector-lane gate reads this, and it must be the exact df out of
+  // term_stats rather than the approximate stemmer's idf.
+  assert.equal(paramsFor('the reference code kbz-4417').minTermDf, 1);
+  assert.equal(paramsFor('the gravel staircase').minTermDf, 24_109);
+  // Nothing in vocabulary at all: the gate must not fire on a query the
+  // engine knows nothing about.
+  assert.equal(paramsFor('zzzq wwwx').minTermDf, null);
+});
+
+test('the vector lane is gated on the AND lane only for the rare-term shape', () => {
+  const gated = buildRetrievalSql(scaleTier, { ...config.profiles.tunedScale, vectorGate: true }, config);
+  assert.match(
+    gated.text,
+    new RegExp(`and \\(select count\\(\\*\\) from and_lane\\) < ${scaleCfg.vectorSkipAndFloor}\\n  order by m\\.embedding`),
+    'the gate belongs inside the one statement, decided against the real AND row count',
+  );
+  // A different statement text must not reuse the ungated statement's name.
+  assert.notEqual(gated.name, buildRetrievalSql(scaleTier, config.profiles.tunedScale, config).name);
+  // ...and the ungated statement keeps an unconditional vector lane.
+  assert.doesNotMatch(scaleSql, new RegExp(`< ${scaleCfg.vectorSkipAndFloor}\\n  order by m\\.embedding`));
+});
+
+test('the vector gate is refused when there is no AND lane to count', () => {
+  // Gating the only lane that can answer would return nothing at all.
+  const vectorOnly = { lanes: ['vector'], weighting: 'fixed', weights: { vector: 1 },
+                       filters: true, rerank: false, vectorGate: true };
+  assert.doesNotMatch(buildRetrievalSql(scaleTier, vectorOnly, config).text, /from and_lane/);
+});
+
 test('the fragment bar compares lexeme arrays instead of parsing a tsquery per row', () => {
   assert.match(scaleSql, /where x = any\(c\.lex\)/);
   assert.doesNotMatch(scaleSql, /to_tsquery\('english', ql\)/);

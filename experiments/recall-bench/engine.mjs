@@ -400,7 +400,10 @@ function tierKind(tier) {
 
 function profileSignature(profile) {
   const lanes = [...profile.lanes].slice().sort().join("");
-  return `${lanes}_w${profile.weighting}_f${profile.filters ? 1 : 0}_r${profile.rerank ? 1 : 0}`;
+  // vectorGate is part of the signature because it changes the SQL text, and
+  // two different statements sharing one prepared-statement name is a silent
+  // wrong-plan bug rather than a slow one.
+  return `${lanes}_w${profile.weighting}_f${profile.filters ? 1 : 0}_r${profile.rerank ? 1 : 0}${profile.vectorGate ? "_vg" : ""}`;
 }
 
 function statementName(tier, profile) {
@@ -508,6 +511,10 @@ export function scaleQueryParams(qf, vocab, cfg = defaultConfig) {
     anchorDf,
     orSelective,
     oovRatio,
+    // The rarest in-vocab term's exact document frequency, which is what the
+    // vector-lane gate reads. null when nothing in the query is in vocabulary
+    // at all, so the gate cannot fire on a query it knows nothing about.
+    minTermDf: byRarity.length > 0 ? byRarity[0].ndoc : null,
   };
 }
 
@@ -667,10 +674,19 @@ function planScaleStatement(tier, profile, cfg) {
   }
 
   const vectorWeightParam = addSlot('vectorWeight');
+  // AND-first for the vector lane too, on the queries the caller marked as
+  // carrying a term rare enough that the conjunction is already exact. Same
+  // uncorrelated-subquery shape as the OR lane's gate, so Postgres evaluates it
+  // once as an InitPlan and hangs a One-Time Filter over the ANN scan rather
+  // than running it and discarding the rows. Only ever set when the AND lane is
+  // in the statement to be counted.
+  const vectorGate = profile.vectorGate && hasAnd
+    ? `\n    and (select count(*) from and_lane) < ${scale.vectorSkipAndFloor}`
+    : '';
   ctes.push(`vec_lane as (
   select m.id, row_number() over (order by m.embedding <=> ${vecParam}::halfvec) as rnk, null::real as score
   from ${schema}.memories m
-  where m.embedding is not null${spanClause}
+  where m.embedding is not null${spanClause}${vectorGate}
   order by m.embedding <=> ${vecParam}::halfvec
   limit ${depth}
 )`);
@@ -1058,16 +1074,33 @@ export async function retrieve(client, query, ctx) {
   // weight lane still contributes ids to the fused set, and when fewer than
   // topK rows have rrf > 0 those ids can occupy trailing candidate slots that
   // the reranker is then free to promote. Measured on dev (see DESIGN.md 6.7).
-  const effectiveProfile = cfg.lanes.trigramWhenWeighted && profile.lanes.includes("trigram") && weights.trigram === 0
+  const trigramGated = cfg.lanes.trigramWhenWeighted && profile.lanes.includes("trigram") && weights.trigram === 0
     ? { ...profile, lanes: profile.lanes.filter((lane) => lane !== "trigram") }
     : profile;
+
+  const scaleParams = kind === "synthetic" ? scaleQueryParams(qf, vocab, cfg) : null;
+
+  // The scale profile's second query-dependent gate (config's vectorSkipDfCeiling):
+  // when the query names something that exists in a handful of documents, the AND
+  // lane is already exact and the ~3.0 ms ANN search adds nothing. The client only
+  // decides that the query has that shape; whether the lane actually runs is
+  // decided in SQL against the AND lane's real row count, so a conjunction that
+  // came back empty still gets its vector lane.
+  const scale = cfg.lanes.scale;
+  const vectorGate = kind === "synthetic"
+    && trigramGated.lanes.includes("and")
+    && trigramGated.lanes.includes("vector")
+    && scaleParams?.minTermDf !== null
+    && scaleParams?.minTermDf !== undefined
+    && scaleParams.minTermDf <= scale.vectorSkipDfCeiling;
+  const effectiveProfile = vectorGate ? { ...trigramGated, vectorGate: true } : trigramGated;
+
   const plan = planStatement(tier, effectiveProfile, cfg);
   const resolved = resolveFilters(effectiveProfile, filters, qf, kind);
 
   const { contentTerms, orQuery, fragmentBar } = lexicalQueryParams(qf);
   const rareTokens = contentTerms.slice(0, 32);
   const titlePatterns = qf.quoted.slice(0, 16).map((q) => `%${q}%`);
-  const scaleParams = kind === "synthetic" ? scaleQueryParams(qf, vocab, cfg) : null;
 
   const values = plan.slots.map(({ key }) => {
     switch (key) {
