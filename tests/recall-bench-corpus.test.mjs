@@ -394,3 +394,74 @@ test("quality50k: anchor resampling is split-order-independent -- '--split test'
     "the test split's queries, including any anchor-resampled text, must be identical regardless of which splits were requested",
   );
 });
+
+// Re-targeting (DESIGN.md 4.3.1's repair loop, calibration decision 2026-08-24):
+// when re-verbalizing cannot converge a query, the repair loop points it at a
+// DIFFERENT memory instead. Pure function, no database and no embedding model.
+test("retargetQuery moves a query onto a different member of its own confusion set", async (t) => {
+  if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
+    t.skip("gen-corpus.mjs / config.mjs not landed yet");
+    return;
+  }
+  const { retargetQuery } = await import(pathToFileURL(genCorpusPath));
+  const { PEOPLE } = await import(pathToFileURL(join(benchRoot, "lib", "lexicon.mjs")));
+  const tier = { name: "smoke1k" };
+
+  const members = [
+    { id: 11, people: [PEOPLE[0].slug], places: ["somewhere"], occurred_at: "2019-05-04T10:00:00.000Z" },
+    { id: 12, people: [PEOPLE[1].slug], places: ["somewhere"], occurred_at: "2020-05-04T10:00:00.000Z" },
+    { id: 13, people: [PEOPLE[2].slug], places: ["somewhere"], occurred_at: "2021-05-04T10:00:00.000Z" },
+  ];
+  const index = { byId: new Map(members.map((m) => [m.id, m])) };
+
+  const swap = {
+    qid: "dev-000001", family: "entity_swap", text: `the kettle and the ladder with ${PEOPLE[0].name.toLowerCase()}`,
+    targets: [11], declared_filters: { date_from: null, date_to: null, people: [PEOPLE[0].slug] },
+    diagnostics: { distractor_ids: [12, 13], regen: { entitySwap: { mustInclude: ["kettle", "ladder"], swapPeople: true } } },
+  };
+  const moved = retargetQuery(swap, index, tier, 0);
+  assert.ok(moved, "entity_swap must have an honest re-target: another member of the same group");
+  assert.ok([12, 13].includes(moved.target), `re-target must land on a distractor, got ${moved.target}`);
+  const landed = index.byId.get(moved.target);
+  assert.match(moved.text, /^the kettle and the ladder with /, "the planted terms are preserved");
+  assert.ok(moved.text.endsWith(PEOPLE.find((p) => p.slug === landed.people[0]).name.toLowerCase()),
+    `the query must name the NEW member's entity, got "${moved.text}"`);
+  assert.deepEqual(moved.declaredFilters.people, [landed.people[0]],
+    "declared_filters.people must follow the new target, or the declared-filters ablation lies");
+
+  // Deterministic: the same attempt index re-runs to the same choice.
+  assert.deepEqual(retargetQuery(swap, index, tier, 0), moved);
+
+  const dated = {
+    qid: "dev-000002", family: "date_filter", text: "the kettle and the ladder in 2019",
+    targets: [11], declared_filters: { date_from: "2019-01-01T00:00:00.000Z", date_to: "2020-01-01T00:00:00.000Z", people: [] },
+    diagnostics: { distractor_ids: [12, 13], regen: { dateFilter: { mustInclude: ["kettle", "ladder"], month: 4, templateKind: "inYear" } } },
+  };
+  const movedDate = retargetQuery(dated, index, tier, 0);
+  assert.ok(movedDate, "date_filter must re-target onto a different year of the same recurring event");
+  const year = new Date(index.byId.get(movedDate.target).occurred_at).getUTCFullYear();
+  assert.equal(movedDate.text, `the kettle and the ladder in ${year}`);
+  const at = Date.parse(index.byId.get(movedDate.target).occurred_at);
+  assert.ok(at >= Date.parse(movedDate.declaredFilters.date_from) && at < Date.parse(movedDate.declaredFilters.date_to),
+    "the re-targeted range must still contain its own new target");
+});
+
+test("retargetQuery refuses the families that have no honest re-target", async (t) => {
+  if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
+    t.skip("gen-corpus.mjs / config.mjs not landed yet");
+    return;
+  }
+  const { retargetQuery } = await import(pathToFileURL(genCorpusPath));
+  const index = { byId: new Map() };
+  for (const family of ["near_dup", "rare_token", "typo_noisy", "partial_ref"]) {
+    const q = {
+      qid: "dev-000003", family, text: "whatever", targets: [11],
+      declared_filters: { date_from: null, date_to: null, people: [] },
+      diagnostics: { distractor_ids: [12], regen: null },
+    };
+    // near_dup's distinguisher sits in the TARGET's body, so re-targeting it
+    // would mean rewriting a memory that is already embedded and loaded.
+    assert.equal(retargetQuery(q, index, { name: "smoke1k" }, 0), null,
+      `${family} must not be re-targeted post-load`);
+  }
+});
