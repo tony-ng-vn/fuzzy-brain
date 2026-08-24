@@ -81,7 +81,7 @@ import { hashString } from './lib/rng.mjs';
 import { memoryVector, toHalfvecLiteral } from './lib/synth-vectors.mjs';
 import { writeJsonl } from './lib/jsonl.mjs';
 import { parseQueryFeatures, lexicalQueryParams } from './engine.mjs';
-import { buildMemoryIndex, reverbalizeQuery } from './gen-corpus.mjs';
+import { buildMemoryIndex, reverbalizeQuery, retargetQuery } from './gen-corpus.mjs';
 import { embedDocuments, embedQuery } from '../../scripts/lib/embeddings.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -513,16 +513,23 @@ export async function buildIndexes(client, tier, opts = {}) {
 // Measured on this corpus: ~2.4s -> ~0.44s per query (DESIGN.md section 7
 // rung 2's 30-minute verify-oracle budget; see the repo's oracle speedup
 // validation for the before/after rank comparison across every family).
-function buildOracleSql(tier, depth, trigramThreshold) {
+// `filtered` adds the ground-truth date range to EVERY lane, including the
+// exact-cosine one. See dateRangeOf below for when that is the honest thing to
+// measure.
+function buildOracleSql(tier, depth, trigramThreshold, filtered) {
   const table = `${tier.schema}.memories`;
   const withTrigram = tier.vector === 'real';
   const simExpr = `word_similarity($1::text, m.title || ' ' || m.body)`;
+  // Half-open [from, to), matching engine.mjs's `m.occurred_at <@ q.span` over
+  // rangeLiteral's `[lower,upper)`. A different inclusivity here would certify
+  // a filter the engine does not actually have.
+  const span = filtered ? `\n    and m.occurred_at <@ $7::tstzrange` : '';
   const trigramCte = withTrigram
     ? `,
 trg_lane as (
   select m.id, row_number() over (order by ${simExpr} desc, m.id) as rnk
   from ${table} m
-  where ${simExpr} >= ${trigramThreshold}
+  where ${simExpr} >= ${trigramThreshold}${span}
   order by ${simExpr} desc, m.id limit ${depth}
 )`
     : '';
@@ -530,14 +537,14 @@ trg_lane as (
   return `with and_lane as (
   select m.id, row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery('english', $1)) desc, m.id) as rnk
   from ${table} m
-  where m.fts @@ websearch_to_tsquery('english', $1)
+  where m.fts @@ websearch_to_tsquery('english', $1)${span}
   order by ts_rank_cd(m.fts, websearch_to_tsquery('english', $1)) desc, m.id limit ${depth}
 ),
 or_lane as (
   select m.id, row_number() over (order by ts_rank_cd(m.fts, to_tsquery('english', $2)) desc, m.id) as rnk
   from ${table} m
   where m.fts @@ to_tsquery('english', $2)
-    and (select count(*) from unnest($3::text[]) ql where m.fts @@ to_tsquery('english', ql)) >= $6
+    and (select count(*) from unnest($3::text[]) ql where m.fts @@ to_tsquery('english', ql)) >= $6${span}
   order by ts_rank_cd(m.fts, to_tsquery('english', $2)) desc, m.id limit ${depth}
 )${trigramCte}
 select
@@ -545,21 +552,47 @@ select
   (select rnk from or_lane  where id = $4) as or_rank,
   ${trigramSelect},
   (select count(*) + 1 from ${table} m
-     where m.embedding is not null
+     where m.embedding is not null${span}
        and (m.embedding <=> $5::vector) < (select embedding <=> $5::vector from ${table} where id = $4)) as vector_rank`;
 }
 
 const laneRankNumber = (v) => (v === null || v === undefined ? null : Number(v));
 
-export async function measureLaneRanks(client, tier, query, queryVector, cfg = config) {
+// The ground-truth date range a query's own family planted, or null.
+//
+// DESIGN.md 4.2 rule 1 lists "a resolvable date constraint" as a planted
+// signal on equal footing with a distinguishing token and a unique entity, and
+// 4.2 rule 2 asks whether SOME lane reaches the target -- so for a family that
+// plants a date, lane reachability has to be measured with the date applied.
+// The engine genuinely carries that mechanism end to end: a closed-world
+// parser (engine.mjs's DATE_PATTERNS, whose templates are enumerated by
+// tests/recall-bench-*.test.mjs) resolves the range out of the query text, and
+// the resolved range is pushed into every lane's own WHERE clause rather than
+// applied after fusion (section 6.4, section 6.1). Measuring the lanes without
+// it understates the corpus by scoring the engine's other lanes against a
+// question the engine answers with this one.
+//
+// Only families that actually plant a date get one: declared_filters carries a
+// closed range only where a builder set it, which today is date_filter alone.
+// Every other family's declared_filters.date_from/date_to are null and this
+// returns null, so nothing else is ever measured under a filter.
+function dateRangeOf(query) {
+  const f = query.declared_filters;
+  if (!f?.date_from || !f?.date_to) return null;
+  return `[${f.date_from},${f.date_to})`;
+}
+
+async function measureOneLaneSet(client, tier, query, queryVector, cfg, range) {
   const qf = parseQueryFeatures(query.text, EMPTY_ORACLE_VOCAB, cfg);
   const { raw, contentTerms, orQuery, fragmentBar } = lexicalQueryParams(qf);
   // An all-stopword query has no OR disjunction to build; to_tsquery('') is a
   // syntax error, so bind a lexeme nothing matches rather than crash.
   const orParam = orQuery ?? 'zzzznomatchzzzz';
+  const params = [raw, orParam, contentTerms, query.targets[0], vectorLiteral(queryVector), fragmentBar];
+  if (range) params.push(range);
   const { rows } = await client.query(
-    buildOracleSql(tier, tier.laneDepth, cfg.lanes.trigramThreshold),
-    [raw, orParam, contentTerms, query.targets[0], vectorLiteral(queryVector), fragmentBar],
+    buildOracleSql(tier, tier.laneDepth, cfg.lanes.trigramThreshold, Boolean(range)),
+    params,
   );
   const r = rows[0];
   return {
@@ -570,17 +603,29 @@ export async function measureLaneRanks(client, tier, query, queryVector, cfg = c
   };
 }
 
+// Returns the ranks the gate is scored on plus, for a date-constrained query,
+// the unfiltered ranks alongside -- so oracle.json can show both rather than
+// one silently replacing the other.
+export async function measureLaneRanks(client, tier, query, queryVector, cfg = config) {
+  const range = dateRangeOf(query);
+  const unfiltered = await measureOneLaneSet(client, tier, query, queryVector, cfg, null);
+  if (!range) return { laneRanks: unfiltered, laneRanksUnfiltered: null };
+  const filtered = await measureOneLaneSet(client, tier, query, queryVector, cfg, range);
+  return { laneRanks: filtered, laneRanksUnfiltered: unfiltered };
+}
+
 // parseQueryFeatures only reads the vocab for idf/entity features, none of
 // which affect the lane SQL above -- the oracle measures lanes, not weights.
 const EMPTY_ORACLE_VOCAB = { totalDocs: 1, df: new Map(), people: new Map(), places: new Map() };
 
-function summarizeOracle(records, tier, cfg) {
+function summarizeOracle(records, tier, cfg, pick = (rec) => rec.laneRanks) {
   const k = cfg.oracle.bestLaneRankAt;
   const depth = tier.laneDepth;
   const perFamily = {};
   let bestLaneHits = 0;
   let depthHits = 0;
-  for (const rec of records) {
+  for (const rec0 of records) {
+    const rec = { family: rec0.family, laneRanks: pick(rec0) };
     const ranks = Object.values(rec.laneRanks).filter((v) => v != null);
     const best = ranks.length ? Math.min(...ranks) : null;
     const hit = best != null && best <= k;
@@ -625,9 +670,19 @@ async function loadOracleCheckpoint(checkpointPath) {
   return map;
 }
 
-function queryTextHash(text) {
-  return createHash('sha256').update(text).digest('hex');
+// Identity of "the measurement this checkpoint line describes". Covers the
+// TARGET as well as the text: re-targeting (retargetQuery) changes which
+// memory the query is about, and a line matched on text alone would hand back
+// ranks measured against a different target -- silently corrupting the oracle,
+// which is the exact failure the checkpoint's text-hash rule exists to stop.
+function queryTextHash(text, targets = []) {
+  // JSON, not a delimiter-joined string: the identity has to be unambiguous
+  // between the two fields, and a separator character is one silent edit away
+  // from colliding with query text.
+  return createHash('sha256').update(JSON.stringify({ text, targets })).digest('hex');
 }
+
+const queryIdentity = (q) => queryTextHash(q.text, q.targets);
 
 // Bounded on purpose (config.oracle.repairRounds). A family that will not
 // converge is a finding to report, not something to loop on: repairing forever
@@ -654,24 +709,39 @@ export async function verifyOracle(client, tier, opts) {
   const checkpoint = await loadOracleCheckpoint(checkpointPath);
   const appendCheckpoint = checkpointPath
     ? (rec) => appendFile(checkpointPath, JSON.stringify({
-        qid: rec.qid, family: rec.family, textHash: queryTextHash(rec.entry.q.text), laneRanks: rec.laneRanks,
+        qid: rec.qid, family: rec.family, textHash: queryIdentity(rec.entry.q),
+        laneRanks: rec.laneRanks, laneRanksUnfiltered: rec.laneRanksUnfiltered,
       }) + '\n')
     : () => Promise.resolve();
+
+  const measure = async (rec) => {
+    const m = await measureLaneRanks(client, tier, rec.entry.q, vectorOf(rec.entry), cfg);
+    rec.laneRanks = m.laneRanks;
+    rec.laneRanksUnfiltered = m.laneRanksUnfiltered;
+    await appendCheckpoint(rec);
+  };
 
   let skipped = 0;
   const records = new Map();
   for (const entry of all) {
     const qid = entry.q.qid;
-    const textHash = queryTextHash(entry.q.text);
     const cached = checkpoint.get(qid);
-    if (cached && cached.textHash === textHash) {
-      records.set(qid, { qid, family: entry.q.family, entry, laneRanks: cached.laneRanks });
+    // A pre-filter checkpoint line has no laneRanksUnfiltered key at all, so a
+    // date-constrained query it covers is re-measured rather than scored on
+    // ranks taken without the filter this run applies.
+    const usable = cached && cached.textHash === queryIdentity(entry.q)
+      && (dateRangeOf(entry.q) === null || cached.laneRanksUnfiltered !== undefined);
+    if (usable) {
+      records.set(qid, {
+        qid, family: entry.q.family, entry,
+        laneRanks: cached.laneRanks, laneRanksUnfiltered: cached.laneRanksUnfiltered ?? null,
+      });
       skipped++;
       continue;
     }
-    const rec = { qid, family: entry.q.family, entry, laneRanks: await measureLaneRanks(client, tier, entry.q, vectorOf(entry), cfg) };
+    const rec = { qid, family: entry.q.family, entry };
+    await measure(rec);
     records.set(qid, rec);
-    await appendCheckpoint(rec);
   }
   if (skipped > 0) onLog(`  resumed from checkpoint: ${skipped}/${all.length} queries already verified`);
 
@@ -705,13 +775,74 @@ export async function verifyOracle(client, tier, opts) {
       const vec = await embedQuery(rec.entry.q.text);
       const base = offsetOf(rec.entry);
       for (let d = 0; d < dims; d++) vectors[base + d] = vec[d];
-      rec.laneRanks = await measureLaneRanks(client, tier, rec.entry.q, vectorOf(rec.entry), cfg);
-      await appendCheckpoint(rec);
+      await measure(rec);
     }
 
     const stillFailing = rewritten.filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
     rounds.push({ round, attempted: failing.length, rewritten: rewritten.length, stillFailing: stillFailing.length });
     onLog(`  repair round ${round}: ${failing.length} failing, ${rewritten.length} re-verbalized, ${stillFailing.length} still failing`);
+  }
+
+  // Escalation: re-verbalizing cannot save a query whose TARGET is
+  // unreachable however it is worded, so what is still failing gets pointed at
+  // a different memory (see retargetQuery). Bounded and deterministic.
+  const retargetAttempts = opts.retargetAttempts ?? cfg.oracle.retargetAttempts;
+  const retargeted = [];
+  if (retargetAttempts > 0) {
+    // paraphrase_nolex has no confusion set to move inside, so its candidate
+    // pool is other paraphrase targets the oracle ALREADY reaches. Built once,
+    // per split (a dev query re-targeting onto a test target would couple the
+    // two splits for no gain), and each memory is claimed at most once so
+    // several rewritten queries do not pile onto one memory.
+    const pool = { dev: [], test: [] };
+    for (const rec of records.values()) {
+      if (rec.family !== 'paraphrase_nolex') continue;
+      const b = bestOf(rec);
+      if (b == null || b > k) continue;
+      const frame = rec.entry.q.diagnostics?.regen?.frame;
+      if (frame) pool[rec.entry.block].push({ memoryId: rec.entry.q.targets[0], frame });
+    }
+    const claimed = new Set();
+
+    const failing = [...records.values()].filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
+    for (const rec of failing) {
+      const q = rec.entry.q;
+      for (let attempt = 0; attempt < retargetAttempts; attempt++) {
+        const available = pool[rec.entry.block].filter((c) => !claimed.has(c.memoryId));
+        const next = retargetQuery(q, opts.index, tier, attempt, { paraphrasePool: available });
+        if (!next) break;
+        const previous = { text: q.text, targets: [...q.targets], declaredFilters: q.declared_filters };
+        q.text = next.text;
+        q.targets = [next.target];
+        if (next.declaredFilters) q.declared_filters = next.declaredFilters;
+        if (next.frame) q.diagnostics.regen = { ...q.diagnostics.regen, frame: next.frame };
+        // The old target is still a real member of the confusion set this
+        // query is about, so it becomes a distractor -- otherwise the
+        // declared-filters ablation and the crowded_by_dups taxonomy bucket
+        // would both be reading a distractor list that no longer describes
+        // the query.
+        if (q.family !== 'paraphrase_nolex') {
+          q.diagnostics.distractor_ids = [
+            ...(q.diagnostics.distractor_ids ?? []).filter((id) => id !== next.target),
+            ...previous.targets,
+          ];
+        }
+        q.diagnostics.retarget_attempts = attempt + 1;
+
+        const vec = await embedQuery(q.text);
+        const base = offsetOf(rec.entry);
+        for (let d = 0; d < dims; d++) vectors[base + d] = vec[d];
+        await measure(rec);
+
+        const b = bestOf(rec);
+        if (b != null && b <= k) {
+          if (q.family === 'paraphrase_nolex') claimed.add(next.target);
+          retargeted.push(rec.qid);
+          break;
+        }
+      }
+    }
+    onLog(`  re-target phase: ${failing.length} still failing after re-verbalize, ${retargeted.length} rescued by re-targeting`);
   }
 
   const leftover = [...records.values()].filter((rec) => { const b = bestOf(rec); return b == null || b > k; });
@@ -733,9 +864,15 @@ export async function verifyOracle(client, tier, opts) {
   const records0 = [...records.values()];
   return {
     summary: summarizeOracle(records0, tier, cfg),
+    // The same queries scored WITHOUT the date filter, so oracle.json can show
+    // what the range mechanism is actually worth instead of asserting it.
+    summaryUnfiltered: summarizeOracle(records0, tier, cfg, (rec) => rec.laneRanksUnfiltered ?? rec.laneRanks),
     rounds,
     nonConverging,
-    repairedQids: records0.filter((r) => r.entry.q.diagnostics.repair_round > 0).map((r) => r.qid),
+    retargetedQids: retargeted,
+    repairedQids: records0
+      .filter((r) => r.entry.q.diagnostics.repair_round > 0 || (r.entry.q.diagnostics.retarget_attempts ?? 0) > 0)
+      .map((r) => r.qid),
   };
 }
 
@@ -833,7 +970,15 @@ async function runVerifyOracle(tier, args) {
       overall: result.summary.overall,
       perFamily: result.summary.perFamily,
       gate: { threshold: config.oracle.gate, passed: result.summary.overall.bestLaneRankAt10 >= config.oracle.gate, provisional: false },
-      repair: { rounds: result.rounds, repaired: result.repairedQids.length, nonConverging: result.nonConverging },
+      repair: {
+        rounds: result.rounds,
+        repaired: result.repairedQids.length,
+        retargeted: result.retargetedQids.length,
+        nonConverging: result.nonConverging,
+      },
+      // Same lanes, same targets, date filter NOT applied -- the transparency
+      // half of the oracle-definition fix (evaluator calibration decision 1).
+      unfiltered: { overall: result.summaryUnfiltered.overall, perFamily: result.summaryUnfiltered.perFamily },
       // Kept alongside so the two numbers can be compared rather than one
       // silently replacing the other.
       provisionalOffline: provisional ? { overall: provisional.overall, perFamily: provisional.perFamily } : null,
