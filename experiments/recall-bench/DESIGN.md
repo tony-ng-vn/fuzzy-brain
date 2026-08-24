@@ -1244,6 +1244,100 @@ The 50K IVFFlat-versus-HNSW measurement above stands as a measurement; it is sim
 The 6.7 cost work is index-independent -- the stored tsvector column and the date-index change were both proved by id-list diffs of the pipeline against itself.
 And the throughput gate is untouched: the scale tier returning to HNSW does not lower the 2,400 QPS bar, it only means the bar is now being measured against a system that retrieves.
 
+### 7.2 RESULT (2026-08-24): HNSW does not rescue the scale tier's vector lane, and this is why
+
+7.1 returned the scale tier to HNSW so that decision 3 -- "sweep `ef_search`, pick the smallest whose whole-pipeline recall clears 0.90" -- could be made against an index that actually retrieves.
+It was built, it was swept, and **decision 3 has no solution.**
+This section records the frontier, the mechanism, and what the mechanism means for the 10M rung, because the mechanism turns out to matter far more than the frontier.
+
+**The build, against 7.1's two constraints.**
+Both held, comfortably.
+
+| | Measured at 1M |
+| --- | --- |
+| Graph memory | 1,227 bytes/tuple (pgvector reported the graph outgrowing a 128 MiB budget after 109,390 tuples) |
+| `maintenance_work_mem` requested | 1,521 MB (sized from that constant, +30%) |
+| Spill NOTICE during the build | **none** -- constraint (i) held |
+| Build wall clock, m = 16, `ef_construction` = 200, 8 processes | **6 min 43 s** |
+| Index size | 794 MB (against IVFFlat's 525 MB) |
+| Schema total | 1,831 MB (977 MB heap, 854 MB indexes) |
+
+Note what the build time does to the *original* gate on its own terms: the 90-minute gate fired on a projection of **186 minutes at 10M**, which came from an extrapolated 1M build of ~18.6 minutes.
+The 1M build measures 6.7 minutes.
+So the gate that eliminated HNSW fired against a number that does not reproduce -- the revision in 7.1 was justified by the wrong-category argument, and it turns out the arithmetic was stale too.
+
+**The unfiltered frontier.** Vector lane alone, depth 30, 200 drifted test queries, `hnsw.iterative_scan = off` (reproduce: `ARM=unfiltered node scripts/hnsw-ef-sweep.mjs`).
+
+| Setting | hit@1 | hit@30 | median ms |
+| --- | --- | --- | --- |
+| exact (index disabled) | 0.955 | **0.995** | 389.38 |
+| `ef_search` 40 (what the tier pinned) | 0.085 | **0.085** | 2.09 |
+| `ef_search` 64 | 0.120 | 0.120 | 2.69 |
+| `ef_search` 100 | 0.155 | 0.155 | 3.91 |
+| `ef_search` 200 | 0.230 | 0.230 | 6.78 |
+| `ef_search` 400 | 0.335 | 0.335 | 11.93 |
+
+Set beside 6.8's IVFFlat table at matched latency, **the index swap buys essentially nothing**: at ~3.2-3.9 ms IVFFlat scores 0.150 and HNSW 0.155; at ~11-12 ms IVFFlat scores 0.267 and HNSW 0.335.
+`hit@1` and `hit@30` are equal at every single setting, which is the same tell 6.8 recorded -- the search either reaches the target, in which case it ranks first exactly, or never sees it at all.
+
+**The filtered frontier is worse, and it exposes a measurement error in 6.6.**
+Same method, 200 `date_filter` queries, the real `daterange` containment the lane runs (reproduce: `ARM=filtered node scripts/hnsw-ef-sweep.mjs`).
+
+| `ef_search` | iterative | `max_scan_tuples` | rows of 30 | **hit@30** | median ms |
+| --- | --- | --- | --- | --- | --- |
+| 40 | `relaxed_order` | 2,000 (what the tier pinned) | 25.2 | **0.160** | 3.88 |
+| 40 | `relaxed_order` | 20,000 | 26.5 | 0.410 | 18.16 |
+| 40 | `relaxed_order` | 100,000 | 28.3 | 0.540 | 26.07 |
+| 100 | `relaxed_order` | 2,000 | 25.8 | 0.190 | 4.54 |
+| 200 | `relaxed_order` | 2,000 | 26.0 | 0.245 | 6.96 |
+| 200 | `relaxed_order` | 20,000 | 26.6 | 0.450 | 21.81 |
+| 40 | `off` | 20,000 | 2.7 | 0.080 | 1.84 |
+
+**Rows returned barely moves across the entire grid -- 25 to 28 of 30 -- while target hit@30 runs 0.080 to 0.545.**
+Section 6.6 chose `filteredMaxScanTuples = 2,000` on the evidence that it "still returned the full 30 at roughly a third of the 5,000 cost".
+It does return the full 30. The 30 hold the target 16% of the time.
+That is deviation 2 doing its damage one level down: with the target's own embedding as the query, any 30 rows the lane returned contained the answer, so row count looked like a proxy for recall and is not one.
+The axis that actually moves recall is `max_scan_tuples`, not `ef_search`, and every point on the frontier is unaffordable, unfindable, or both -- the best is 0.545 for 27 ms on 15% of the mix.
+
+**The mechanism, measured rather than reasoned.**
+The obvious story is that the synthetic corpus's 20,000 clusters give the index weak routing signal.
+That story is wrong, and the corpus geometry says so directly.
+
+| Measured on the loaded corpus | Cosine |
+| --- | --- |
+| query to its own target | 0.393 |
+| query to rank 2 of the exact top 30 | 0.297 |
+| query to rank 30 of the exact top 30 | 0.248 |
+| query to a **same-cluster sibling** | **0.185** |
+| query to a different cluster | -0.040 |
+| sibling to sibling | 0.265 |
+
+And the diagnostic that ties it together: **the exact top-30 contains 1.2 same-cluster rows out of 30.**
+
+So the "topic clusters" do not exist in the vector space at all.
+`jitter = 0.10` at 256 dims perturbs by `0.10 * sqrt(256) = 1.6` against a unit centroid, which is large enough that a sibling pair (0.265) is indistinguishable from the best of a million unrelated rows (~0.30).
+What the corpus actually contains is a **noise floor** -- every one of 1M vectors sitting at cosine ~0.25-0.30 from the query by chance -- with the target as a lone spike 0.096 above it, placed there by construction because the query was drifted off the target.
+
+That is the hardest possible case for any approximate nearest-neighbour method, and it explains both failures at once:
+
+- **IVFFlat** partitions by k-means over vectors with no cluster structure to find, so its centroids carry no routing information. 6.8 measured this as "more lists buys nothing at equal probes".
+- **HNSW** navigates by following edges toward higher similarity. The target's own graph neighbours are the rows nearest *it*, which are noise rows, not rows near the query -- the siblings that were supposed to be its neighbourhood sit at 0.185, **below the top-30 floor**. There is no gradient from the query's region to the target because the target is a spike, not a mode. Greedy descent has nothing to descend.
+
+Different mechanisms, identical symptom, which is exactly why "switch the index" was never going to work and why the frontier climbs only as fast as brute force does: `ef_search` 40 to 400 is a 10x scan for 4x the recall, and reaching 0.90 needs a scan fraction that is not an index at all.
+
+**This retires 6.8's open question in the sharper direction.**
+6.8 asked whether the 15% vector recall was "IVFFlat's fault or the synthetic geometry's" and said the question "should be settled before any 10M build".
+It is settled: **the geometry's.**
+The repo already holds the control that proves the pathology is synthetic-only -- at 50K with real 768-dim embeddings, HNSW scores naive Recall@10 **0.698** and fixedRrf **0.897** on the same pipeline.
+Real embeddings put a query near a *neighbourhood* of related documents. This generator puts it near exactly one point and nothing else.
+
+**What this does and does not invalidate.**
+
+- **Throughput measurements at the synthetic tiers stand.** An ANN probe costs what it costs whether or not it finds anything, and the 6.7 cost work was proved by id-list diffs of the pipeline against itself.
+- **Recall cannot be measured at the synthetic tiers at all.** Not "measures low" -- the number is a property of `lib/synth-vectors.mjs`'s jitter and drift constants, not of the retrieval system.
+- **Decision 3 has no answer**, because no `ef_search` reaches 0.90 and the reason is not tuning.
+- The fix is corpus geometry, not hardware and not the index: fewer and tighter clusters (a jitter small enough that siblings out-rank the noise floor), or a drift small enough that the query lands in the target's neighbourhood rather than beside it. That is a Track 2 change to the generator, and it is the prerequisite for any recall claim at 1M or 10M.
+
 #### What the IVFFlat fallback costs in recall, measured at 50K (2026-08-24)
 
 The HNSW build blew the 90-minute gate, so the scale tier runs IVFFlat, and the gate above owes a number for what that costs.
