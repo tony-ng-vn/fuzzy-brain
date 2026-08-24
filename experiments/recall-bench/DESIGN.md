@@ -959,6 +959,7 @@ The HNSW build was projected at 186 minutes for 10M against the 90-minute gate, 
 **The per-family cost profile.**
 One connection, sequential, no load generator, striding the query files so every family is represented in its real proportion.
 Measuring this way is deliberate: it isolates per-query service demand from anything the load harness does to it, and it is the only measurement on this machine that a suspend delays rather than corrupts.
+Means, taken with nothing else running on the box; the per-lane table below uses medians, and the note after it explains why that distinction changed a headline once.
 
 | Family | Share of mix | Total ms | of which SQL | of which rerank | Lanes returning rows |
 | --- | --- | --- | --- | --- | --- |
@@ -993,6 +994,20 @@ Same queries run under lane subsets, medians so a suspend inflates one sample in
 | date_filter | 11.61 ms | 9.60 ms | 3.24 ms | 8.70 ms | 2.01 ms | 6.36 ms |
 | entity_swap | 7.42 ms | 6.98 ms | 3.01 ms | 6.87 ms | 0.44 ms | 3.97 ms |
 | paraphrase_nolex | 4.96 ms | 3.40 ms | 3.04 ms | 3.37 ms | 1.56 ms | 0.36 ms |
+
+Re-measured after `perf(recall-bench): stem the OR fragment bar once per query` landed mid-session, same method:
+
+| Family | and+or+vector | and+vector | vector only | and only | marginal OR | marginal AND |
+| --- | --- | --- | --- | --- | --- | --- |
+| date_filter | 10.30 ms | 9.78 ms | 3.26 ms | 8.96 ms | 0.52 ms | 6.52 ms |
+| paraphrase_nolex | 5.46 ms | 3.38 ms | 3.12 ms | 3.58 ms | 2.08 ms | 0.26 ms |
+
+The OR lane got cheaper on `date_filter` (2.01 -> 0.52 ms) and the two numbers this section rests on did not move: the vector lane holds at ~3.26 ms and the date-constrained AND lane at 6.52 ms marginal.
+
+**A note on method, because it changed a headline once.**
+These are medians over per-query timings, not means.
+Anything else sharing the machine lands as a handful of large samples, and a mean turns that into a wrong number: the same per-family profile measured 7.23 ms mean on an idle box and 16.11 ms with the corpus tests running alongside, while the medians barely moved.
+Every timing in this section was taken sequentially on one connection for the same reason.
 
 **This overturns the assumption section 6.6 left standing.**
 `date_filter` was expensive because of its filtered vector lane, and the fix for that was iterative scan.
