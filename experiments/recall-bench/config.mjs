@@ -309,6 +309,17 @@ export const config = {
       // then measured to still return the full 30 at roughly a third of the
       // 5,000 cost, and the load report's per-lane row count is what keeps that
       // claim honest across the whole workload rather than one query.
+      // Now BELOW the unfiltered efSearch (48), which inverts the convention
+      // lanes.filteredEfSearch documents for the quality tier ("a selective
+      // filter must not starve the lane, so the filtered path is never the
+      // weaker one"). The scale tier is exempt and the exemption is measured:
+      // this lane runs hnsw.iterative_scan, which keeps widening the search
+      // until enough rows pass the filter, so what bounds it is
+      // filteredMaxScanTuples and not ef_search. 7.2 measured that directly --
+      // across the whole filtered grid, moving ef_search 40 -> 200 moved
+      // date_filter hit@30 by 0.085 while moving max_scan_tuples 2,000 ->
+      // 100,000 moved it by 0.380. Raising this number would cost latency and
+      // buy almost nothing; the knob that matters is the one below it.
       filteredEfSearch: 40,
       filteredIterativeScan: 'relaxed_order',
       // Re-swept on the corrected geometry at ef_search 48, because 7.2 flagged

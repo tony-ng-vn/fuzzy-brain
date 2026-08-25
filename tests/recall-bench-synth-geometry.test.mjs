@@ -57,6 +57,21 @@ test('the loader stores exactly the vector queryVector drifts off', () => {
   }
 });
 
+// Nothing else in this file can see a norm: cosineSimilarity divides by both
+// magnitudes, so every other assertion here passes whether or not the vectors
+// are on the unit sphere. The generator's contract says they are, halfvec
+// stores what it is given, and an un-normalized corpus would quietly change
+// what `<=>` means -- so it gets its own check.
+test('generated vectors are unit-normalized', () => {
+  const norm = (v) => Math.sqrt(v.reduce((acc, x) => acc + x * x, 0));
+  for (const [id, clusterId] of [[1, 0], [4_242, 137], [999_999, 19_999]]) {
+    const m = memoryVector(id, clusterId, tier.dims, DEFAULT_MEMORY_JITTER);
+    const q = queryVector(id, clusterId, tier.dims, DEFAULT_QUERY_DRIFT);
+    assert.ok(Math.abs(norm(m) - 1) < 1e-5, `memoryVector(${id}) has norm ${norm(m)}`);
+    assert.ok(Math.abs(norm(q) - 1) < 1e-5, `queryVector(${id}) has norm ${norm(q)}`);
+  }
+});
+
 // z-score of the (1 - k/N) quantile of a standard normal, by bisection on the
 // erf-free tail. Only needs three digits: it feeds a floor estimate, not a gate.
 function normalQuantile(p) {
