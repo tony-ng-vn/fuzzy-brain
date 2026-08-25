@@ -51,6 +51,7 @@
 // matching never depends on this stemmer at all (see deviation 1).
 
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 
 import { config as defaultConfig } from "./config.mjs";
 import { shouldIssueSessionSql } from "./lib/safety.mjs";
@@ -447,8 +448,21 @@ function profileSignature(profile) {
   return `${lanes}_w${profile.weighting}_f${profile.filters ? 1 : 0}_r${profile.rerank ? 1 : 0}${profile.vectorGate ? "_vg" : ""}`;
 }
 
+// Postgres identifiers truncate at NAMEDATALEN - 1 = 63 bytes, silently, which
+// turns a name long enough to be cut into exactly the collision profileSignature
+// above exists to prevent. Measured 2026-08-25: a scratch schema named
+// bench_bs_bulkspill1m put the gated and ungated variants of one profile on the
+// same truncated name and the window produced 2,655 "You supplied ... (67)"
+// errors. Past the limit the tail becomes a hash of the whole name, so two
+// statements that differ anywhere still differ here; under it the name is
+// untouched, so every measurement taken under the existing names still lines up.
+const PG_IDENTIFIER_LIMIT = 63;
+
 function statementName(tier, profile) {
-  return `retrieve_${tier.schema}_${profileSignature(profile)}`;
+  const full = `retrieve_${tier.schema}_${profileSignature(profile)}`;
+  if (Buffer.byteLength(full, 'utf8') <= PG_IDENTIFIER_LIMIT) return full;
+  const digest = createHash('sha256').update(full).digest('hex').slice(0, 12);
+  return `${full.slice(0, PG_IDENTIFIER_LIMIT - digest.length - 1)}_${digest}`;
 }
 
 function laneDepthCfg(tier, cfg) {
