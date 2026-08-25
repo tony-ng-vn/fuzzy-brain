@@ -446,7 +446,20 @@ export const config = {
   },
 
   rerank: {
-    topK: 50,                      // candidates handed to the reranker
+    // Was 50. Cut to 25 on the evidence that the extra 25 have never once
+    // changed an answer: across 45 measurement windows on the re-embedded 1M
+    // corpus, the deepest fused rank that ever survived into a final top-10 is
+    // 21, and the count of survivors from past rank 25 is 0.
+    //
+    // DESIGN.md 7.2 priced this cut as "provably free and unnecessary" and put
+    // the saving at 0.06-0.10 ms. Free it is; unnecessary it is not, and the
+    // saving was understated. Measured as an INTERLEAVED A/B rather than two
+    // sequential arms -- this machine drifts by 0.51 ms of p50 over half an
+    // hour of sustained load, which is three times the effect, and a
+    // sequential comparison reported every cut as a slowdown -- the paired
+    // delta is -0.179 ms of p50, negative in 4 of 4 pairs, with mix-weighted
+    // R@10 unchanged at 0.915.
+    topK: 25,                      // candidates handed to the reranker
     // Fitted on the dev split by coordinate descent (fit-rerank.mjs), per
     // section 6.5. What the fit found is that `fused` carries this stage: the
     // RRF order already places the target in the top 10 for 98.9% of dev
