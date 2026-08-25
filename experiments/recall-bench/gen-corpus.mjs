@@ -932,7 +932,17 @@ function planCacheKey(tier) {
   });
 }
 
-function buildPlan(tier) {
+// `fillTo` exists so a caller can stop before the filler loop and get the
+// STRUCTURED half of the plan on its own -- every memory some query points at,
+// and nothing else. Measured 2026-08-25: the full plan costs ~7.1 KB of RSS per
+// memory (linear over 100k/200k/400k), so materializing all 10M costs ~71 GB on
+// a 24 GB machine. The structured half at the full10m tier is 25,735 memories,
+// which is ~200 MB. Filler is pure content with no query pointing at it, and
+// lib/rng.mjs's fork() is keyed by label rather than draw order precisely so it
+// can be generated "lazily, one at a time, as the 10M tier requires" -- which
+// is what scripts/stream-corpus.mjs does with it. Default is unchanged, so
+// every existing caller plans exactly the corpus it planned before.
+function buildPlan(tier, { fillTo = tier.memories } = {}) {
   const rootRng = makeRng(`${tier.seedMemories ?? config.corpus.seedMemories}::${tier.name ?? 'adhoc'}::n:${tier.memories}`);
   const memoryPlans = [];
   const cases = [];
@@ -1024,7 +1034,7 @@ function buildPlan(tier) {
 
   const fillerRng = rootRng.fork('filler');
   let fillerIndex = 0;
-  while (memoryPlans.length < tier.memories) {
+  while (memoryPlans.length < fillTo) {
     const r = fillerRng.fork(`memory:${fillerIndex}`);
     const topic = topicById(r.int(0, TOPICS.length - 1));
     helpers.addMemory(buildStandaloneMemorySpec(r, topic, tier, {}, helpers));
@@ -1384,6 +1394,38 @@ function getPlan(tier) {
   const key = planCacheKey(tier);
   if (!planCache.has(key)) planCache.set(key, buildPlan(tier));
   return planCache.get(key);
+}
+
+// The structured half of a tier's plan: every memory a query points at, the
+// dev/test cases, the multi-target cases, and the repair pass over them --
+// with the filler left ungenerated. See buildPlan's `fillTo` comment for why
+// this exists; scripts/stream-corpus.mjs is the caller.
+//
+// Two consequences the caller has to own, stated here rather than discovered:
+// the returned ids run 1..S over the structured set only, so a streaming
+// composer has to remap them into the real id space; and repairAnchors
+// certified those queries against the structured corpus alone, so a lexical
+// ceiling it measured is an upper bound once filler joins the table.
+export function structuredPlan(tier) {
+  const key = `structured::${planCacheKey(tier)}`;
+  if (!planCache.has(key)) planCache.set(key, buildPlan(tier, { fillTo: 0 }));
+  return planCache.get(key);
+}
+
+// The filler builder, exported for the same streaming path. The stream it
+// forks off mirrors buildPlan's own filler loop exactly (root -> 'filler' ->
+// 'memory:<i>'), so a streamed filler memory is byte-for-byte the content the
+// monolithic plan would have produced for that filler index. Returned as a
+// factory rather than a per-call function because the root stream is derived
+// from a string hash and 10M rows should pay for that once.
+export function fillerMemoryFactory(tier) {
+  const rootRng = makeRng(`${tier.seedMemories ?? config.corpus.seedMemories}::${tier.name ?? 'adhoc'}::n:${tier.memories}`);
+  const fillerRng = rootRng.fork('filler');
+  return function fillerMemorySpec(fillerIndex) {
+    const r = fillerRng.fork(`memory:${fillerIndex}`);
+    const topic = topicById(r.int(0, TOPICS.length - 1));
+    return buildStandaloneMemorySpec(r, topic, tier, {});
+  };
 }
 
 // Generation-time retry statistics (evaluator's report requirement): how many
@@ -1892,9 +1934,11 @@ export function retargetQuery(q, index, tier, attempt, opts = {}) {
   return null;
 }
 
-export function generateQueries(tier, split, index) {
+// `plan` is an override, defaulting to the tier's full plan. The streaming
+// composer (scripts/stream-corpus.mjs) passes structuredPlan(tier) so it can
+// mint the same queries without materializing 10M filler memories first.
+export function generateQueries(tier, split, index, plan = getPlan(tier)) {
   if (split !== 'dev' && split !== 'test') throw new Error(`generateQueries: split must be "dev" or "test", got "${split}"`);
-  const plan = getPlan(tier);
   const splitCases = plan.cases.filter((c) => c.split === split);
   // getPlan(tier) already ran repairAnchors (re-verbalize, then anchor
   // resampling for partial_ref / typo_noisy) over dev+test together, and it
@@ -1918,8 +1962,7 @@ export function generateQueries(tier, split, index) {
 // Exported separately since a 2-3-target query needs every target
 // individually reachable, which the single-target certifyQuery signature
 // cannot express.
-export function generateMultiTargetQueries(tier, index) {
-  const plan = getPlan(tier);
+export function generateMultiTargetQueries(tier, index, plan = getPlan(tier)) {
   const queries = [];
   const failures = [];
   plan.multiCases.forEach((c, i) => {
