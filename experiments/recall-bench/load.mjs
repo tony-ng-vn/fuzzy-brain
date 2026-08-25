@@ -29,13 +29,13 @@
 //    already carry those fields directly, so this stays correct regardless
 //    of which shape gen-corpus.mjs's synthetic-tier generator ends up using.
 // 3. memoryVector()'s `jitter` parameter has no config.mjs field (the frozen
-//    3.4 listing does not add one, and config.mjs's own header says it is
-//    additive-only for genuinely missing tunables -- this is a call-site
-//    constant, not a tunable other modules share). SYNTH_MEMORY_JITTER below
-//    is a load.mjs-local default. queryVector() is not called from this
-//    file: bench-load.mjs's own header states it fetches each query target's
-//    stored `embedding` straight from the database instead, so there is no
-//    load.mjs call site that needs a drift constant.
+//    3.4 listing does not add one). It is NOT a call-site constant either,
+//    which is what an earlier draft of this file got wrong: a load.mjs-local
+//    SYNTH_MEMORY_JITTER = 0.12 sat alongside synth-vectors'
+//    DEFAULT_MEMORY_JITTER = 0.10, and since queryVector() drifts off
+//    memoryVector(..., DEFAULT_MEMORY_JITTER), every scale-tier query aimed
+//    at a vector that was never stored. The jitter is a shared contract
+//    between the two modules, so it is imported from the one that owns it.
 // 4. lib/jsonl.mjs's exact read/write signature is not frozen in section 3.6
 //    (only its responsibility is named in section 2), and the two sibling
 //    bench-*.mjs files already disagree about depending on it (bench-recall
@@ -78,7 +78,7 @@ import os from 'node:os';
 import { config, resolveTier } from './config.mjs';
 import { assertBenchTarget, benchClient } from './lib/safety.mjs';
 import { hashString } from './lib/rng.mjs';
-import { memoryVector, toHalfvecLiteral } from './lib/synth-vectors.mjs';
+import { memoryVector, toHalfvecLiteral, DEFAULT_MEMORY_JITTER } from './lib/synth-vectors.mjs';
 import { writeJsonl } from './lib/jsonl.mjs';
 import { buildTermStats } from './lib/term-stats.mjs';
 import { parseQueryFeatures, lexicalQueryParams } from './engine.mjs';
@@ -91,11 +91,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // ("event|person|preference|quote|place|project|note"); fixed order gives a
 // stable kind_id for the synthetic-tier columns (deviation 2 above).
 const KIND_ORDER = ['event', 'person', 'preference', 'quote', 'place', 'project', 'note'];
-
-// Call-site default for lib/synth-vectors.mjs's memoryVector jitter param
-// (deviation 3 above): enough spread that memories sharing a cluster are not
-// bit-identical, small enough that the cluster centroid still dominates.
-const SYNTH_MEMORY_JITTER = 0.12;
 
 // smallint ceiling for the deterministic person_id/place_id fallback
 // (deviation 2): keeps the hashed id inside a 2-byte column with headroom.
@@ -222,7 +217,7 @@ function columnsFor(tier) {
   return tier.vector === 'synthetic' ? SYNTHETIC_COLUMNS : REAL_COLUMNS;
 }
 
-function encodeField(col, record, tier) {
+export function encodeField(col, record, tier) {
   switch (col) {
     case 'id': return record.id;
     case 'kind': return record.kind;
@@ -246,7 +241,10 @@ function encodeField(col, record, tier) {
       if (record.embedding) {
         return typeof record.embedding === 'string' ? record.embedding : toHalfvecLiteral(record.embedding);
       }
-      return toHalfvecLiteral(memoryVector(record.id, record.cluster_id, tier.dims, SYNTH_MEMORY_JITTER));
+      // DEFAULT_MEMORY_JITTER, not a local constant: queryVector() drifts off
+      // memoryVector(..., DEFAULT_MEMORY_JITTER), so any other value here
+      // stores a vector no query is ever aimed at.
+      return toHalfvecLiteral(memoryVector(record.id, record.cluster_id, tier.dims, DEFAULT_MEMORY_JITTER));
     }
     default:
       throw new Error(`load.mjs: unknown memories column "${col}"`);
