@@ -1400,6 +1400,11 @@ Real embeddings put a query near a *neighbourhood* of related documents. This ge
 - **Decision 3 has no answer**, because no `ef_search` reaches 0.90 and the reason is not tuning.
 - The fix is corpus geometry, not hardware and not the index: fewer and tighter clusters (a jitter small enough that siblings out-rank the noise floor), or a drift small enough that the query lands in the target's neighbourhood rather than beside it. That is a Track 2 change to the generator, and it is the prerequisite for any recall claim at 1M or 10M.
 
+> **SUPERSEDED 2026-08-25 by 7.3 and 7.4.** The diagnosis above is right and the prescribed fix was carried out: jitter 0.10 -> 0.04, drift 0.15 -> 0.08, derived from the real tier's geometry rather than guessed.
+> Every measurement in 7.2 stands as a measurement of the corpus it was taken on, and that corpus no longer exists -- `bench_r1m` was re-embedded on 2026-08-25.
+> **Decision 3 now has an answer** (`ef_search` 44 clears 0.90, 48 is pinned at 0.916), and whole-pipeline recall went 0.669 -> 0.917 at essentially unchanged throughput.
+> Two claims in 7.2 are corrected rather than merely superseded, and 7.3 carries both: 6.8's "cos(stored, rebuilt) = 0.997, so the reconstruction is faithful" was the signature of a loader bug, not a faithfulness check; and `cluster_id` turns out to label nothing in the REAL tier's vector space either, which retires the same-cluster-fraction statistic this section leans on.
+
 ### 7.3 THE GEOMETRY FIX (2026-08-25): what the real tier actually looks like, and the constants derived from it
 
 7.2 ends by naming the fix as a Track 2 change to the generator and states the constraint as "a same-cluster sibling must sit above the top-30 noise floor".
@@ -2025,6 +2030,11 @@ Footprint was never the binding constraint and still is not.
 ---
 
 #### The 10M go/no-go, decided 2026-08-24 after the HNSW rebuild: **NO-GO, on validity rather than on resources**
+
+> **RE-DECIDED 2026-08-25 in 7.4: still NO-GO, but on resources rather than on validity -- the exact inverse of this section's title.**
+> The validity blocker below was removed by the geometry fix (7.3): whole-pipeline recall at 1M is now 0.917 against a 0.990 exact ceiling, so a 10M run would measure the retrieval system rather than the generator.
+> What blocks it now is measurable and answerable by hardware: the build needs 15.9 GB of `maintenance_work_mem` on a 24 GB machine sitting at 65 MB of free pages with 8.06 GB already in swap, and rung 3's throughput gate fails independently at 1,786 QPS against 2,400.
+> The constraint this section states at the end -- "a same-cluster sibling must sit above the top-30 noise floor" -- was implemented, with one correction: the floor to calibrate against is the **10M** one (0.283), not the 1M one (0.251), or the corpus fails again at the tier the constants exist to serve.
 
 The three resource gates were the reason this decision kept getting deferred, so they are answered first, with measurements rather than projections.
 All three pass, or pass with one caveat.
