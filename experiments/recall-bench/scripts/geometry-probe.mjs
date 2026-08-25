@@ -112,6 +112,18 @@ console.log(`# ${queries.length} ${SPLIT}-split queries, exact top-${TOPK} by co
 await c.query('set enable_indexscan = off');
 await c.query('set enable_bitmapscan = off');
 
+// Every exact top-k here is a full scan of the tier, so at 10M each one reads
+// ~10 GB and computes 10M distances. infra/postgresql.bench.conf pins
+// max_parallel_workers_per_gather to 0 for the load-test tiers, which is right
+// for a latency measurement and wrong for this: parallelism changes how long a
+// cosine takes, never what it comes out at. Set per session, exactly as
+// load.mjs --verify-oracle does for the same reason.
+await c.query('SET max_parallel_workers_per_gather = 6');
+await c.query('SET max_parallel_workers = 8');
+await c.query('SET min_parallel_table_scan_size = 0');
+await c.query('SET parallel_setup_cost = 0');
+await c.query('SET parallel_tuple_cost = 0');
+
 const stats = {
   target: [], rank2: [], rank10: [], rank30: [],
   targetRank1: 0, sameClusterFrac: [], targetInTopK: 0,
