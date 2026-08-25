@@ -1678,8 +1678,14 @@ Interleaved A/B pairs share that environment, so the difference survives even wh
 | Cut | Paired delta p50 | Recall | Verdict |
 | --- | --- | --- | --- |
 | `rerank.topK` 50 -> 25 | **-0.179 ms** (negative in 4 of 4 pairs) | 0.9153 -> 0.9150 | **taken** |
-| lane `depth` 30 -> 20 | inside the drift | 0.916 -> 0.914 | rejected, costs recall for no measurable win |
-| candidate caps 400 -> 200 | inside the drift | 0.916 -> 0.914 | rejected, same |
+| lane `depth` 30 -> 20 | **not resolvable** (sequential only) | 0.916 -> 0.914 | rejected |
+| candidate caps 400 -> 200 | **not resolvable** (sequential only) | 0.916 -> 0.914 | rejected |
+
+The bottom two rows deserve their provenance stated rather than a verdict that looks better than its evidence.
+Only `topK` was re-run as interleaved pairs; the other two were measured sequentially, which is the method this section just showed to be invalid.
+So their latency effect is **not resolvable above the 0.51 ms drift** -- not "measured as zero".
+The recall half *is* valid, because per-query recall is deterministic, and it is a real cost.
+They are rejected on that alone: a demonstrated recall cost with no demonstrated win to pay for it.
 
 `topK` 25 is provably free: across **45 measurement windows** the deepest fused rank ever to survive into a final top-10 is **21**, and the count of survivors from past rank 25 is **0**.
 7.2 priced this cut at 0.06-0.10 ms and called it "unnecessary"; free it is, unnecessary it is not, and the saving was understated by roughly 2x.
@@ -1724,13 +1730,23 @@ Throughput *falls* past concurrency 8, so 1,786 QPS is the saturation ceiling an
 | 2100 | 2,249.3 | 103,785 ms | 122,548 ms | 124,316 ms | 0.917 | **no** | **INVALID** (overran 69%) |
 | 2400 | 2,704.2 | 39,729 ms | 62,300 ms | 62,451 ms | 0.917 | **no** | **INVALID** (overran 35%) |
 
-**Reported as a miss, not smoothed.** Three of four open-loop windows are invalid by the harness's own guard, and the 1400 window being catastrophically worse than the 1800 one is not a physical ordering -- it is the machine, which was at 65 MB of free pages and 8.06 GB of swap throughout.
-The honest statement is that the sustainable open-loop rate at the p50 <= 41 ms budget is **below 1,400 QPS**, and that these rate numbers carry a machine-state caveat that the recall numbers do not.
+**Reported as a miss, and the miss stated no wider than the evidence supports.**
+An INVALID window supports no conclusion in either direction -- it cannot be read as a capacity limit any more than it could be read as a pass -- so the three invalid rows establish nothing, and the 1400 row in particular must not be turned into a number.
+It is also not physically orderable against the 1800 row: at 1,400 offered with ~4.5 ms mean service, expected in-flight is about 6.3, *lighter* than the concurrency-8 window that ran cleanly at p50 3.75 ms. Something happened in that window other than saturation, on a machine at 65 MB of free pages and 8.06 GB of swap.
 
-**What the whole exercise moved.** Recall is stable at **0.916-0.918 in every single window**, closed and open, at every concurrency and every offered rate.
-The closed-loop ceiling was ~1,805 QPS before this work and is ~1,786 QPS now.
+What the valid windows do establish:
 
-> **The throughput is unchanged and the retrieval now works.** 7.2 measured 0.669 whole-pipeline recall and a 1,805 QPS ceiling; this measures **0.917 at 1,786 QPS**. Twenty-five points of recall cost roughly 1% of the rate, because an ANN probe costs what it costs whether or not it finds anything -- which is exactly what 6.8 predicted, now confirmed from the other side.
+- **Capacity is about 1,786 QPS** (closed-loop, saturating and then declining), and at that point **every percentile is far inside the 41 ms budget** -- p50 3.75, p95 10.08, p99 14.42.
+- **1,800 offered was sustained**: offered == completed within 0.4%, in-flight flat, window valid. The *rate* held; the latency did not, at p50 178 ms.
+- **The offered rate at which the 41 ms budget still holds was not established.** Three windows that would have bracketed it are invalid, and the honest word for that is "not measured", not "below 1,400".
+
+The rate numbers carry a machine-state caveat. The recall numbers do not: they held at 0.916-0.918 in every window, valid and invalid alike.
+
+**What the whole exercise moved.** Recall is stable at **0.916-0.918 in every single window**, closed and open, at every concurrency and every offered rate, against 0.669 before.
+
+> **The retrieval now works and the cost profile did not materially move.** That is the claim the evidence carries, and it is worth stating carefully because the tempting version is stronger than the data.
+> The pre-fix closed-loop ceiling of ~1,805 QPS was measured in the rung-3 era on **IVFFlat at `probes` = 8** with `topK` 50; the 1,786 QPS here is **HNSW at `ef_search` 48** with `topK` 25. The HNSW-with-old-geometry closed-loop ceiling was never measured -- 7.2 reports only single-stream for that arm -- so "1,805 -> 1,786, about 1%" would be putting an index swap and a geometry fix inside one comparison and reporting the difference to three digits.
+> What is properly supported is the direction and the mechanism: the mix-weighted sequential cost is 2.59 core-ms, the vector lane alone costs 1.46-1.77 ms across the whole usable `ef` range, and an ANN probe costs what it costs whether or not it finds anything. 6.8 predicted that recall was free to recover in throughput terms; measured from the other side, it was.
 
 #### The 10M rung, re-decided: **still NO-GO, but for a different and smaller reason**
 
