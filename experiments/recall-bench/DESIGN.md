@@ -2022,6 +2022,101 @@ Checking `pgrep` once before a window is not enough: a burst that starts ten sec
 One 1,200 QPS window read p50 12.24 ms with p90 37.99 ms clean, and p50 13.01 ms with p90 1,073 ms while contended -- same rate, same code, same machine, and only the tail gives it away.
 The first 8/16/32/64 sweep attempt overlapped the tuner in 133 of its 5-second samples and was discarded and re-run rather than reported.
 
+### 7.5 THE 10M RUNG, REOPENED (2026-08-25): the build memory wall is not where the rung actually stops
+
+7.4 stopped rung 4 on two gates, and named the first as a resource statement "answerable by hardware": a bulk HNSW build has to hold the whole graph in `maintenance_work_mem`, which is 15.9 GB at 10M on a 24 GB machine sitting at 65 MB of free pages with 8 GB in swap.
+
+That reading is correct and it is also incomplete, because **the memory ceiling binds only for a BULK build.**
+An HNSW index that already exists when the rows arrive is maintained one insert at a time, and the memory an ordinary index insert needs does not scale with corpus size at all.
+7.1 already accepts a multi-hour one-time offline build, so trading wall clock for memory is a trade this design permits -- provided the trade is measured rather than asserted, and provided the graph an incremental build produces retrieves as well as a bulk one, which pgvector promises nothing about.
+
+Both were measured. The rung is reachable on the build-memory axis.
+What the work found on the way is that a **second, larger resource wall sat underneath the first one and had never been priced**: the corpus could not be generated at all.
+
+#### First, the blocker nobody had costed: the 10M corpus does not fit in memory either
+
+`load.mjs --stream` reads `gen-corpus.generateMemories(tier)`, whose name suggests a generator and whose behaviour is a walk over an array the plan has already materialized in full.
+`buildPlan` holds every memory as an object, shuffles all of them at once, and runs `repairAnchors` over a postings index built from every one of them.
+
+Measured directly, three runs, RSS at the end of a full pass:
+
+| tier.memories | RSS | bytes per memory | wall clock |
+| --- | --- | --- | --- |
+| 100,000 | 681 MB | 7,138 | 4.1 s |
+| 200,000 | 1,510 MB | 7,916 | 7.9 s |
+| 400,000 | 2,728 MB | 7,150 | 20.1 s |
+
+Linear, and at 10M it projects to **71-79 GB on a 24 GB machine**.
+That is not a tuning problem and no heap flag reaches it.
+
+So 7.4's no-go had the wrong binding constraint. The `maintenance_work_mem` gate was real but it was the *second* wall; the first one was three times total RAM and sat in the corpus generator.
+
+**The fix, and the design change it carries.**
+`lib/rng.mjs`'s own header already promises the property that makes this solvable: `fork()` is keyed by a label rather than by draw order, "which is what lets a memory or query be generated in any order -- **or lazily, one at a time, as the 10M tier requires**".
+The monolithic plan is what broke that promise, and `scripts/stream-corpus.mjs` restores it.
+
+A tier's plan has two halves. The structured half is every memory some query points at -- **26,478 memories at `full10m`**, which is 349 MB and trivially resident. The filler half is 9.97M memories no query points at, which exist only so the lanes have a realistic corpus to compete against. So the composer plans the structured half with `gen-corpus.structuredPlan`, scatters each of those memories to a final id by a seeded draw (one per equal-width block of the id space, which is what the monolithic plan's global shuffle buys), and then walks id 1..N emitting either the structured memory placed there or the next filler memory straight into a `COPY`.
+
+Measured on the real 10M run: **peak RSS 425 MB, 22,593 rows/s, no JSONL on disk at any point.**
+
+> **DESIGN CHANGE, stated as one.** `repairAnchors` now certifies against the structured corpus alone rather than the whole corpus, because the whole corpus is what does not fit.
+> The consequence is real and is not waved past: `partialRef.maxPairCoOccurrence <= 10` and `mustIncludeVocab`'s three-term rarity budgets are checked against 26,478 documents, so once 9.97M filler rows join, those anchors are rarer in principle than they are in fact.
+> Two things bound how much that matters. First, the same decay would hit a monolithically generated 10M corpus anyway: a pair certified rare among 1M documents is roughly ten times less rare among 10M, and the family genuinely gets harder with N. Second, it is measurable rather than arguable -- the near-exact whole-pipeline ceiling is measured at 10M **before** any `ef_search` sweep, exactly as 7.4 did at 1M, so a recall miss is attributed to the corpus or to the index instead of being argued about afterwards.
+> Nothing here touches the real-vector tiers. `bench_q50k` and `bench_smoke` still load through `load.mjs`'s unchanged path, so the frozen quality corpus cannot move.
+
+#### The build-strategy comparison, at 1M, all three arms on the same afternoon
+
+Every arm loads the same 1M rows (a plain `SELECT` out of `bench_r1m`, so no client-side generation cost sits inside a wall-clock comparison) into its own throwaway schema, and is then swept for whole-pipeline recall at the tier's pinned `ef_search` 48 on the identical query pool (`scripts/build-arm.mjs`, `scripts/arm-recall.sh`, driven by `scripts/build-strategy.sh`).
+
+| | **bulk** | **incremental, 8 streams** | **bulk, spilled** |
+| --- | --- | --- | --- |
+| `maintenance_work_mem` | 1,521 MB (sized) | **not used at all** | 380 MB (deliberately short) |
+| rows in | 17.7 s | -- | 12.3 s |
+| index phase | 411.6 s | -- | 1,141.2 s |
+| **total wall clock** | **431.9 s (7 min 12 s)** | **1,068.9 s (17 min 49 s)** | **1,155.9 s (19 min 16 s)** |
+| spill NOTICE | none | n/a | **after 330,182 tuples** |
+| HNSW index | 794 MB | **792 MB** | 793 MB |
+| heap | 977 MB | 977 MB | 977 MB |
+| `memories_pkey` | 21 MB | **36 MB** | 21 MB |
+| `memories_fts_gin` | 30 MB | **44 MB** | 30 MB |
+| swap delta | -2,749 MB | +911 MB | +1,341 MB |
+| page-ins during the arm | 716,923 | 1,218,024 | 1,076,203 |
+| **whole-pipeline R@10 (mix)** | **0.9129** | **0.9142** | 0.9095 (see note) |
+| R@10 unweighted | 0.9269 | 0.9276 | 0.9340 (see note) |
+| single-stream p50 | 3.46 ms | 5.07 ms | 5.09 ms |
+
+**The recall answer is the one that mattered, and it is a clean equivalence.**
+The incrementally grown graph scores **0.9142** against the bulk graph's **0.9129** on 9,394 and 12,783 probes of the same pool, and comes out 2 MB smaller.
+A graph built one insert at a time is not the same graph, and it did not have to retrieve the same -- it does.
+
+**The wall clock is 2.5x, and that is the whole price.**
+Incremental spends 17m49s where bulk spends 7m12s, and asks for no `maintenance_work_mem` whatsoever.
+
+**The spilled bulk build is the arm to discard, and its own NOTICE says why.**
+Given 380 MB -- a quarter of what the graph needs, which is the same fraction 10M would get after `shared_buffers` came down -- pgvector reported the graph outgrowing the budget after 330,182 tuples and finished the remaining 670,000 on its on-disk path. That took **19 min 16 s**, slower than the incremental arm while still requiring a large-ish contiguous budget. It buys nothing.
+
+Two notes the table would otherwise hide:
+
+- **The spilled arm's recall numbers are contaminated and are not used.** Its schema name, `bench_bs_bulkspill1m`, made the engine's prepared-statement name 64 bytes; Postgres truncates identifiers at 63, silently, so the gated and ungated variants of one profile collided and the window logged 2,655 `You supplied ... (67)` errors. That is a real latent bug in the exact property `profileSignature`'s own comment exists to protect, and it is fixed (a hash tail past the limit, nothing changed under it, pinned by `tests/recall-bench-statement-name.test.mjs`). The arm is discarded on wall clock, which the errors do not touch.
+- **The incremental arm's 5.07 ms p50 is index bloat, not graph shape.** `laneRowsExamined` is identical across the two arms (vector 17.8 against 17.9, and 4.1 against 4.2, or 7.9 against 7.8), so the same rows are being fetched; what moved is that concurrent inserts grow the primary key by page split (36 MB against 21 MB) and leave a GIN pending list (44 MB against 30 MB). Both are avoidable in an offline build and both are avoided at 10M: the lexical indexes are built **after** the rows, and the primary key is reindexed once at the end. The HNSW index itself is 792 MB against 794 MB, so the ANN graph is not what changed.
+
+**The per-row cost does not grow with the corpus, which is the finding that makes 10M arithmetic possible.**
+A single 1M number cannot be extrapolated to 10M; a rate curve can. Per 200,000-row round of the incremental arm:
+
+| rows | rows/s |
+| --- | --- |
+| 0 - 200,000 | 1,044 |
+| 200,000 - 400,000 | 886 |
+| 400,000 - 600,000 | 918 |
+| 600,000 - 800,000 | 909 |
+| 800,000 - 1,000,000 | 933 |
+
+The first round is cheap because the graph is nearly empty; from 200,000 rows onward the rate is **flat within noise across a fivefold growth in corpus**. That is the shape HNSW insertion should have -- the cost is dominated by the `ef_construction = 200` candidate search, whose work grows only in the log of N.
+
+**What that flat curve does NOT cover, stated before it is extrapolated.**
+Every incremental number above was taken on an index that fits in RAM: at 1M the whole schema is 1.8 GB inside 6 GB of `shared_buffers`. At 10M the HNSW index alone is ~8 GB against those same 6 GB and roughly 100 MB of free OS pages, so the insert path starts missing cache on a graph traversal that touches hundreds of nodes per row. Nothing measured at 1M bounds that step.
+So `10,000,000 / 930 = 2 h 59 m` is a **lower bound with no upper bound attached**, and it is reported as one.
+
 ### Rung 4: 10M full run -- **claim B**
 
 The claim run.
