@@ -223,7 +223,34 @@ export const config = {
     // below is a bound on how much work ONE query may do, priced against the
     // ~5 core-ms per query that 2,400 QPS on 12 cores allows. See DESIGN.md 6.6.
     scale: {
-      depth: 30, efSearch: 40, ivfProbes: 8,
+      // efSearch was 40, chosen when the vector lane could not reach any recall
+      // floor at any setting and 40 was simply the cheapest way not to reach
+      // one (DESIGN.md 7.2). With the geometry fixed (7.3) the frontier has a
+      // solution, so this is now chosen the way decision 3 always meant it to
+      // be: the smallest value whose WHOLE-PIPELINE recall clears 0.90.
+      //
+      // Measured at 1M on the re-embedded corpus, real drifted query vectors,
+      // recall-sample-rate 1.0, a full pass over all 4,000 test queries per
+      // point, every window valid (scripts/pipeline-ef-sweep.sh):
+      //
+      //   ef_search   R@10 mix   R@1 mix   single-stream p50
+      //   10          0.819      0.756     3.71 ms
+      //   16          0.817      0.789     3.61 ms
+      //   24          0.860      0.839     3.79 ms
+      //   40          0.897      0.877     3.50 ms   <- misses by 0.003
+      //   44          0.906      0.890     4.18 ms   <- smallest that clears
+      //   48          0.916      0.900     4.01 ms
+      //   56          0.929      0.917     4.41 ms
+      //   64          0.939      0.929     3.89 ms
+      //   100         0.965      0.960     5.60 ms
+      //
+      // 44 is the literal smallest and it clears by 0.006, which is thinner
+      // than the margin any other knob in this file is held to. 48 clears by
+      // 0.016 at a latency indistinguishable from 44's -- the p50 column
+      // carries roughly +/- 0.4 ms of run-to-run noise, and it is not monotone
+      // in ef_search, which is itself the finding that the lane's cost is
+      // mostly fixed rather than proportional to ef.
+      depth: 30, efSearch: 48, ivfProbes: 8,
       // Hard row caps applied BEFORE ranking, as an unordered LIMIT inside the
       // candidate CTE so the bitmap heap scan stops early. Measured cost of a
       // scale-tier candidate row (to_tsvector recompute + ts_rank_cd + the
@@ -284,6 +311,21 @@ export const config = {
       // claim honest across the whole workload rather than one query.
       filteredEfSearch: 40,
       filteredIterativeScan: 'relaxed_order',
+      // Re-swept on the corrected geometry at ef_search 48, because 7.2 flagged
+      // its own method here: with this knob pinned while efSearch swept,
+      // date_filter contributed a fixed floor to every row of that frontier.
+      // Swept properly (scripts/filtered-arm-sweep.sh):
+      //
+      //   max_scan_tuples   date_filter R@10   R@10 mix   single-stream QPS
+      //   2,000             0.884              0.915      208
+      //   8,000             0.937              0.924      173
+      //   20,000            0.938              0.924      139
+      //   50,000            0.940              0.925      101
+      //
+      // It stays at 2,000. The lane saturates at 8,000 and the extra costs 17%
+      // of the single-stream rate for 0.009 of mix-weighted recall, which is
+      // the wrong trade when the gate is already met at 0.915. The knob is
+      // where the throughput claim is priced, not where the recall gate is won.
       filteredMaxScanTuples: 2_000,
     },
     rrfK: { and: 60, or: 60, vector: 60, trigram: 60 },
