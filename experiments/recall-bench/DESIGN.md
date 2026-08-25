@@ -1400,6 +1400,153 @@ Real embeddings put a query near a *neighbourhood* of related documents. This ge
 - **Decision 3 has no answer**, because no `ef_search` reaches 0.90 and the reason is not tuning.
 - The fix is corpus geometry, not hardware and not the index: fewer and tighter clusters (a jitter small enough that siblings out-rank the noise floor), or a drift small enough that the query lands in the target's neighbourhood rather than beside it. That is a Track 2 change to the generator, and it is the prerequisite for any recall claim at 1M or 10M.
 
+### 7.3 THE GEOMETRY FIX (2026-08-25): what the real tier actually looks like, and the constants derived from it
+
+7.2 ends by naming the fix as a Track 2 change to the generator and states the constraint as "a same-cluster sibling must sit above the top-30 noise floor".
+This section does that work.
+It also corrects two things 7.2 got wrong, and one of the corrections changes what the fix is calibrated against.
+
+#### First, a loader bug that made every earlier reconstruction number meaningless
+
+`load.mjs` carried its own `SYNTH_MEMORY_JITTER = 0.12` while `lib/synth-vectors.mjs`'s `queryVector()` drifts off `memoryVector(..., DEFAULT_MEMORY_JITTER = 0.10)`.
+So at every synthetic tier the query was drifted off a vector that was **not the one stored in the database**.
+
+6.8 reports `cos(stored, rebuiltMemory) = 0.997` and reads it as "the reconstruction is faithful to what was loaded".
+It is not a faithfulness measurement. It is this bug's signature, and the arithmetic reproduces it exactly: two vectors built from the same gaussian draws at jitter 0.10 and 0.12 have cosine `(1 + 0.10 x 0.12 x 256) / (sqrt(1 + 0.01 x 256) x sqrt(1 + 0.0144 x 256))` = 0.9968.
+Verified directly against `bench_r1m`'s stored embeddings: they regenerate at cos **1.000** under jitter 0.12 and **0.9968** under 0.10.
+
+The jitter is a contract between the two modules, not a call-site choice, so it now lives in one place and `tests/recall-bench-synth-geometry.test.mjs` pins the invariant.
+
+#### Second, `cluster_id` does not label the vector space at the REAL tier either
+
+7.2's mechanism paragraph says of the synthetic tier that "the 'topic clusters' do not exist in the vector space at all".
+The same sentence is true of the real 768-dim tier, for a completely different reason, and it invalidates the statistic that the fix was going to be calibrated against.
+
+`gen-corpus.mjs` assigns `cluster_id` with `randomClusterId(r, tier)` -- a uniform draw over `tier.clusters`, **independent of the memory's topic, text, people, places and dates**.
+It is a random label. Measured on `bench_q50k` with `scripts/geometry-probe.mjs`, 210 dev-split queries, real embeddings, exact top-30 with index scans disabled:
+
+| Measured on the real tier | Cosine |
+| --- | --- |
+| memory to memory, **same** cluster | 0.728 |
+| memory to memory, **different** cluster | **0.729** |
+
+Identical. There is no cluster signal to find.
+
+An earlier pass of this measurement appeared to show one (same-cluster 0.728 against 0.584 "different cluster") and that comparison was wrong: it set a *memory-to-memory* cosine beside a *query-to-memory* one.
+A query is about ten words and a body is ~370 characters, and the embedder separates short from long text before it separates topic from topic, so the gap was text length, not topics.
+The control that answers the question has to hold text length fixed, and when it does the gap disappears.
+
+**Consequence for the calibration.** "The fraction of the exact top-30 that shares the target's cluster" cannot be the target statistic, because at the real tier it measures a random label: it comes out at **0.7 rows of 29**, against the synthetic corpus's 1.2 of 30. Matching that number would mean deliberately preserving the pathology.
+
+#### What the real tier does have: an unlabelled neighbourhood
+
+The neighbourhood is real, it is just not named by any column.
+
+| Measured on the real tier (210 dev queries, exact top-30) | Cosine |
+| --- | --- |
+| query to its own target | 0.705 |
+| query to rank 2 of the exact top-30 | 0.707 |
+| query to rank 10 | 0.687 |
+| query to rank 30 | 0.671 |
+| **mutual cosine among the exact top-30** | **0.834** |
+| **exact top-30 member to the target** | **0.808** |
+| memory to memory, unrelated | 0.729 |
+
+Read the last three rows together, because they are the whole mechanism.
+The top-30 rows are **more similar to each other (0.834) and to the target (0.808) than the query is to any of them (0.671-0.707)**.
+The query sits outside a dense mode looking in.
+That is exactly what makes greedy descent work: a search that reaches *any* member of that group finds the target among its immediate neighbours.
+
+Set that against the synthetic corpus at the old constants, same instrument:
+
+| | Real 768-dim (`bench_q50k`) | Synthetic 256-dim, jitter 0.10 / drift 0.15 |
+| --- | --- | --- |
+| query to its own target | 0.705 | 0.385 |
+| query to rank 2 of exact top-30 | 0.707 | 0.267 |
+| query to rank 30 of exact top-30 | 0.671 | 0.214 |
+| query to a same-cluster sibling | 0.584 | 0.111 |
+| sibling to sibling | 0.728 | 0.291 |
+| **neighbour to target** | **0.808** | **0.275** |
+| **neighbour-to-target / query-to-target** | **1.15** | **0.71** |
+| same-cluster rows in the exact top-30 | 0.7 of 29 | 1.8 of 29 |
+| target rank 1 under exact cosine | 0.395 | 1.000 |
+
+**The ratio in bold is the pathology, stated as one number.**
+At the real tier the target's nearest neighbours are 1.15x closer to it than the query is, so there is a path in.
+At the synthetic tier the ratio inverts to 0.71: the target's nearest neighbours are *noise rows*, the query is closer to the target than anything else in the corpus is, and the target is an isolated spike.
+7.2 described this in words -- "greedy descent has nothing to descend" -- and this is the number behind the words.
+
+#### The derivation
+
+With a unit centroid, `dims` D, jitter `j` and drift `d` (`scripts/calibrate-synth-geometry.mjs` prints this and checks it against real generator output):
+
+```
+sibling <-> sibling, sibling <-> target :  1 / (1 + j^2 D)
+query   <-> its own target             :  1 / sqrt(1 + d^2 D)
+query   <-> a sibling                  :  the product of the two
+k-th best of N unrelated rows          :  z(1 - k/N) / sqrt(D)
+```
+
+At D = 256 the noise floor is **0.251 at 1M and 0.283 at 10M**.
+The 10M value is the one that binds: a corpus calibrated against the 1M floor fails again at the tier the constants exist to serve, and that would be a second regeneration.
+
+Two conditions fix the pair:
+
+1. **Navigability.** `cos(neighbour, target) / cos(query, target) = 1.15`, taken from the real tier's 0.808 / 0.705.
+2. **Margin.** `cos(query, sibling)` at least 1.55x the 10M floor, so the cluster is a mode rather than a coin flip against noise.
+
+Substituting (1) into the closed forms collapses `cos(query, sibling)` to `1 / (1.15 (1 + j^2 D)^2)`, which inverts to
+
+```
+j <= 0.0399      d <= 0.0796
+```
+
+**Pinned: `DEFAULT_MEMORY_JITTER = 0.04`, `DEFAULT_QUERY_DRIFT = 0.08`.**
+That is the derived bound rounded up one notch rather than down, deliberately -- it is the *hardest* geometry that still satisfies both conditions, and a benchmark should not be made easier than its constraints require.
+Because the shipped values sit a hair past the solved bound, they are verified at the shipped values rather than the solved ones.
+
+Note that `d ~= 2j` is a *consequence* of the ratio plus the algebra, not a free choice. If either constant moves, both re-derive from the ratio.
+
+#### Verified on 100K generated vectors before anything was regenerated
+
+`scripts/calibrate-synth-geometry.mjs`, 100,000 vectors in memory at the tier's real cluster size, 20 probe queries, exact cosine over the whole sample:
+
+| jitter | drift | q->target | rank 30 | q->sib | q->sib p5 | sib->sib | sib->target | same-cluster of top-30 | rank 1 | sibs over the 10M floor |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.10 | 0.15 | 0.384 | 0.214 | 0.111 | 0.006 | 0.291 | 0.275 | 1.8 of 29 | 1.000 | **0.1 of 49** |
+| 0.05 | 0.10 | 0.531 | 0.321 | 0.327 | 0.233 | 0.616 | 0.608 | 28.6 of 29 | 1.000 | 38.5 of 49 |
+| **0.04** | **0.08** | **0.617** | **0.436** | **0.441** | **0.356** | **0.714** | **0.709** | **29.0 of 29** | **1.000** | **49.0 of 49** |
+| 0.035 | 0.07 | 0.667 | 0.507 | 0.511 | 0.434 | 0.765 | 0.761 | 29.0 of 29 | 1.000 | 49.0 of 49 |
+
+The p5 column is there because the gate is a worst case and the table is means: a mean sibling cosine over the floor with a left tail crossing it is a corpus where corners of clusters are still unreachable, and that surfaces later as a family-shaped recall hole that reads like a tuning problem.
+At 0.04 / 0.08 the p5 is 0.356 against the 0.283 floor. The absolute minimum over 980 sibling pairs is 0.270, marginally under -- which is fine and expected, because the requirement is that the cluster forms a mode, not that every last member of it is in the top-30.
+
+Re-run at the **10M cluster size of 500** (20,000 clusters at 10M, not the 1M tier's 50), because a 10x larger cluster is 10x more chances for the worst sibling to fall under the floor: **498.8 of 499** siblings clear it, p5 0.351. The margin carries.
+
+Measured navigability ratio at the shipped constants: **0.709 / 0.617 = 1.149**, against the real tier's 1.146.
+
+#### What this deliberately does NOT reproduce, and why that is correct
+
+The synthetic tier is now **easier** than the real tier, and the difference should be read rather than defended:
+
+| | Real 768-dim | Synthetic at 0.04 / 0.08 |
+| --- | --- | --- |
+| target inside the exact top-30 | 0.857 | 1.000 |
+| target at rank 1 under exact cosine | 0.395 | 1.000 |
+
+This is a design choice with a reason.
+The synthetic tiers exist to measure **whether the ANN index can route to a neighbourhood that is really there** -- that is what claim B needs, and it is only interpretable if the exact lane holds the answer, because then every miss is unambiguously the index's.
+Corpus *difficulty* is rung 2's job, where real embeddings and a real embedder decide what is hard.
+A synthetic generator that reproduced real embedding failure modes would be measuring its own imitation of an embedder, which is the error this whole section exists to remove.
+
+**One consequence to note before the frontier is run:** with the exact vector lane at recall 1.0, whole-pipeline recall at 1M is bounded by the lexical families' own ceilings (6.8 measured `entity_swap` 0.35, `date_filter` 0.19 with the broken lane underneath), not by the vector lane. The exact-cosine whole-pipeline ceiling is therefore measured first, before any `ef_search` sweep, so a gate miss can be attributed to corpus composition or to the index rather than argued about afterward.
+
+#### What this invalidates
+
+The existing 1M corpus's `embedding` column, and every recall number measured against it.
+That is expected and correct: 7.2 already recorded that recall "cannot be measured at the synthetic tiers at all" under the old constants.
+The corpus **text** is untouched -- `gen-corpus.mjs` does not import `lib/synth-vectors.mjs` at all (it certifies the lexical lanes offline and leaves the vector lane to `load.mjs --verify-oracle`), so `queries-dev.jsonl`, `queries-test.jsonl` and every lexical certificate survive the regeneration unchanged.
+
 #### What the IVFFlat fallback costs in recall, measured at 50K (2026-08-24)
 
 The HNSW build blew the 90-minute gate, so the scale tier runs IVFFlat, and the gate above owes a number for what that costs.
