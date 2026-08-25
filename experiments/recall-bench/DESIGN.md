@@ -1715,6 +1715,7 @@ Prepared-statement reuse was verified rather than assumed: the scale path still 
 
 | concurrency | QPS | p50 | p95 | p99 | R@10 |
 | --- | --- | --- | --- | --- | --- |
+| 4 | 1,057 | 3.31 ms | 8.27 ms | 10.37 ms | 0.918 |
 | 8 | **1,786** | 3.75 ms | 10.08 ms | 14.42 ms | **0.917** |
 | 16 | 1,573 | 6.63 ms | 29.60 ms | 68.14 ms | 0.917 |
 | 32 | 1,488 | 8.01 ms | 110.35 ms | 178.96 ms | 0.916 |
@@ -1723,12 +1724,14 @@ Throughput *falls* past concurrency 8, so 1,786 QPS is the saturation ceiling an
 
 **Open-loop, climbing:**
 
-| offered | completed | p50 | p95 | p99 | R@10 | in-flight flat | window |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1400 | 1,441.9 | 30,269 ms | 56,197 ms | 65,540 ms | 0.918 | **no** | **INVALID** (overran 37%) |
-| 1800 | 1,807.4 | 178 ms | 2,233 ms | 2,421 ms | 0.916 | yes | valid, **gate FAIL** (p50 > 41 ms) |
-| 2100 | 2,249.3 | 103,785 ms | 122,548 ms | 124,316 ms | 0.917 | **no** | **INVALID** (overran 69%) |
-| 2400 | 2,704.2 | 39,729 ms | 62,300 ms | 62,451 ms | 0.917 | **no** | **INVALID** (overran 35%) |
+| offered | completed | p50 | p95 | p99 | R@10 | in-flight flat | window | gate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **1000** | 1,000.1 | **11.06 ms** | 150.78 ms | 424.18 ms | 0.918 | yes | valid | **PASS** |
+| **1200** | 1,200.1 | **11.91 ms** | 416.32 ms | 638.45 ms | 0.917 | yes | valid | **PASS** |
+| 1400 | 1,441.9 | 30,269 ms | 56,197 ms | 65,540 ms | 0.918 | **no** | **INVALID** (overran 37%) | fail |
+| 1800 | 1,807.4 | 178 ms | 2,233 ms | 2,421 ms | 0.916 | yes | valid | fail (p50 > 41 ms) |
+| 2100 | 2,249.3 | 103,785 ms | 122,548 ms | 124,316 ms | 0.917 | **no** | **INVALID** (overran 69%) | fail |
+| 2400 | 2,704.2 | 39,729 ms | 62,300 ms | 62,451 ms | 0.917 | **no** | **INVALID** (overran 35%) | fail |
 
 **Reported as a miss, and the miss stated no wider than the evidence supports.**
 An INVALID window supports no conclusion in either direction -- it cannot be read as a capacity limit any more than it could be read as a pass -- so the three invalid rows establish nothing, and the 1400 row in particular must not be turned into a number.
@@ -1737,8 +1740,9 @@ It is also not physically orderable against the 1800 row: at 1,400 offered with 
 What the valid windows do establish:
 
 - **Capacity is about 1,786 QPS** (closed-loop, saturating and then declining), and at that point **every percentile is far inside the 41 ms budget** -- p50 3.75, p95 10.08, p99 14.42.
+- **The gate PASSES at 1,000 and at 1,200 offered**, both windows valid, offered == completed to within 0.01%, in-flight flat, p50 11.06 ms and 11.91 ms against the 41 ms budget. These two windows were run specifically because the first pass started at 1,400 and therefore never bracketed the boundary from below.
 - **1,800 offered was sustained**: offered == completed within 0.4%, in-flight flat, window valid. The *rate* held; the latency did not, at p50 178 ms.
-- **The offered rate at which the 41 ms budget still holds was not established.** Three windows that would have bracketed it are invalid, and the honest word for that is "not measured", not "below 1,400".
+- So the sustainable rate at the latency budget is **at least 1,200 QPS and under 1,800**, which is the same bracket the pre-fix system reported -- now at 0.917 recall instead of 0.669.
 
 The rate numbers carry a machine-state caveat. The recall numbers do not: they held at 0.916-0.918 in every window, valid and invalid alike.
 
@@ -1761,7 +1765,7 @@ The gates were re-checked with measurements rather than projections.
 | Disk (<= 30 GB) | 1,831 MB at 1M -> ~18.3 GB, on a volume with **68 GB free** | **pass** |
 | Build wall clock (7.1: hours acceptable) | 6 min 04 s at 1M -> ~60 min linear, 2-3 h with superlinearity | **pass** |
 | `maintenance_work_mem` must hold the graph | 1,227 B/tuple -> 12.3 GB, **+30% margin = 15.9 GB requested** | **FAIL** |
-| Rung 3 throughput ("comfortably above 2,400 QPS") | ceiling **1,786 QPS**, sustainable open-loop below 1,400 | **FAIL** |
+| Rung 3 throughput ("comfortably above 2,400 QPS") | ceiling **1,786 QPS**; open-loop gate passes at 1,200, fails by 1,800 | **FAIL** |
 
 **The memory gate, with the numbers rather than an adjective.**
 The 1M build requested 1,521 MB and completed without a spill NOTICE. Scaled, 10M needs **15.9 GB**, and that is a *lower bound*: the 1,227 B/tuple constant was measured at `max_parallel_maintenance_workers = 0`, while the real build runs 8 processes sharing a DSM segment.
@@ -1775,7 +1779,7 @@ At the moment of measurement this 24 GB machine had:
 Lowering `shared_buffers` to 1 GB via a cluster restart frees 5 GB. That is not the missing 15.9 GB, on a machine already 8 GB into swap.
 A build that spills is not a slower build but one whose duration stops extrapolating, which is the entire reason constraint (i) exists -- and a build that thrashes swap fails the same way for a different reason.
 
-**The throughput gate fails independently**, and section 7's rule is that a failed gate stops the ladder rather than getting waived. Rung 3 asks for the 1M bench comfortably above 2,400 QPS; it is at 1,786 QPS saturated, 0.74x the target, with no valid open-loop window at the latency budget.
+**The throughput gate fails independently**, and section 7's rule is that a failed gate stops the ladder rather than getting waived. Rung 3 asks for the 1M bench comfortably above 2,400 QPS; it is at 1,786 QPS saturated, 0.74x the target, and the open-loop rate that actually holds the 41 ms latency budget is between 1,200 (passes) and 1,800 (sustains the rate at p50 178 ms), which is half the bar.
 
 **So the ladder stops here, and the reason has changed category.**
 It is no longer "this measurement would be meaningless" -- it would now be meaningful.
