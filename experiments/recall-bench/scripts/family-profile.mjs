@@ -16,13 +16,16 @@ const { loadTermStats } = await import(`${BENCH}/lib/term-stats.mjs`);
 const { benchClient } = await import(`${BENCH}/lib/safety.mjs`);
 const { rerank } = await import(`${BENCH}/rerank.mjs`);
 
-const tier = resolveTier('rehearsal1m');
+// TIER is overridable so the same instrument profiles rung 4 at 10M; the
+// default reproduces the 1M numbers with no environment set.
+const TIER_NAME = process.env.TIER ?? 'rehearsal1m';
+const tier = resolveTier(TIER_NAME);
 const PER = Number(process.env.PER ?? 12);
 const REPS = Number(process.env.REPS ?? 3);
 const OUT = process.env.OUT ?? '';
 const profile = config.profiles[process.env.PROFILE ?? 'tunedScale'];
 
-const rows = readFileSync(`${BENCH}/.out/rehearsal1m/queries-test.jsonl`, 'utf8')
+const rows = readFileSync(`${BENCH}/.out/${TIER_NAME}/queries-test.jsonl`, 'utf8')
   .split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const only = process.env.FAMILIES ? new Set(process.env.FAMILIES.split(',')) : null;
 const byFamily = new Map();

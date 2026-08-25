@@ -23,7 +23,10 @@ const { queryVector, DEFAULT_QUERY_DRIFT } = await import(`${BENCH}/lib/synth-ve
 const engine = await import(`${BENCH}/engine.mjs`);
 const { rerank } = await import(`${BENCH}/rerank.mjs`);
 
-const tier = resolveTier('rehearsal1m');
+// TIER is overridable so the same instrument profiles rung 4 at 10M; the
+// default reproduces the 1M numbers with no environment set.
+const TIER_NAME = process.env.TIER ?? 'rehearsal1m';
+const tier = resolveTier(TIER_NAME);
 const profile = config.profiles.tunedScale;
 const N = Number(process.env.N ?? 6);
 const ONLY = process.env.FAMILY ?? null;
@@ -33,7 +36,7 @@ const client = benchClient();
 await client.connect();
 await client.query(engine.vectorSessionSettings(tier, config, false));
 
-const all = readFileSync(`${BENCH}/.out/rehearsal1m/queries-test.jsonl`, 'utf8')
+const all = readFileSync(`${BENCH}/.out/${TIER_NAME}/queries-test.jsonl`, 'utf8')
   .split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const families = [...new Set(all.map((q) => q.family))].filter((f) => !ONLY || f === ONLY);
 
