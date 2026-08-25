@@ -29,7 +29,11 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-OUT=.out/rehearsal1m
+# TIER is overridable so the same instrument measures rung 4 at 10M. Default is
+# unchanged, so every 7.4 number still reproduces by running this with no
+# environment at all.
+TIER=${TIER:-rehearsal1m}
+OUT=${OUT:-.out/$TIER}
 WARM=${WARM:-60}
 DUR=${DUR:-120}
 # Overridable so a re-validation can climb to the gate in finer steps without
@@ -78,7 +82,7 @@ echo "[$(date +%T)] ================ closed-loop ceiling sweep ${CONC} =========
 echo "[$(date +%T)] warmup ${WARM}s, measured ${DUR}s per concurrency"
 wait_for_tuner
 on_ac || { echo "ABORT: dropped to battery"; exit 1; }
-sampled node bench-load.mjs --tier rehearsal1m --profile tunedScale --mode closed \
+sampled node bench-load.mjs --tier "$TIER" --profile tunedScale --mode closed \
   --sweep "$CONC" --sweep-duration "$DUR" --sweep-warmup "$WARM" \
   --recall-sample-rate 0.1 \
   --out "$OUT/$TAG-closed.json"
@@ -105,7 +109,7 @@ for RATE in ${=RATES}; do
   echo "[$(date +%T)] ================ open-loop, offered ${RATE} QPS ================"
   wait_for_tuner
   on_ac || { echo "ABORT: dropped to battery"; exit 1; }
-  sampled node bench-load.mjs --tier rehearsal1m --profile tunedScale --mode open \
+  sampled node bench-load.mjs --tier "$TIER" --profile tunedScale --mode open \
     --offered-qps "$RATE" --duration "$DUR" --warmup "$WARM" --skip-select1-probe \
     --recall-sample-rate 0.1 \
     --out "$OUT/$TAG-open-$RATE.json"

@@ -23,7 +23,10 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-OUT=.out/rehearsal1m
+# TIER is overridable so the same instrument sweeps rung 4 at 10M; the default
+# reproduces 7.4's 1M frontier with no environment set.
+TIER=${TIER:-rehearsal1m}
+OUT=${OUT:-.out/$TIER}
 EFS=${EFS:-"40 64 100 200 400"}
 WARM=${WARM:-10}
 DUR=${DUR:-40}
@@ -47,7 +50,7 @@ for EF in ${=EFS}; do
   echo ""
   echo "[$(date +%T)] ---------------- hnsw.ef_search = $EF ----------------"
   BENCH_CONFIG_OVERRIDE="{\"lanes\":{\"scale\":{\"efSearch\":$EF}}}" \
-    node bench-load.mjs --tier rehearsal1m --profile tunedScale --mode closed \
+    node bench-load.mjs --tier "$TIER" --profile tunedScale --mode closed \
       --sweep 1 --sweep-duration "$DUR" --sweep-warmup "$WARM" \
       --skip-select1-probe --recall-sample-rate 1.0 \
       --out "$OUT/ef-$EF.json" 2>&1 | grep -vE '^(target|schema size|query pool|report written)'
@@ -55,12 +58,12 @@ done
 
 echo ""
 echo "[$(date +%T)] ================ frontier ================"
-node -e '
+OUT=$OUT node -e '
 const fs = require("fs");
 const efs = process.argv.slice(1);
 console.log("ef_search  R@10(mix)  R@10(unweighted)  R@1(mix)  p50 ms   qps   window");
 for (const ef of efs) {
-  const p = `.out/rehearsal1m/ef-${ef}.json`;
+  const p = `${process.env.OUT}/ef-${ef}.json`;
   if (!fs.existsSync(p)) continue;
   const w = JSON.parse(fs.readFileSync(p, "utf8")).closedSweep[0];
   const r = w.recall;
