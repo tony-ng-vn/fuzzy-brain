@@ -46,11 +46,16 @@ echo "[$(date +%T)] free disk before: ${FREE} GB"
 echo "[$(date +%T)] === re-embedding at the recalibrated geometry ==="
 node scripts/reembed-synthetic.mjs --tier rehearsal1m || exit 1
 
-echo "[$(date +%T)] === lexical indexes ==="
-"${PSQL[@]}" -c "\timing on
-  create index memories_fts_gin on ${SCHEMA}.memories using gin (fts);" || exit 1
-"${PSQL[@]}" -c "\timing on
-  create index memories_person_occurred_at_btree on ${SCHEMA}.memories (person_id, occurred_at);" || exit 1
+# Heredoc, not -c: psql's -c takes ONE command, and "\timing on" followed by
+# SQL on the next line makes the whole thing a single meta-command line whose
+# SQL is discarded as "extra arguments". That silently skipped both indexes.
+echo "[$(date +%T)] === lexical indexes, and the primary key's name after the swap ==="
+"${PSQL[@]}" <<SQL || exit 1
+\timing on
+alter index ${SCHEMA}.memories_regen_pkey rename to memories_pkey;
+create index memories_fts_gin on ${SCHEMA}.memories using gin (fts);
+create index memories_person_occurred_at_btree on ${SCHEMA}.memories (person_id, occurred_at);
+SQL
 
 echo "[$(date +%T)] === HNSW, guarded (spill watch, disk watch, progress) ==="
 ./scripts/hnsw-build.sh "${SCHEMA}" || exit 1
