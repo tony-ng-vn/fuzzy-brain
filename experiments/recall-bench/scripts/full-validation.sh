@@ -6,8 +6,10 @@
 #   nohup ./scripts/full-validation.sh > .out/rehearsal1m/full-validation.log 2>&1 &
 #   tail -f .out/rehearsal1m/full-validation.log
 #
-# Closed-loop ceiling sweep at 8/16/32/64, then open-loop at 1200/1800/2400,
-# every window 60s warmup + 120s measured. Takes about 35 minutes.
+# Closed-loop ceiling sweep, then open-loop at a climbing set of offered rates,
+# every window 60s warmup + 120s measured. CONC, RATES and TAG are overridable.
+# Every window carries whole-pipeline recall alongside its rate: DESIGN.md 6.8's
+# rule is that a system that does not retrieve has no throughput claim.
 #
 # Three validity guards, because on this machine a window can lie three ways:
 #
@@ -30,6 +32,11 @@ cd "$(dirname "$0")/.." || exit 1
 OUT=.out/rehearsal1m
 WARM=${WARM:-60}
 DUR=${DUR:-120}
+# Overridable so a re-validation can climb to the gate in finer steps without
+# editing this file; the defaults are the ones section 8 names.
+CONC=${CONC:-8,16,32,64}
+RATES=${RATES:-"1200 1800 2400"}
+TAG=${TAG:-final}
 
 on_ac() { pmset -g batt | head -1 | grep -q 'AC Power'; }
 
@@ -67,13 +74,14 @@ sampled() {
   fi
 }
 
-echo "[$(date +%T)] ================ closed-loop ceiling sweep 8/16/32/64 ================"
+echo "[$(date +%T)] ================ closed-loop ceiling sweep ${CONC} ================"
 echo "[$(date +%T)] warmup ${WARM}s, measured ${DUR}s per concurrency"
 wait_for_tuner
 on_ac || { echo "ABORT: dropped to battery"; exit 1; }
 sampled node bench-load.mjs --tier rehearsal1m --profile tunedScale --mode closed \
-  --sweep 8,16,32,64 --sweep-duration "$DUR" --sweep-warmup "$WARM" \
-  --out "$OUT/final-closed.json"
+  --sweep "$CONC" --sweep-duration "$DUR" --sweep-warmup "$WARM" \
+  --recall-sample-rate 0.1 \
+  --out "$OUT/$TAG-closed.json"
 
 cat > "$OUT/read-closed.cjs" <<'JS'
 const r = require(process.argv[2]);
@@ -83,20 +91,24 @@ for (const w of r.closedSweep ?? []) {
     + `  p50=${(w.latencyMs?.p50 ?? 0).toFixed(2).padStart(7)}ms`
     + `  p95=${(w.latencyMs?.p95 ?? 0).toFixed(2).padStart(7)}ms`
     + `  p99=${(w.latencyMs?.p99 ?? 0).toFixed(2).padStart(7)}ms`
-    + `  sqlMs=${(w.sqlMs?.mean ?? 0).toFixed(2).padStart(6)}  ${v}`);
+    + `  sqlMs=${(w.sqlMs?.mean ?? 0).toFixed(2).padStart(6)}`
+    // DESIGN.md 6.8: a system that does not retrieve has no throughput claim,
+    // so no rate is printed here without the recall it was produced at.
+    + `  R@10=${(w.recall?.mixWeighted?.recallAt10 ?? NaN).toFixed(3)}  ${v}`);
 }
 JS
 echo "[$(date +%T)] closed-loop windows:"
-node "$OUT/read-closed.cjs" "$PWD/$OUT/final-closed.json"
+node "$OUT/read-closed.cjs" "$PWD/$OUT/$TAG-closed.json"
 
-for RATE in 1200 1800 2400; do
+for RATE in ${=RATES}; do
   echo ""
   echo "[$(date +%T)] ================ open-loop, offered ${RATE} QPS ================"
   wait_for_tuner
   on_ac || { echo "ABORT: dropped to battery"; exit 1; }
   sampled node bench-load.mjs --tier rehearsal1m --profile tunedScale --mode open \
     --offered-qps "$RATE" --duration "$DUR" --warmup "$WARM" --skip-select1-probe \
-    --out "$OUT/final-open-$RATE.json"
+    --recall-sample-rate 0.1 \
+    --out "$OUT/$TAG-open-$RATE.json"
   node -e '
     const r = require(process.argv[1]);
     const o = r.open ?? {};
@@ -104,9 +116,10 @@ for RATE in 1200 1800 2400; do
     console.log(`  offered=${o.offeredQps} completed=${(o.qpsCompleted ?? 0).toFixed(1)}`
       + ` p50=${(o.latencyMs?.p50 ?? 0).toFixed(2)}ms p95=${(o.latencyMs?.p95 ?? 0).toFixed(2)}ms`
       + ` p99=${(o.latencyMs?.p99 ?? 0).toFixed(2)}ms`
+      + ` R@10=${(o.recall?.mixWeighted?.recallAt10 ?? NaN).toFixed(3)}`
       + ` inFlightGrowing=${o.inFlightGrowing} window=${w.valid === true ? "valid" : "INVALID: " + w.reason}`
       + ` gate=${r.gate?.pass ? "PASS" : "FAIL"}`);
-  ' "$PWD/$OUT/final-open-$RATE.json"
+  ' "$PWD/$OUT/$TAG-open-$RATE.json"
 done
 
 echo ""
