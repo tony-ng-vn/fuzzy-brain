@@ -37,10 +37,11 @@ import { dirname } from 'node:path';
 import { config } from '../config.mjs';
 import { assertBenchTarget, benchClient } from '../lib/safety.mjs';
 
-// Every arm writes into a throwaway schema and drops it first. The prefix is a
-// hard gate rather than a convention: this script issues `drop schema cascade`,
-// and the loaded tiers (bench_r1m, bench_q50k) must never be reachable by it.
-const SCRATCH_PREFIX = 'bench_bs_';
+// This script issues `drop schema cascade` on whatever it is given, so the
+// loaded tiers are named here and refused by name. A prefix rule was the first
+// version and was wrong in the direction that matters: it also refused
+// bench_x10m, which is the schema the winning arm has to build for real.
+const PROTECTED_SCHEMAS = new Set(['bench_r1m', 'bench_q50k', 'bench_smoke', 'public']);
 
 // Measured by scripts/hnsw-mem-probe.sh; see scripts/hnsw-build.sh for the
 // derivation. Only the bulk arm uses it -- an incremental insert never asks
@@ -169,8 +170,11 @@ async function main() {
     throw new Error(`--arm must be bulk or incremental (got "${arm}")`);
   }
   const schema = args.schema;
-  if (!schema || !schema.startsWith(SCRATCH_PREFIX)) {
-    throw new Error(`--schema must start with "${SCRATCH_PREFIX}" -- this script drops the schema it is given`);
+  if (!schema || !/^bench_[a-z0-9_]+$/.test(schema) || PROTECTED_SCHEMAS.has(schema)) {
+    throw new Error(
+      `--schema must be a bench_* schema and not one of ${[...PROTECTED_SCHEMAS].join(', ')} -- ` +
+        'this script drops the schema it is given',
+    );
   }
   const streams = Number(args.streams);
   const rows = Number(args.rows);
@@ -255,12 +259,25 @@ async function main() {
     if (arm === 'bulk') {
       log('building indexes AFTER the rows, the known baseline');
       report.indexTimings = await createIndexes(admin, schema, { mwmMb, notices });
-    } else if (preIndex) {
-      // Whatever was held back so its cost stayed out of the insert number
-      // still has to exist before the schema can serve a query.
-      const rest = INDEX_SQL(schema).map((s) => s.name).filter((n) => !preIndex.includes(n));
-      log(`building the held-back indexes after the rows: ${rest.join(', ')}`);
-      report.postIndexTimings = await createIndexes(admin, schema, { mwmMb, notices, only: rest });
+    } else {
+      const post = [];
+      if (preIndex) {
+        // Whatever was held back so its cost stayed out of the insert number
+        // still has to exist before the schema can serve a query.
+        const rest = INDEX_SQL(schema).map((s) => s.name).filter((n) => !preIndex.includes(n));
+        log(`building the held-back indexes after the rows: ${rest.join(', ')}`);
+        post.push(...await createIndexes(admin, schema, { mwmMb, notices, only: rest }));
+      }
+      // The primary key comes with the table, so an incremental load is the one
+      // arm that grows it by concurrent page split rather than by sorted build.
+      // Measured at 1M: 36 MB against the bulk arm's 21 MB, and the extra pages
+      // are read on every rerank join. A rebuild is cheap and puts the finished
+      // schema in the same shape a bulk build leaves it.
+      const t0 = Date.now();
+      await admin.query(`reindex index ${schema}.memories_pkey`);
+      post.push({ name: 'reindex_pkey', ms: Date.now() - t0 });
+      log(`  reindex memories_pkey: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      report.postIndexTimings = post;
     }
     const totalMs = Date.now() - wall0;
 
