@@ -420,7 +420,13 @@ export async function buildIndexes(client, tier, opts = {}) {
   const vectorOps = tier.vector === 'real' ? 'vector_cosine_ops' : 'halfvec_cosine_ops';
   const vectorIndexSql = vectorIndexType === 'ivfflat'
     ? `create index if not exists memories_embedding_ivfflat on ${table} using ivfflat (embedding ${vectorOps}) with (lists = ${lists})`
-    : `create index if not exists memories_embedding_hnsw on ${table} using hnsw (embedding ${vectorOps}) with (m = 16, ef_construction = ${tier.vector === 'real' ? 200 : 128})`;
+    // ef_construction 200 at every tier. The synthetic tiers used to build at
+    // 128, a concession to the 90-minute wall-clock gate that DESIGN.md 7.1
+    // retired; the scale tier's index is now built by scripts/hnsw-build.sh at
+    // 200 and every number in 7.2 was measured against that. Leaving 128 here
+    // meant this file would silently rebuild the tier with a different index
+    // than the one the design records.
+    : `create index if not exists memories_embedding_hnsw on ${table} using hnsw (embedding ${vectorOps}) with (m = 16, ef_construction = 200)`;
 
   const steps = tier.vector === 'real'
     ? [
