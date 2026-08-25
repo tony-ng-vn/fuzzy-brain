@@ -87,6 +87,8 @@ const cosQueryTarget = (drift, dims) => 1 / Math.sqrt(1 + drift * drift * dims);
 const cosQuerySibling = (jitter, drift, dims) =>
   1 / ((1 + jitter * jitter * dims) * Math.sqrt(1 + drift * drift * dims));
 
+const cosSiblingTarget = (jitter, dims) => 1 / (1 + jitter * jitter * dims);
+
 for (const n of [1_000_000, 10_000_000]) {
   test(`a same-cluster sibling out-ranks the top-30 noise floor at N = ${n}`, () => {
     const floor = noiseFloor(n, 30, tier.dims);
@@ -96,8 +98,32 @@ for (const n of [1_000_000, 10_000_000]) {
       `sibling-to-query cosine ${sibling.toFixed(3)} must exceed the rank-30 noise floor `
       + `${floor.toFixed(3)} at N = ${n}; below it the corpus has no cluster structure to route on`,
     );
+    // Bare "above the floor" is satisfiable by a hair, and a hair is not a
+    // neighbourhood: individual sibling cosines scatter, so a mean sitting just
+    // over the floor still leaves most of the cluster underneath it.
+    assert.ok(
+      sibling > floor * 1.4,
+      `sibling-to-query cosine ${sibling.toFixed(3)} clears the ${floor.toFixed(3)} floor at N = ${n} `
+      + 'but without margin; the cluster has to be a mode, not a coin flip against noise',
+    );
   });
 }
+
+// THE navigability invariant, and the one the old constants failed hardest.
+// DESIGN.md 7.2: "the target's own graph neighbours are the rows nearest IT,
+// which are noise rows, not rows near the query ... greedy descent has nothing
+// to descend." The fix is exactly that the target's nearest neighbours must be
+// its cluster, which means a sibling has to be closer to the target than the
+// query is. Measured on the real 768-dim tier: 0.808 against 0.705.
+test('the target is closer to its own cluster than to the query that asks for it', () => {
+  const siblingToTarget = cosSiblingTarget(DEFAULT_MEMORY_JITTER, tier.dims);
+  const queryToTarget = cosQueryTarget(DEFAULT_QUERY_DRIFT, tier.dims);
+  assert.ok(
+    siblingToTarget > queryToTarget,
+    `sibling-to-target ${siblingToTarget.toFixed(3)} must exceed query-to-target `
+    + `${queryToTarget.toFixed(3)}, or the target is an isolated spike with no path into it`,
+  );
+});
 
 test('the target still ranks #1 under exact cosine, above its own siblings', () => {
   const target = cosQueryTarget(DEFAULT_QUERY_DRIFT, tier.dims);
