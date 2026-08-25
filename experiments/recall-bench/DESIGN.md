@@ -1547,6 +1547,220 @@ The existing 1M corpus's `embedding` column, and every recall number measured ag
 That is expected and correct: 7.2 already recorded that recall "cannot be measured at the synthetic tiers at all" under the old constants.
 The corpus **text** is untouched -- `gen-corpus.mjs` does not import `lib/synth-vectors.mjs` at all (it certifies the lexical lanes offline and leaves the vector lane to `load.mjs --verify-oracle`), so `queries-dev.jsonl`, `queries-test.jsonl` and every lexical certificate survive the regeneration unchanged.
 
+### 7.4 RESULT (2026-08-25): the vector lane works, decision 3 has an answer, and the throughput gate is now the only one failing
+
+Everything below is measured on the re-embedded 1M corpus, real drifted query vectors rebuilt from `cluster_id`, whole-pipeline recall reported beside every rate because 6.8's rule is that a system which does not retrieve has no throughput claim.
+
+#### The rebuild
+
+Re-embed rather than regenerate, and that choice was forced by a measurement rather than taste.
+`load.mjs --stream` would have rebuilt a *different* corpus: `config.corpus` has moved since this tier was loaded, and of 7 sampled ids **0 of 7** now regenerate to the text actually in the table.
+The loaded corpus is still internally consistent with its query files (every family except `paraphrase_nolex`, which is 0 by design, has 12 of 12 sampled targets sharing content words with the query naming them), so a `--stream` rebuild would have stranded all 4,000 queries against targets that no longer contain what they ask for -- and reported success while doing it.
+
+Since the vector is a pure function of `(id, cluster_id, dims, jitter)` and both inputs are columns on the row, recomputing from the rows already present makes **geometry the only variable** between 7.2's frontier and the one below.
+
+| Step | Measured |
+| --- | --- |
+| Stream COPY of 1M re-embedded rows (`scripts/reembed-synthetic.mjs`) | **42.4 s** |
+| `gin (fts)` on the stored tsvector column | 2.6 s |
+| `btree (person_id, occurred_at)` | 0.3 s |
+| HNSW, m = 16, `ef_construction` = 200, 8 processes, `maintenance_work_mem` 1,521 MB | **6 min 04 s** (was 6 min 43 s) |
+| Spill NOTICE | **none** -- 7.1 constraint (i) held |
+| Heap / HNSW / GIN / pkey / btree | 977 MB / 793 MB / 30 MB / 21 MB / 8.6 MB |
+| Schema total | **1,831 MB**, unchanged from 7.2 |
+
+Jitter does not change bytes per tuple, so the footprint reproduces exactly.
+
+#### The geometry, as loaded
+
+`scripts/geometry-probe.mjs` against `bench_r1m`, 100 test queries, exact top-30 with index scans disabled. The predicted column is the closed form, not a fit.
+
+| | Before (jitter 0.10 / drift 0.15) | Predicted at 0.04 / 0.08 | **After, measured in the DB** | Real 768-dim tier |
+| --- | --- | --- | --- | --- |
+| query to its own target | 0.385 | 0.616 | **0.616** | 0.705 |
+| query to rank 2 of exact top-30 | 0.267 | -- | **0.505** | 0.707 |
+| query to rank 30 of exact top-30 | 0.214 | -- | **0.435** | 0.671 |
+| query to a same-cluster sibling | 0.111 | 0.437 | **0.451** | 0.584 |
+| sibling to sibling | 0.291 | 0.709 | **0.709** | 0.728 |
+| **neighbour to target** | 0.275 | 0.709 | **0.717** | 0.808 |
+| **neighbour-to-target / query-to-target** | **0.71** | 1.15 | **1.164** | **1.146** |
+| same-cluster rows in the exact top-30 | 1.8 of 29 | 29 of 29 | **29.0 of 29** | 0.7 of 29 (a random label) |
+| target rank 1 under exact cosine | 1.000 | 1.000 | **1.000** | 0.395 |
+
+The ratio that defines navigability lands at **1.164** against the real tier's **1.146**, from an analytic solve rather than a search.
+
+#### The vector lane alone
+
+Depth 30, 200 drifted test queries, `hnsw.iterative_scan = off` (`ARM=unfiltered scripts/hnsw-ef-sweep.mjs`).
+
+| `ef_search` | hit@30 BEFORE (7.2) | **hit@30 AFTER** | median ms |
+| --- | --- | --- | --- |
+| exact (index disabled) | 0.995 | **1.000** | 327.28 |
+| 10 | -- | 0.420 | 1.46 |
+| 24 | -- | 0.650 | 1.39 |
+| 40 | 0.085 | **0.780** | 1.72 |
+| 48 | -- | **0.820** | 1.77 |
+| 64 | 0.120 | **0.880** | 2.17 |
+| 100 | 0.155 | **0.935** | 3.17 |
+
+At the setting the tier used to pin, the lane went from finding the target **8.5% of the time to 78%**, and the exact lane is now perfect rather than 0.995.
+Note also that the lane got *more* expensive at equal `ef_search` (1.72 ms against 7.2's 2.09 ms is faster, but the curve is far flatter): a graph with real structure spends its time traversing, where before it terminated early against noise.
+
+#### The whole-pipeline frontier -- decision 3, answered
+
+`bench-load` at concurrency 1, `recall-sample-rate 1.0`, a full pass over all 4,000 test queries per point, every window valid (`scripts/pipeline-ef-sweep.sh`).
+One instrument produces both columns.
+
+| `ef_search` | R@10 mix | R@10 unweighted | R@1 mix | single-stream p50 |
+| --- | --- | --- | --- | --- |
+| 10 | 0.819 | 0.850 | 0.756 | 3.71 ms |
+| 16 | 0.817 | 0.850 | 0.789 | 3.61 ms |
+| 24 | 0.860 | 0.884 | 0.839 | 3.79 ms |
+| 40 (the old pin) | 0.897 | 0.913 | 0.877 | 3.50 ms |
+| **44** | **0.906** | 0.922 | 0.890 | 4.18 ms |
+| **48 (pinned)** | **0.916** | 0.929 | 0.900 | 4.01 ms |
+| 56 | 0.929 | 0.940 | 0.917 | 4.41 ms |
+| 64 | 0.939 | 0.948 | 0.929 | 3.89 ms |
+| 100 | 0.965 | 0.969 | 0.960 | 5.60 ms |
+
+**Decision 3 has an answer: 44 is the smallest `ef_search` clearing 0.90, and 48 is pinned.**
+7.2's best point anywhere was 0.719 at 12.47 ms; 48 beats it by twenty points at a third of the cost.
+
+The p50 column is **not monotone in `ef_search`**, and that is a finding rather than sloppiness: this machine drifts by more than the effect (see the cut hunt below).
+It also says the lane's cost is mostly fixed rather than proportional to `ef`, which the lane-alone table confirms directly -- 1.46 ms at `ef` 10 against 1.77 ms at 48.
+
+**The exact-cosine ceiling, measured first so a gate miss could be attributed rather than argued about.**
+Same pipeline with `ef_search` 1000 and `max_scan_tuples` 2,000,000: **R@10 0.990, R@1 0.989** mix-weighted over 2,901 probes.
+So 0.90 was known to be reachable before a single sweep point was spent, and the remaining gap at 48 is the index's, not the corpus's.
+
+| Family | exact ceiling R@10 | at `ef_search` 48 |
+| --- | --- | --- |
+| rare_token | 1.000 | 1.000 |
+| near_dup | 1.000 | 0.996 |
+| typo_noisy | 1.000 | 0.999 |
+| partial_ref | 1.000 | 0.996 |
+| date_filter | 0.935 | 0.888 |
+| entity_swap | 1.000 | 0.841 |
+| paraphrase_nolex | 1.000 | 0.794 |
+| **mix-weighted** | **0.990** | **0.917** |
+
+Set this beside 6.8's table on the old geometry (overall 0.669, `paraphrase_nolex` 0.180, `entity_swap` 0.350, `date_filter` 0.190) and the shape of the change is exactly the vector lane's footprint returning.
+
+#### The filtered arm, swept on its own knob
+
+7.2 named its own method as a defect here: with `filteredMaxScanTuples` pinned while `efSearch` swept, `date_filter` contributed a fixed floor to every row.
+Swept properly at `ef_search` 48 (`scripts/filtered-arm-sweep.sh`):
+
+| `max_scan_tuples` | date_filter R@10 | R@10 mix | single-stream QPS |
+| --- | --- | --- | --- |
+| **2,000 (pinned)** | 0.884 | 0.915 | **208** |
+| 8,000 | 0.937 | 0.924 | 173 |
+| 20,000 | 0.938 | 0.924 | 139 |
+| 50,000 | 0.940 | 0.925 | 101 |
+
+It stays at 2,000. The lane saturates at 8,000 and the extra costs **17% of the single-stream rate for 0.009 of mix recall**, which is the wrong trade when the gate is already met.
+
+#### The cut hunt, and why its first run was worthless
+
+The target was p50 <= 3.28 ms, from `2400 / 7.86` single-stream equivalents.
+
+Run as sequential arms, **every candidate reported as a slowdown** -- `topK` 25, lane depth 20 and candidate caps 200 all came out worse than baseline, in run order.
+That is not physics. The control that proves it: re-running the **identical baseline configuration** after half an hour of sustained load gave **p50 4.37 ms against 3.86 ms** for the same config earlier.
+The machine drifts by **0.51 ms** over the sequence, three times the effect being measured, with 23 GB of 24 GB used, 11 GB held by the compressor and 8.06 GB in swap.
+
+Interleaved A/B pairs share that environment, so the difference survives even when neither absolute number does:
+
+| Cut | Paired delta p50 | Recall | Verdict |
+| --- | --- | --- | --- |
+| `rerank.topK` 50 -> 25 | **-0.179 ms** (negative in 4 of 4 pairs) | 0.9153 -> 0.9150 | **taken** |
+| lane `depth` 30 -> 20 | inside the drift | 0.916 -> 0.914 | rejected, costs recall for no measurable win |
+| candidate caps 400 -> 200 | inside the drift | 0.916 -> 0.914 | rejected, same |
+
+`topK` 25 is provably free: across **45 measurement windows** the deepest fused rank ever to survive into a final top-10 is **21**, and the count of survivors from past rank 25 is **0**.
+7.2 priced this cut at 0.06-0.10 ms and called it "unnecessary"; free it is, unnecessary it is not, and the saving was understated by roughly 2x.
+
+Prepared-statement reuse was verified rather than assumed: the scale path still travels as one named prepared statement over three lanes (pinned by `tests/recall-bench-scale-lanes.test.mjs`), and the `SELECT 1` ceiling probe reports **98,694 QPS at p50 0.31 ms**, so neither the client nor the round trip is the constraint.
+
+**The cut hunt does not close the gap.** Best measured single-stream p50 is 3.86 ms baseline, 3.68 ms with the cut, against a 3.28 ms requirement. The available cuts total under 0.2 ms.
+
+#### Full validation at 1M
+
+`scripts/full-validation.sh`, 60 s warmup + 120 s measured per window, every window clean of tuner contention, `SELECT 1` ceiling 98,694 QPS.
+
+**Sequential per-family cost profile** (`scripts/family-profile.mjs`), one connection, no load generator:
+
+| Family | share | median core-ms |
+| --- | --- | --- |
+| rare_token | 0.22 | **0.37** (vector lane skipped by the df gate) |
+| paraphrase_nolex | 0.23 | 1.61 |
+| typo_noisy | 0.07 | 1.88 |
+| near_dup | 0.15 | 2.15 |
+| partial_ref | 0.07 | 2.16 |
+| entity_swap | 0.11 | 3.51 |
+| date_filter | 0.15 | 7.62 |
+| **mix-weighted median** | | **2.59 core-ms** |
+
+**Closed-loop sweep**, all three windows valid:
+
+| concurrency | QPS | p50 | p95 | p99 | R@10 |
+| --- | --- | --- | --- | --- | --- |
+| 8 | **1,786** | 3.75 ms | 10.08 ms | 14.42 ms | **0.917** |
+| 16 | 1,573 | 6.63 ms | 29.60 ms | 68.14 ms | 0.917 |
+| 32 | 1,488 | 8.01 ms | 110.35 ms | 178.96 ms | 0.916 |
+
+Throughput *falls* past concurrency 8, so 1,786 QPS is the saturation ceiling and not a step on the way up.
+
+**Open-loop, climbing:**
+
+| offered | completed | p50 | p95 | p99 | R@10 | in-flight flat | window |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1400 | 1,441.9 | 30,269 ms | 56,197 ms | 65,540 ms | 0.918 | **no** | **INVALID** (overran 37%) |
+| 1800 | 1,807.4 | 178 ms | 2,233 ms | 2,421 ms | 0.916 | yes | valid, **gate FAIL** (p50 > 41 ms) |
+| 2100 | 2,249.3 | 103,785 ms | 122,548 ms | 124,316 ms | 0.917 | **no** | **INVALID** (overran 69%) |
+| 2400 | 2,704.2 | 39,729 ms | 62,300 ms | 62,451 ms | 0.917 | **no** | **INVALID** (overran 35%) |
+
+**Reported as a miss, not smoothed.** Three of four open-loop windows are invalid by the harness's own guard, and the 1400 window being catastrophically worse than the 1800 one is not a physical ordering -- it is the machine, which was at 65 MB of free pages and 8.06 GB of swap throughout.
+The honest statement is that the sustainable open-loop rate at the p50 <= 41 ms budget is **below 1,400 QPS**, and that these rate numbers carry a machine-state caveat that the recall numbers do not.
+
+**What the whole exercise moved.** Recall is stable at **0.916-0.918 in every single window**, closed and open, at every concurrency and every offered rate.
+The closed-loop ceiling was ~1,805 QPS before this work and is ~1,786 QPS now.
+
+> **The throughput is unchanged and the retrieval now works.** 7.2 measured 0.669 whole-pipeline recall and a 1,805 QPS ceiling; this measures **0.917 at 1,786 QPS**. Twenty-five points of recall cost roughly 1% of the rate, because an ANN probe costs what it costs whether or not it finds anything -- which is exactly what 6.8 predicted, now confirmed from the other side.
+
+#### The 10M rung, re-decided: **still NO-GO, but for a different and smaller reason**
+
+The 2026-08-24 no-go was on **validity**: a 10M run would have produced a throughput figure attached to a recall figure that measured the corpus generator.
+**That blocker is gone.** 7.3 fixed the geometry, and 0.917 whole-pipeline recall at 1M with a 0.990 exact ceiling is a measurement of the retrieval system.
+
+The gates were re-checked with measurements rather than projections.
+
+| Gate | Measured / projected to 10M | Verdict |
+| --- | --- | --- |
+| Validity (the 2026-08-24 blocker) | recall is now a property of the system, not the generator | **PASS -- newly** |
+| Disk (<= 30 GB) | 1,831 MB at 1M -> ~18.3 GB, on a volume with **68 GB free** | **pass** |
+| Build wall clock (7.1: hours acceptable) | 6 min 04 s at 1M -> ~60 min linear, 2-3 h with superlinearity | **pass** |
+| `maintenance_work_mem` must hold the graph | 1,227 B/tuple -> 12.3 GB, **+30% margin = 15.9 GB requested** | **FAIL** |
+| Rung 3 throughput ("comfortably above 2,400 QPS") | ceiling **1,786 QPS**, sustainable open-loop below 1,400 | **FAIL** |
+
+**The memory gate, with the numbers rather than an adjective.**
+The 1M build requested 1,521 MB and completed without a spill NOTICE. Scaled, 10M needs **15.9 GB**, and that is a *lower bound*: the 1,227 B/tuple constant was measured at `max_parallel_maintenance_workers = 0`, while the real build runs 8 processes sharing a DSM segment.
+
+At the moment of measurement this 24 GB machine had:
+
+- **4,165 free pages -- 65 MB**
+- **8,060 MB of 9,216 MB swap already in use**
+- 4.54 GB wired, `shared_buffers` 6 GB
+
+Lowering `shared_buffers` to 1 GB via a cluster restart frees 5 GB. That is not the missing 15.9 GB, on a machine already 8 GB into swap.
+A build that spills is not a slower build but one whose duration stops extrapolating, which is the entire reason constraint (i) exists -- and a build that thrashes swap fails the same way for a different reason.
+
+**The throughput gate fails independently**, and section 7's rule is that a failed gate stops the ladder rather than getting waived. Rung 3 asks for the 1M bench comfortably above 2,400 QPS; it is at 1,786 QPS saturated, 0.74x the target, with no valid open-loop window at the latency budget.
+
+**So the ladder stops here, and the reason has changed category.**
+It is no longer "this measurement would be meaningless" -- it would now be meaningful.
+It is "this machine cannot build or serve it", which is a resource statement, answerable by hardware, and one a reader can act on.
+The rung that carries a recall claim today is still rung 2 at 50K on real embeddings; what rung 3 now additionally carries is a **working** vector lane at 1M, and the cost profile and rate ceiling that go with it.
+
 #### What the IVFFlat fallback costs in recall, measured at 50K (2026-08-24)
 
 The HNSW build blew the 90-minute gate, so the scale tier runs IVFFlat, and the gate above owes a number for what that costs.
