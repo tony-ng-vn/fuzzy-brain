@@ -1396,6 +1396,13 @@ function getPlan(tier) {
   return planCache.get(key);
 }
 
+// The whole plan, filler included -- what generateMemories walks. Exported so
+// the streaming composer can run its own equivalence control down an otherwise
+// identical path (scripts/stream-corpus.mjs --monolithic).
+export function fullPlan(tier) {
+  return getPlan(tier);
+}
+
 // The structured half of a tier's plan: every memory a query points at, the
 // dev/test cases, the multi-target cases, and the repair pass over them --
 // with the filler left ungenerated. See buildPlan's `fillTo` comment for why

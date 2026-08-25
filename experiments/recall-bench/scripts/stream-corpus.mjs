@@ -73,7 +73,7 @@ const { assertBenchTarget, benchClient } = await import(`${BENCH}/lib/safety.mjs
 const { encodeField } = await import(`${BENCH}/load.mjs`);
 const { makeRng } = await import(`${BENCH}/lib/rng.mjs`);
 const {
-  structuredPlan, fillerMemoryFactory, buildMemoryIndex,
+  structuredPlan, fullPlan, fillerMemoryFactory, buildMemoryIndex,
   generateQueries, generateMultiTargetQueries,
 } = await import(`${BENCH}/gen-corpus.mjs`);
 
@@ -85,6 +85,13 @@ const { values: args } = parseArgs({
     'dry-run': { type: 'boolean', default: false },
     'skip-queries': { type: 'boolean', default: false },
     'out-dir': { type: 'string' },
+    // The equivalence control. Loads the SAME tier through gen-corpus's
+    // original monolithic plan -- full corpus materialized, global shuffle,
+    // repairAnchors over every memory -- down this script's own COPY path and
+    // query writer. Only usable at sizes where that plan fits in RAM (~7.1 KB
+    // per memory), which is the point: run both at 400k, diff the per-family
+    // recall, and the streaming composition is either equivalent or it is not.
+    monolithic: { type: 'boolean', default: false },
   },
 });
 if (!args.tier) throw new Error('stream-corpus.mjs requires --tier <name>');
@@ -112,10 +119,14 @@ assertBenchTarget(config.db.url);
 // ---------------------------------------------------------------------------
 
 const t0 = Date.now();
-const plan = structuredPlan(tier);
+const MONO = args.monolithic;
+const plan = MONO ? fullPlan(tier) : structuredPlan(tier);
 const S = plan.memories.length;
-log(`structured plan: ${S.toLocaleString()} memories, ${plan.cases.length} dev+test cases, ${plan.multiCases.length} multi cases (${((Date.now() - t0) / 1000).toFixed(1)}s, rss ${(process.memoryUsage().rss / 1048576).toFixed(0)} MB)`);
-if (S > N) throw new Error(`structured plan needs ${S} memories but --rows is ${N}`);
+log(`${MONO ? 'MONOLITHIC (equivalence control)' : 'structured'} plan: ${S.toLocaleString()} memories, ${plan.cases.length} dev+test cases, ${plan.multiCases.length} multi cases (${((Date.now() - t0) / 1000).toFixed(1)}s, rss ${(process.memoryUsage().rss / 1048576).toFixed(0)} MB)`);
+if (S > N) throw new Error(`plan needs ${S} memories but --rows is ${N}`);
+// In the monolithic control S == N, so the block width below is 1 and the
+// placement is the identity -- ids stay exactly where the plan's own shuffle
+// put them, and the filler branch is never taken.
 
 // One structured memory per equal-width block of the id space, at a seeded
 // offset inside its block. Distinctness is structural rather than checked, and
