@@ -28,7 +28,9 @@ const { config, resolveTier } = await import(`${BENCH}/config.mjs`);
 const { benchClient } = await import(`${BENCH}/lib/safety.mjs`);
 const { queryVector, DEFAULT_QUERY_DRIFT } = await import(`${BENCH}/lib/synth-vectors.mjs`);
 
-const tier = resolveTier('rehearsal1m');
+// TIER is overridable so the same lane probe runs at 10M; default unchanged.
+const TIER_NAME = process.env.TIER ?? 'rehearsal1m';
+const tier = resolveTier(TIER_NAME);
 const DEPTH = config.lanes.scale.depth;
 const N = Number(process.env.N ?? 200);
 const ARM = process.env.ARM ?? 'both';
@@ -37,7 +39,7 @@ const EFS = (process.env.EFS ?? '40,64,100,200,400').split(',').map(Number);
 const client = benchClient();
 await client.connect();
 
-const all = readFileSync(`${BENCH}/.out/rehearsal1m/queries-test.jsonl`, 'utf8')
+const all = readFileSync(`${BENCH}/.out/${TIER_NAME}/queries-test.jsonl`, 'utf8')
   .split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
 // The drifted query vector, rebuilt exactly as gen-corpus made it. cluster_id

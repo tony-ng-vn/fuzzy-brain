@@ -1045,6 +1045,26 @@ const lastVectorGucs = new WeakMap();
 // filtered lane; see config.lanes.scale.filteredIterativeScan for the numbers.
 // It is scale-path only, so the quality tier's filtered lane behaves exactly as
 // it did before.
+// pgvector declares hnsw.ef_search with max_val 1000. Found the hard way on
+// 2026-08-25: a 10M "near-exact ceiling" run asked for 4,000 through the pool's
+// startup options, the extension was not loaded yet so Postgres accepted it as
+// an unvalidated placeholder, and every connection then served at the DEFAULT
+// 40. The window ran to completion and reported 0.731 -- which reads as a
+// plausible ceiling and is in fact this tier's ef_search 40 number. A sweep knob
+// that silently becomes its own default is the worst kind of measurement bug,
+// so the range is checked here instead of being discovered in a result.
+const HNSW_EF_SEARCH_MAX = 1000;
+
+function assertEfSearch(value, where) {
+  if (!Number.isInteger(value) || value < 1 || value > HNSW_EF_SEARCH_MAX) {
+    throw new Error(
+      `vectorSessionSettings: hnsw.ef_search must be an integer in 1..${HNSW_EF_SEARCH_MAX} (pgvector's own range), ` +
+        `got ${value} from ${where}. Postgres accepts an out-of-range value as a placeholder before the extension ` +
+        `loads and then serves every query at the default, so this fails loudly rather than measuring the default.`,
+    );
+  }
+}
+
 export function vectorSessionSettings(tier, cfg, filterActive) {
   const scale = tierKind(tier) === 'synthetic';
   if (scale) {
@@ -1058,6 +1078,8 @@ export function vectorSessionSettings(tier, cfg, filterActive) {
     // workload carrying a date and 96 pooled connections, was turning roughly a
     // quarter of all queries into two round trips instead of one.
     const s = cfg.lanes.scale;
+    assertEfSearch(s.efSearch, 'config.lanes.scale.efSearch');
+    assertEfSearch(s.filteredEfSearch, 'config.lanes.scale.filteredEfSearch');
     return [
       `SET hnsw.ef_search = ${s.efSearch}`,
       `SET ivfflat.probes = ${s.ivfProbes}`,
@@ -1066,8 +1088,10 @@ export function vectorSessionSettings(tier, cfg, filterActive) {
     ].join('; ');
   }
   const laneCfg = cfg.lanes.quality;
+  const efSearch = filterActive ? cfg.lanes.filteredEfSearch : laneCfg.efSearch;
+  assertEfSearch(efSearch, filterActive ? 'config.lanes.filteredEfSearch' : 'config.lanes.quality.efSearch');
   return [
-    `SET hnsw.ef_search = ${filterActive ? cfg.lanes.filteredEfSearch : laneCfg.efSearch}`,
+    `SET hnsw.ef_search = ${efSearch}`,
     `SET ivfflat.probes = ${laneCfg.ivfProbes}`,
     `SET hnsw.iterative_scan = off`,
     `SET hnsw.max_scan_tuples = 20000`,
