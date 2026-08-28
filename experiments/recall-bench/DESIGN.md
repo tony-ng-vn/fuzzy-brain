@@ -2117,6 +2117,195 @@ The first round is cheap because the graph is nearly empty; from 200,000 rows on
 Every incremental number above was taken on an index that fits in RAM: at 1M the whole schema is 1.8 GB inside 6 GB of `shared_buffers`. At 10M the HNSW index alone is ~8 GB against those same 6 GB and roughly 100 MB of free OS pages, so the insert path starts missing cache on a graph traversal that touches hundreds of nodes per row. Nothing measured at 1M bounds that step.
 So `10,000,000 / 930 = 2 h 59 m` is a **lower bound with no upper bound attached**, and it is reported as one.
 
+### 7.6 RESULT (2026-08-25): the 10M rung was built and measured, and it stops on memory, not on the design
+
+7.5 closed both memory walls it found: the corpus streams instead of materializing, and the graph grows one insert at a time instead of needing 15.9 GB of `maintenance_work_mem` up front.
+What that section left open was whether the built graph actually retrieves at 10M and whether the throughput gate has a chance at 2,400 QPS.
+This section is that run, in full: `scripts/build-10m.sh` to build `bench_x10m`, then `.out/full10m/verify.log` and `.out/full10m/claim-b.log` to measure it.
+
+#### The build: incremental, 8 streams, chosen on measured recall equivalence
+
+`bench_x10m` was built by creating the HNSW index empty on the target table and then streaming 10,000,000 rows through 8 concurrent insert streams out of a staging heap (`bench_x10m_stage.memories`), so every row lands as an ordinary index insert rather than a bulk graph build.
+That is not a guess.
+It is the arm that won a three-way comparison at 1M, run on the same afternoon (`scripts/build-strategy.sh`, `.out/build-strategy/arms-1m.log`), condensed here to the numbers that justified it -- the full table is in 7.5.
+
+| | bulk | incremental, 8 streams | bulk, spilled |
+| --- | --- | --- | --- |
+| total wall clock | 431.9 s (7 min 12 s) | 1,068.9 s (17 min 49 s) | 1,155.9 s (19 min 16 s) |
+| swap delta | -2,749 MB | +911 MB | +1,341 MB |
+| whole-pipeline R@10 (mix) | 0.9129 | **0.9142** | 0.9095 (contaminated by a truncated statement name -- discarded, see 7.5) |
+
+The incrementally grown graph scored 0.9142 against the bulk graph's 0.9129 on 9,394 and 12,783 probes of the same query pool, and asked for zero `maintenance_work_mem` doing it.
+A graph built one insert at a time is not the same graph.
+It did not have to retrieve the same.
+It does, and it comes out fractionally ahead.
+The price is wall clock -- 2.5x bulk's -- and that price buys freedom from a memory ceiling entirely, which is the trade 7.1 already permits.
+
+**The 10M build, as run** (`.out/full10m/build.log`):
+
+| Step | Measured |
+| --- | --- |
+| Insert phase, 10,000,000 rows, ordinary index inserts | 13,955.0 s (3 h 52 m), 717 rows/s average |
+| `gin_fts`, built after the rows | 21.3 s |
+| `btree(person_id, occurred_at)`, built after the rows | 7.6 s |
+| Reindex `memories_pkey` | 4.0 s |
+| **Total wall clock** | **13,988.4 s (3 h 53 m)** |
+| Spill NOTICEs | none |
+| Memory, before -> after | free 57 MB -> 56 MB; swap 8,589.81 MB -> 12,830.25 MB (delta +4,240.44 MB) |
+
+The insert rate did not hold flat the way it did up to 1M in 7.5.
+Per-million-row throughput rose through the middle of the run (855 rows/s by 2M, peaking around 1,555 rows/s near 6-7M) and then collapsed in the last two million rows -- 423 rows/s approaching 9M, 231 rows/s in the final round -- while swap oscillated in the 10-12 GB band the whole way.
+That is the same mechanism 7.5 flagged as unmeasured at 1M ("the insert path starts missing cache on a graph traversal that touches hundreds of nodes per row"), now measured rather than projected: once the HNSW graph grew past what the machine could keep cached, even ordinary inserts started paying for it.
+
+**Final object sizes, `bench_x10m`:**
+
+| Object | Size |
+| --- | --- |
+| `memories` (heap) | 9,766 MB |
+| `memories_embedding_hnsw` | 7,920 MB |
+| `memories_fts_gin` | 272 MB |
+| `memories_pkey` | 214 MB |
+| `memories_person_occurred_at_btree` | 68 MB |
+| **Schema total** (as the harness reports it) | **17.82 GB** |
+
+#### The 10M recall frontier, and why the beam has to widen
+
+`scripts/hnsw-ef-sweep.mjs` against real drifted query vectors rebuilt from `cluster_id`, single stream, a full pass at each point (`.out/full10m/ef-sweep-high.log`):
+
+| `ef_search` | R@10 (mix) | R@10 (unweighted) | R@1 (mix) | p50 | QPS |
+| --- | --- | --- | --- | --- | --- |
+| 200 | 0.880 | 0.891 | 0.874 | 82.05 ms | 10.9 |
+| **400** | **0.938** | 0.946 | 0.934 | 95.36 ms | 8.7 |
+| 1000 | 0.986 | 0.989 | 0.986 | 241.29 ms | 4.1 |
+
+Clearing the 0.90 floor at 10M needs `ef_search` ~400.
+At 1M it needed 44 (0.906), with 48 the pinned value (0.916, 7.4).
+That is roughly a ninefold wider beam for the same recall target, and it has an arithmetic cause rather than a "the graph got worse" one.
+
+7.3 derives the top-k noise floor of N unrelated rows as `z(1 - k/N) / sqrt(D)`, and prices it at both tiers of this corpus: **0.251 at 1M, 0.283 at 10M**.
+Ten times the rows does not multiply the floor by ten -- it is a quantile, not a sum -- but it does rise, against a target-to-neighbour geometry (7.3's navigability ratio, ~1.15-1.16 at both tiers) that does not move with N at all.
+A wider corpus means more rows resemble the target by chance alone, so the same greedy graph walk that reached the target's neighbourhood easily at 1M now has to pass nine times as many merely-plausible dead ends before it lands on the real one, and `ef_search` is exactly the knob that buys more of that walk.
+The target is no less findable than it was.
+The crowd around it is thicker.
+
+**Whether the incremental build strategy is the culprit: no, and the 1M arm data says so directly.**
+The build-strategy comparison above measured the incremental arm's recall (0.9142) against the bulk arm's (0.9129) at the same `ef_search` = 48 on the same 1M corpus, and the incremental graph came out marginally ahead, not behind.
+If an incrementally grown graph searched worse than a bulk one, that is exactly where it would show up, and it shows the opposite.
+The wider beam at 10M is the noise-floor arithmetic above, not something inherited from how the graph was built.
+
+#### The throughput measurement at 10M, `ef_search` = 400
+
+`bench-load.mjs`, `tunedScale` profile, schema 17.82 GB, 10,000 of the configured 200,000-query pool loaded (`.out/full10m/claim-b.log`, `claimb-ef400-*.json`).
+Every window below is valid.
+Recall held between 0.930 and 0.956 across all eight of them, closed and open alike.
+
+**Step 0, client ceiling.** `SELECT 1`: **111,623 QPS, p50 0.26 ms**, floor 9,600, pass.
+The client and the round trip are not the constraint.
+Whatever the rest of this section finds is inside Postgres.
+
+**Closed-loop sweep, 60 s warmup / 120 s measured per concurrency:**
+
+| concurrency | completed QPS | p50 | p95 | p99 | R@10 (mix) |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 57.5 | 108.25 ms | 446.32 ms | 745.61 ms | 0.930 |
+| 16 | 94.1 | 129.37 ms | 544.78 ms | 940.16 ms | 0.941 |
+| 32 | 97.2 | 234.77 ms | 1,073.49 ms | 1,952.64 ms | 0.938 |
+| 64 | 99.5 | 457.59 ms | 2,124.29 ms | 4,019.58 ms | 0.940 |
+
+Throughput is flat from 16 to 64 (94.1 -> 97.2 -> 99.5 QPS) while p50 nearly quadruples, which is a queue lengthening under a fixed service rate, not more capacity being found.
+Call the closed-loop ceiling **~97 QPS**, the concurrency-32 point -- concurrency 64 buys 2.3 more QPS at double the latency, not a meaningfully different ceiling.
+
+**Open-loop, offered from below:**
+
+| offered | completed | p50 | p95 | p99 | R@10 (mix) | in-flight | gate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20 | 20.0 (3,600/3,600) | 92.75 ms | 358.69 ms | 620.59 ms | 0.956 | flat | FAIL (p50 > 41 ms) |
+| 40 | 40.1 (7,200/7,200) | 95.20 ms | 356.10 ms | 628.06 ms | 0.932 | flat | FAIL (p50 > 41 ms) |
+| 60 | 60.1 (10,800/10,800) | 179.11 ms | 4,061.45 ms | 6,604.04 ms | 0.931 | **growing** | FAIL |
+| 80 | 80.1 (14,400/14,400) | 165.11 ms | 1,755.57 ms | 3,009.25 ms | 0.935 | **growing** | FAIL |
+
+At 20 and 40 offered, `offered == completed` to within 0.3% and in-flight stays flat, so the *rate* is genuinely sustained -- what fails is the 41 ms p50 budget, by more than double even at the lowest rate tried.
+At 60 and 80, in-flight grows across the window, so the rate itself has not settled; those two rows describe a queue still filling, not a steady state, and reading a throughput number off them the way 20 and 40 support one would claim more than the window shows.
+
+**The sustainable open-loop rate is ~40 QPS**, at p50 95.20 ms and R@10 (mix) 0.932 -- the highest offered rate where `offered == completed` and in-flight stayed flat.
+Recall is not the problem anywhere in this table (0.930-0.956 throughout); the gate that fails is latency, and the sustained rate misses the 2,400 QPS target by roughly 60x.
+
+#### The root cause: this machine cannot hold the working set
+
+**Postgres's own cache says so first.** Heap buffer hit ratio across the claim-B windows ran **0.351-0.380** (35.1%-38.0%), and the single-stream `ef_search` sweep immediately before it read 0.315.
+At 1M the same measurement (`.out/rehearsal1m/final-closed.json`, `final-open-1200.json`) reads **0.9999** (99.99%) in both the closed-loop sweep and the 1,200-QPS open-loop window.
+Six or more heap reads in ten at 10M are going somewhere other than `shared_buffers`.
+
+**The machine backs that up.** `shared_buffers` is 6 GB (`infra/postgresql.bench.conf`, sized for a native cluster splitting a 24 GB host rather than a dedicated box) against a 17.82 GB schema -- 9,766 MB heap plus 7,920 MB HNSW alone is already 17.7 GB, before the GIN or the primary key.
+The last captured OS-level memory snapshot (`.out/full10m/build-arm.json`) is timestamped 17:34:09, the moment the build finished, and shows **56 MB free and 12,830.25 MB (12.5 GB) of swap in use**, up from 8,589.81 MB before the build started, on a 24 GB host shared with everything else running on it.
+Verification (`verify.log`) starts at 17:41 and claim B (`claim-b.log`) runs 18:22-18:48, so that snapshot is 48 minutes and a full verification pass old by the time the throughput windows above were measured, and OS-level swap and free-page telemetry was not captured again during those windows -- only the Postgres-level buffer hit ratios reported above were.
+What the 17:34 snapshot establishes is the floor this run started from: a machine already 56 MB from empty and 12.5 GB into swap does not recover that headroom on its own in the next 48 minutes, and the buffer hit ratio drop is independent corroboration that the working set did not become resident.
+
+**EXPLAIN confirms it is page I/O, not search cost.** Six queries per family at `ef_search` 400 (`.out/full10m/claimb-ef400-explain.log`):
+
+| Family | HNSW index scan, mean exec |
+| --- | --- |
+| date_filter | 205.825 ms |
+| paraphrase_nolex | 83.452 ms |
+| entity_swap | 63.018 ms |
+| near_dup | 61.230 ms |
+| partial_ref | 60.171 ms |
+| typo_noisy | 57.494 ms |
+| rare_token | 0 ms (vector lane skipped by the df gate) |
+
+The scan alone costs **57-206 ms per query** across every family that reaches it.
+The one clean 1M baseline for this comparison is 7.4's "vector lane alone" sweep -- post-re-embed HNSW, `iterative_scan = off`, median across 200 drifted test queries -- which reads **1.77 ms at `ef_search` 48**, the tier's pinned value.
+(7.4 also priced a vector-only lane per family, but at `probes = 8` on `memories_embedding_ivfflat`, the fallback the design carried before the 90-minute HNSW build gate was revised in 7.1 -- a different index on a different corpus, and 7.4 itself warns against reporting a comparison like that to more than one significant figure.
+The 1.77 ms figure is the one built on the same index family this run used.)
+Against that single baseline, 57-206 ms at 10M is **roughly 32x to 116x** the 1M cost -- stated as an order of magnitude rather than a coefficient, because the two numbers come from different instruments (EXPLAIN plan-node mean exec time here, sweep median there) even though both describe the same HNSW index scan.
+A jump of that size, on the same graph shape running the same kind of search, is what a mostly-sequential in-memory traversal turns into once it has to fault to disk for most of the nodes it visits.
+
+**One number from this run must not travel any further than this paragraph.** Step 1 of the claim run (`.out/full10m/claim-b.log`) is a sequential, single-connection, no-load-generator per-family cost profile -- exactly 7.4's method at 1M -- and it reads mix-weighted median 5.53 core-ms, projecting to **2,169 QPS on 12 cores**.
+That projection is not a result.
+The rows it walks come from a 10,000-query pool (against a 200,000 target) already touched by the geometry probe and the `ef_search` sweep earlier in the same session, so by the time this step runs they are warmer than a random query's target row has any right to be.
+The closed-loop and open-loop tables above, run minutes later against the same schema under the load this benchmark exists to measure, show what an unwarmed random query actually costs: 108-458 ms p50 under concurrency, not 5.53 ms.
+The 2,169 figure is named here once so its absence from every other table in this section reads as deliberate, not as an oversight.
+
+**Set beside 1M, where the same engine has room to work:** 1,200 QPS open-loop, `offered == completed`, in-flight flat, **p50 11.91 ms**, R@10 (mix) **0.917** (7.4).
+Same fusion SQL, same rerank in Node, same query engine.
+The only thing that changed is whether the working set fits in memory.
+
+#### What closes the gap, as arithmetic
+
+**(a) Memory.** The schema is 17.82 GB; `shared_buffers` here is 6 GB inside a 24 GB host that is shared with everything else running on it, and it was already at 12.5 GB of swap and 56 MB free before a single claim-B query ran.
+Holding the full working set (heap + HNSW, 17.7 GB) resident, with headroom left for the OS page cache, `work_mem` across a 96-connection pool, and the rest of the operating system, needs meaningfully more than 24 GB.
+**Projected, not measured:** something in the range of 48-64 GB dedicated to this database -- roughly 2.5-3.5x the working set, the usual headroom a resident working set needs above the bytes it occupies.
+No run here tested a bigger machine.
+
+**(b) Compute.** Clearing the recall floor at 10M costs `ef_search` ~400 against 1M's 48, an 8.3x wider beam.
+Two bracketing assumptions, both from measured 1M data, and neither is the true multiplier:
+
+- **Linear in beam width.** If cost scaled 1:1 with `ef_search`, closing 12 cores / 1,786 QPS at `ef` 48 up to 2,400 QPS at 8.3x the per-query cost needs `12 x (2400 / 1786) x 8.3` ~= **130 cores**.
+- **The measured elasticity instead.** 1M's own lane-alone sweep (7.4) shows cost does *not* scale linearly with `ef_search` -- 1.46 ms at `ef` 10 to 3.17 ms at `ef` 100 is a 2.2x cost increase for a 10x wider beam, an elasticity of about 0.34.
+  Applying that same elasticity to the 8.3x beam ratio gives roughly a 2.1x compute multiplier, so `12 x (2400 / 1786) x 2.1` ~= **35 cores**.
+
+Both are projections, not measurements -- no run here was compute-bound rather than memory-bound, so nothing measured pins the true multiplier between them.
+**Reported as a bracket: on the order of 35-130 physical cores**, tens rather than single digits and nowhere near hundreds, with the low end resting on the more defensible assumption (measured sub-linear elasticity) and the high end on the more conservative one (linear scaling).
+The other route avoids the bracket entirely:
+
+- **A cheaper index at the same recall.** An HNSW graph with higher `m` / `ef_construction`, or a quantized index (`halfvec`, product quantization), that reaches the 0.90 floor nearer `ef_search` 48 than 400 would bring the per-query compute back toward the 1M figure -- the figure where the *same* 12 cores this machine already has deliver **~1,786 QPS closed-loop**, already measured, no projection required.
+
+**(c) The harness does not need to change to use either fix.** `scripts/build-10m.sh` builds the corpus and index and `scripts/claim-b.sh` measures it end to end, calling `scripts/full-validation.sh` for the closed/open-loop sweep along the way; a bigger or more-cored machine reruns the same two scripts against the same corpus and reports the same tables, not a redesigned benchmark.
+
+#### The verdict
+
+Rung 4 was built and measured.
+The two blockers 7.5 named are both closed: the corpus streams instead of materializing (425 MB peak RSS against a 71-79 GB projection for the old monolithic path), and the graph grows incrementally with no `maintenance_work_mem` ceiling to hit.
+
+| Gate | Measured | Verdict |
+| --- | --- | --- |
+| Recall floor (>= 0.90) | 0.938 at `ef_search` 400; 0.930-0.956 across every claim-B window | **PASS** |
+| Claim B: sustained 2,400 QPS, `offered == completed`, p50 <= 41 ms | closed-loop ceiling ~97 QPS; open-loop sustains at most ~40 QPS at p50 95 ms | **FAIL, by roughly 60x on rate** |
+
+The failure is resource-bound, in a fixed order: memory first (heap hit ratio 35.1-38.0% across the claim-B windows against >99.9% at 1M, on a machine that was 56 MB from empty and 12.5 GB into swap 48 minutes before those windows ran), then cores, once memory stops being the binding constraint.
+It is not a defect in the retrieval design, the fusion SQL, or the corpus geometry -- all three are the same code and the same shape of corpus that clears the 1M gate comfortably, at higher recall than the 1M gate even asks for.
+It is reproducible from this repo on different hardware without touching a line of the benchmark: `scripts/build-10m.sh` to build, then `scripts/claim-b.sh` (which runs the SELECT 1 ceiling, the per-family profile, the plan-node profile, and calls `scripts/full-validation.sh` for the closed/open-loop sweep, in that order) to measure.
+
 ### Rung 4: 10M full run -- **claim B**
 
 The claim run.
