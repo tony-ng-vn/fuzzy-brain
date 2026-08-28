@@ -8,6 +8,20 @@ Two claims are under test.
 Claim A is about quality: on a 50,000-memory corpus with a 1,000-query test split, a naive vector-only baseline lands well below a tuned lexical/vector retriever with reciprocal-rank fusion, and the tuned system reaches Recall@10 >= 0.91.
 Claim B is about scale: hybrid retrieval over 10,000,000 synthetic memories sustains >= 2,400 queries per second at <= 41 ms median latency.
 
+## Measured results
+
+All three tiers have been run against a live cluster.
+Full reasoning and every supporting table are in `DESIGN.md`; this is the headline numbers only.
+
+| Tier | Recall | Throughput | Verdict |
+| --- | --- | --- | --- |
+| `quality50k` (claim A) | tuned Recall@10 **0.977**, 95% bootstrap CI [0.968, 0.986]; naive baseline 0.697 | -- | **PASS** (gate is Recall@10 >= 0.91) |
+| `rehearsal1m` | R@10 0.917 | 1,200 QPS sustained open-loop, p50 12 ms; ~1,786 QPS closed-loop ceiling | gate is 2,400 QPS; not reached at 1M, but recall and cost profile are real measurements of a working system |
+| `full10m` (claim B) | R@10 0.938 at `ef_search` 400 | ~40 QPS sustained open-loop, p50 ~95 ms, on this laptop | **FAIL on rate, by ~60x** -- recall passes; the shortfall is memory-bound on this machine, not a defect in the retrieval design (`DESIGN.md` section 7.6) |
+
+The 10M run is the honest one to read carefully: the corpus builds, the index builds, the recall floor is cleared, and the throughput gate still fails, because the working set (17.82 GB) does not fit in this machine's memory.
+`DESIGN.md` 7.6 has the full build, the recall frontier, the throughput tables, the root-cause evidence, and the arithmetic for what a bigger machine would need.
+
 ## The safety rule, first
 
 This harness never touches the real brain.
@@ -169,7 +183,7 @@ infra/            cluster lifecycle, schema DDL, server tuning
 ## What is not built yet
 
 The corpus generator and its tests run end to end.
-Everything downstream of `load.mjs` has been syntax-checked and imports cleanly, but has not been executed against a live cluster.
+Everything downstream of `load.mjs` has since been run against a live cluster at all three tiers -- see Measured results above and `DESIGN.md` sections 5, 7.4, and 7.6.
 
 Three gaps are worth knowing about before trusting a number out of this harness.
 
