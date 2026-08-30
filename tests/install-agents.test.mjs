@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveNodePath, installLauncher, launcherPaths } from "../scripts/lib/agent-launcher.mjs";
 import { replaceTomlTable, mergeMcpServer, tomlTableExists } from "../scripts/lib/mcp-config.mjs";
-import { runInstall } from "../scripts/install-agents.mjs";
+import { parseArgs, runInstall } from "../scripts/install-agents.mjs";
+import {
+  checkSourceReady,
+  needsDependencyInstall,
+  readSourceState,
+  resolveLaunchRoot,
+  runtimePaths,
+  syncRuntime,
+  SourceNotReadyError,
+} from "../scripts/lib/agent-runtime.mjs";
 
 function tempHome() {
   return mkdtempSync(join(tmpdir(), "fuzzy-brain-agents-test-"));
@@ -14,6 +23,50 @@ function tempHome() {
 function captureLog() {
   const lines = [];
   return { log: (line) => lines.push(line), lines };
+}
+
+// Cloning a repo is not what the agent-config tests are about, and none of
+// them may go near the real ~/.fuzzy-brain, so they all stub the sync.
+function fakeRuntimeSync({ homeDir, dryRun }) {
+  return {
+    ...runtimePaths(homeDir),
+    dryRun: Boolean(dryRun),
+    action: "update",
+    commit: "abc1234",
+    subject: "a commit on main",
+    dependencies: { install: false, reason: "package-lock.json unchanged" },
+    warnings: [],
+  };
+}
+
+function installAgents(options) {
+  return runInstall({ syncRuntime: fakeRuntimeSync, ...options });
+}
+
+// A scripted git that answers the read-only questions readSourceState asks
+// and records every command, so a test can assert what was and was not run.
+function fakeGit({ dirty = [], untracked = [], hasMain = true, hasRemoteMain = true, behind = 0, described = "abc1234\tland the thing" } = {}) {
+  const calls = [];
+  const git = (args, cwd) => {
+    calls.push({ args, cwd });
+    const joined = args.join(" ");
+    if (joined.includes("refs/heads/main")) {
+      if (!hasMain) throw new Error("no such ref");
+      return "aaaaaaa\n";
+    }
+    if (joined.includes("refs/remotes/origin/main")) {
+      if (!hasRemoteMain) throw new Error("no such ref");
+      return "bbbbbbb\n";
+    }
+    if (args[0] === "status") return `${dirty.join("\n")}\n`;
+    if (args[0] === "ls-files") return `${untracked.join("\n")}\n`;
+    if (args[0] === "rev-list") return `${behind}\n`;
+    if (args[0] === "log") return `${described}\n`;
+    // Real git creates the destination; the copy step after it depends on that.
+    if (args[0] === "clone") mkdirSync(args[args.length - 1], { recursive: true });
+    return "";
+  };
+  return { git, calls };
 }
 
 // A fixture shaped like the real ~/.codex/config.toml: an http_headers
@@ -150,7 +203,7 @@ test("runInstall registers Codex and the JSON agents idempotently, and skips age
     // mcp.json are all deliberately absent from this fixture.
 
     const { log, lines } = captureLog();
-    const results = await runInstall({
+    const results = await installAgents({
       repoRoot: "/repo/checkout",
       homeDir,
       hasCli: () => false,
@@ -182,7 +235,7 @@ test("runInstall registers Codex and the JSON agents idempotently, and skips age
     // Rerunning must be a no-op on both files.
     const codexOutBefore = codexOut;
     const cursorOutBefore = JSON.stringify(cursorOut);
-    await runInstall({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
+    await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
     assert.equal(readFileSync(join(homeDir, ".codex", "config.toml"), "utf8"), codexOutBefore);
     assert.equal(JSON.stringify(JSON.parse(readFileSync(join(homeDir, ".cursor", "mcp.json"), "utf8"))), cursorOutBefore);
 
@@ -206,7 +259,7 @@ test("runInstall --dry-run writes nothing and never prints a secret from an exis
     const cursorBefore = readFileSync(join(homeDir, ".cursor", "mcp.json"), "utf8");
 
     const { log, lines } = captureLog();
-    await runInstall({ repoRoot: "/repo/checkout", homeDir, dryRun: true, hasCli: () => false, log });
+    await installAgents({ repoRoot: "/repo/checkout", homeDir, dryRun: true, hasCli: () => false, log });
 
     assert.equal(existsSync(join(homeDir, ".fuzzy-brain")), false, "dry-run must not install the launcher either");
     assert.equal(readFileSync(join(homeDir, ".codex", "config.toml"), "utf8"), codexBefore);
@@ -227,7 +280,7 @@ test("runInstall --only limits which agents are touched", async () => {
     mkdirSync(join(homeDir, ".codex"), { recursive: true });
     mkdirSync(join(homeDir, ".cursor"), { recursive: true });
 
-    const results = await runInstall({
+    const results = await installAgents({
       repoRoot: "/repo/checkout",
       homeDir,
       only: ["codex"],
@@ -249,7 +302,7 @@ test("runInstall registers Claude Code via the CLI when present, and is a no-op 
   try {
     const calls = [];
     const runCli = (args) => calls.push(args);
-    await runInstall({ repoRoot: "/repo/checkout", homeDir, hasCli: () => true, runCli, log: () => {} });
+    await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => true, runCli, log: () => {} });
 
     assert.deepEqual(calls[0], ["mcp", "remove", "fuzzy-brain", "-s", "user"]);
     assert.deepEqual(calls[1].slice(0, 4), ["mcp", "add", "fuzzy-brain", "-s"]);
@@ -266,7 +319,7 @@ test("runInstall --dry-run never invokes the Claude CLI", async () => {
   const homeDir = tempHome();
   try {
     const calls = [];
-    await runInstall({
+    await installAgents({
       repoRoot: "/repo/checkout",
       homeDir,
       dryRun: true,
@@ -288,7 +341,7 @@ test("runInstall falls back to editing ~/.claude.json, in the same shape `claude
       numStartups: 42,
     }));
 
-    await runInstall({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
+    await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
 
     const written = JSON.parse(readFileSync(join(homeDir, ".claude.json"), "utf8"));
     assert.equal(written.numStartups, 42);
@@ -305,7 +358,7 @@ test("runInstall detects Claude Code from a bare ~/.claude directory even withou
   const homeDir = tempHome();
   try {
     mkdirSync(join(homeDir, ".claude"), { recursive: true });
-    const results = await runInstall({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
+    const results = await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
     const claudeCode = results.find((r) => r.id === "claude-code");
     assert.equal(claudeCode.status, "written");
     assert.equal(existsSync(join(homeDir, ".claude.json")), true);
@@ -317,7 +370,7 @@ test("runInstall detects Claude Code from a bare ~/.claude directory even withou
 test("runInstall skips Claude Code entirely when nothing signals it is installed", async () => {
   const homeDir = tempHome();
   try {
-    const results = await runInstall({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
+    const results = await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
     const claudeCode = results.find((r) => r.id === "claude-code");
     assert.equal(claudeCode.status, "skip");
   } finally {
@@ -332,7 +385,7 @@ test("runInstall only rewrites VS Code's mcp.json when it already exists", async
     mkdirSync(vscodeDir, { recursive: true });
     writeFileSync(join(vscodeDir, "mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x", args: [] } } }));
 
-    const results = await runInstall({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
+    const results = await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log: () => {} });
     const vscode = results.find((r) => r.id === "vscode");
     assert.equal(vscode.status, "written");
 
@@ -342,4 +395,298 @@ test("runInstall only rewrites VS Code's mcp.json when it already exists", async
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
+});
+
+test("checkSourceReady passes a clean checkout whose main matches the remote", () => {
+  const check = checkSourceReady({ hasMain: true, trackedChanges: [], untracked: [], behindCount: 0 });
+  assert.equal(check.ok, true);
+  assert.deepEqual(check.problems, []);
+  assert.deepEqual(check.warnings, []);
+});
+
+test("checkSourceReady refuses a checkout with uncommitted tracked changes, and says how to fix it", () => {
+  const check = checkSourceReady({ hasMain: true, trackedChanges: ["M scripts/brain.mjs"], behindCount: 0 });
+  assert.equal(check.ok, false);
+  assert.match(check.problems[0].what, /1 uncommitted change\(s\)/);
+  assert.match(check.problems[0].what, /scripts\/brain\.mjs/);
+  assert.match(check.problems[0].fix, /commit or stash/);
+});
+
+test("checkSourceReady refuses a main that is behind origin/main and names the gap", () => {
+  const check = checkSourceReady({ hasMain: true, trackedChanges: [], behindCount: 3 });
+  assert.equal(check.ok, false);
+  assert.match(check.problems[0].what, /3 commit\(s\) behind origin\/main/);
+  assert.match(check.problems[0].fix, /git fetch origin/);
+});
+
+test("checkSourceReady refuses a checkout with no local main", () => {
+  const check = checkSourceReady({ hasMain: false, trackedChanges: [], behindCount: 0 });
+  assert.equal(check.ok, false);
+  assert.match(check.problems[0].what, /no local main branch/);
+});
+
+test("checkSourceReady only warns about untracked files, because they cannot enter a clone", () => {
+  const check = checkSourceReady({ hasMain: true, trackedChanges: [], untracked: ["docs/scratch.md"], behindCount: 0 });
+  assert.equal(check.ok, true);
+  assert.match(check.warnings[0], /1 untracked file\(s\)/);
+});
+
+test("checkSourceReady warns, but does not refuse, when there is no origin/main to compare against", () => {
+  const check = checkSourceReady({ hasMain: true, trackedChanges: [], behindCount: null });
+  assert.equal(check.ok, true);
+  assert.match(check.warnings[0], /no origin\/main ref/);
+});
+
+test("checkSourceReady reports every problem at once instead of stopping at the first", () => {
+  const check = checkSourceReady({ hasMain: true, trackedChanges: ["M a", "M b"], behindCount: 2 });
+  assert.equal(check.problems.length, 2);
+});
+
+test("readSourceState reads cleanliness, drift, and the commit main is on without fetching", () => {
+  const { git, calls } = fakeGit({ dirty: ["M scripts/brain.mjs"], untracked: ["docs/scratch.md"], behind: 4 });
+  const state = readSourceState({ sourceRoot: "/repo", git });
+
+  assert.equal(state.hasMain, true);
+  assert.deepEqual(state.trackedChanges, ["M scripts/brain.mjs"]);
+  assert.deepEqual(state.untracked, ["docs/scratch.md"]);
+  assert.equal(state.behindCount, 4);
+  assert.equal(state.commit, "abc1234");
+  assert.equal(state.subject, "land the thing");
+  // A fetch would write into the source checkout's .git; reading must not.
+  assert.ok(!calls.some((c) => c.args[0] === "fetch"));
+});
+
+test("readSourceState reports an unknown drift rather than zero when origin/main is missing", () => {
+  const { git } = fakeGit({ hasRemoteMain: false });
+  assert.equal(readSourceState({ sourceRoot: "/repo", git }).behindCount, null);
+});
+
+test("needsDependencyInstall installs on a fresh clone and whenever node_modules is gone", () => {
+  assert.equal(needsDependencyInstall({ freshClone: true }).install, true);
+  assert.equal(needsDependencyInstall({ freshClone: false, nodeModulesPresent: false, lockfileBefore: "a", lockfileAfter: "a" }).install, true);
+});
+
+test("needsDependencyInstall reinstalls only when the lockfile actually changed", () => {
+  const changed = needsDependencyInstall({ freshClone: false, nodeModulesPresent: true, lockfileBefore: "a", lockfileAfter: "b" });
+  assert.equal(changed.install, true);
+  assert.match(changed.reason, /package-lock\.json changed/);
+
+  const same = needsDependencyInstall({ freshClone: false, nodeModulesPresent: true, lockfileBefore: "a", lockfileAfter: "a" });
+  assert.equal(same.install, false);
+  assert.match(same.reason, /unchanged/);
+});
+
+test("resolveLaunchRoot prefers the pinned runtime and falls back to the calling checkout", () => {
+  const homeDir = tempHome();
+  try {
+    const { runtimeRoot, gitDir } = runtimePaths(homeDir);
+    assert.equal(resolveLaunchRoot({ homeDir, fallbackRoot: "/repo/checkout" }), "/repo/checkout");
+    mkdirSync(gitDir, { recursive: true });
+    assert.equal(resolveLaunchRoot({ homeDir, fallbackRoot: "/repo/checkout" }), runtimeRoot);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntime clones main locally, installs dependencies, and copies .env.local across", () => {
+  const homeDir = tempHome();
+  const sourceRoot = tempHome();
+  try {
+    writeFileSync(join(sourceRoot, ".env.local"), "DATABASE_URL=postgres://fake/db\n");
+    const { git, calls } = fakeGit();
+    const installed = [];
+    const result = syncRuntime({ sourceRoot, homeDir, git, npmInstall: (cwd) => installed.push(cwd) });
+
+    const clone = calls.find((c) => c.args[0] === "clone");
+    assert.deepEqual(clone.args, ["clone", "--local", "--branch", "main", sourceRoot, result.runtimeRoot]);
+    assert.equal(result.action, "clone");
+    assert.equal(result.commit, "abc1234");
+    assert.equal(result.subject, "land the thing");
+    assert.equal(result.dependencies.install, true);
+    assert.deepEqual(installed, [result.runtimeRoot]);
+    // Without this the cloned scripts have no DATABASE_URL and every agent
+    // loses the brain the moment home points at the runtime.
+    assert.equal(readFileSync(result.envFile, "utf8"), "DATABASE_URL=postgres://fake/db\n");
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(sourceRoot, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntime updates an existing runtime with a hard reset and reuses node_modules when the lockfile held still", () => {
+  const homeDir = tempHome();
+  const sourceRoot = tempHome();
+  try {
+    const paths = runtimePaths(homeDir);
+    mkdirSync(paths.gitDir, { recursive: true });
+    mkdirSync(paths.nodeModules, { recursive: true });
+    writeFileSync(paths.lockfile, '{"lockfileVersion":3}\n');
+
+    const { git, calls } = fakeGit();
+    const installed = [];
+    const result = syncRuntime({ sourceRoot, homeDir, git, npmInstall: (cwd) => installed.push(cwd) });
+
+    const verbs = calls.filter((c) => c.cwd === paths.runtimeRoot).map((c) => c.args.join(" "));
+    assert.ok(verbs.includes("remote set-url origin " + sourceRoot), "origin must follow a moved source checkout");
+    assert.ok(verbs.includes("fetch --quiet origin main"));
+    assert.ok(verbs.includes("checkout --quiet --force -B main FETCH_HEAD"));
+    // A clean of untracked files here would throw away a 1 GB node_modules.
+    assert.ok(!verbs.some((v) => v.startsWith("clean")));
+    assert.equal(result.action, "update");
+    assert.equal(result.dependencies.install, false);
+    assert.deepEqual(installed, []);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(sourceRoot, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntime refuses a dirty source checkout and builds nothing", () => {
+  const homeDir = tempHome();
+  try {
+    const { git } = fakeGit({ dirty: ["M scripts/brain.mjs"] });
+    assert.throws(
+      () => syncRuntime({ sourceRoot: "/repo/checkout", homeDir, git, npmInstall: () => { throw new Error("must not install"); } }),
+      (error) => error instanceof SourceNotReadyError && /uncommitted change/.test(error.message) && /commit or stash/.test(error.message),
+    );
+    assert.equal(existsSync(runtimePaths(homeDir).runtimeRoot), false);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntime refuses a main that is behind its remote and builds nothing", () => {
+  const homeDir = tempHome();
+  try {
+    const { git } = fakeGit({ behind: 2 });
+    assert.throws(
+      () => syncRuntime({ sourceRoot: "/repo/checkout", homeDir, git }),
+      (error) => error instanceof SourceNotReadyError && /2 commit\(s\) behind origin\/main/.test(error.message),
+    );
+    assert.equal(existsSync(runtimePaths(homeDir).runtimeRoot), false);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntime refuses to clobber a runtime directory that is not a clone", () => {
+  const homeDir = tempHome();
+  try {
+    const paths = runtimePaths(homeDir);
+    mkdirSync(paths.runtimeRoot, { recursive: true });
+    const { git } = fakeGit();
+    assert.throws(
+      () => syncRuntime({ sourceRoot: "/repo/checkout", homeDir, git }),
+      (error) => /is not a git clone/.test(error.message),
+    );
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntime --dry-run creates nothing, clones nothing, and installs nothing", () => {
+  const homeDir = tempHome();
+  try {
+    const { git, calls } = fakeGit();
+    const result = syncRuntime({
+      sourceRoot: "/repo/checkout",
+      homeDir,
+      dryRun: true,
+      git,
+      npmInstall: () => { throw new Error("must not install"); },
+    });
+
+    assert.equal(result.action, "clone");
+    assert.equal(result.commit, "abc1234");
+    assert.equal(existsSync(join(homeDir, ".fuzzy-brain")), false);
+    const mutating = calls.filter((c) => ["clone", "fetch", "checkout", "reset", "remote"].includes(c.args[0]));
+    assert.deepEqual(mutating, []);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("runInstall points ~/.fuzzy-brain/home at the pinned runtime, not at the working checkout", async () => {
+  const homeDir = tempHome();
+  try {
+    const { log, lines } = captureLog();
+    await installAgents({ repoRoot: "/repo/checkout", homeDir, hasCli: () => false, log });
+
+    const paths = launcherPaths(homeDir);
+    assert.equal(readFileSync(paths.homeFile, "utf8").trim(), runtimePaths(homeDir).runtimeRoot);
+    assert.ok(lines.some((l) => l === "runtime is at abc1234 a commit on main"));
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("runInstall --runtime-only refreshes the runtime and leaves every agent config alone", async () => {
+  const homeDir = tempHome();
+  try {
+    mkdirSync(join(homeDir, ".codex"), { recursive: true });
+    writeFileSync(join(homeDir, ".codex", "config.toml"), CODEX_FIXTURE);
+
+    const { log, lines } = captureLog();
+    const results = await installAgents({ repoRoot: "/repo/checkout", homeDir, runtimeOnly: true, hasCli: () => false, log });
+
+    assert.deepEqual(results.map((r) => r.id), ["runtime"]);
+    assert.equal(readFileSync(join(homeDir, ".codex", "config.toml"), "utf8"), CODEX_FIXTURE);
+    assert.equal(existsSync(launcherPaths(homeDir).homeFile), false, "--runtime-only must not rewrite the launcher either");
+    assert.ok(lines.some((l) => l === "runtime is at abc1234 a commit on main"));
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("runInstall --dev points home back at the working checkout and warns first and last", async () => {
+  const homeDir = tempHome();
+  try {
+    const { log, lines } = captureLog();
+    const results = await installAgents({ repoRoot: "/repo/checkout", homeDir, dev: true, hasCli: () => false, log });
+
+    assert.equal(readFileSync(launcherPaths(homeDir).homeFile, "utf8").trim(), "/repo/checkout");
+    assert.equal(results.find((r) => r.id === "runtime").status, "skip");
+    const warnings = lines.filter((l) => l.startsWith("WARNING: --dev"));
+    assert.equal(warnings.length, 2, "the warning must survive a long scrollback in both directions");
+    assert.match(lines.join("\n"), /Whatever branch that checkout is on is the brain every agent gets/);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("runInstall rejects --dev together with --runtime-only", async () => {
+  const homeDir = tempHome();
+  try {
+    await assert.rejects(
+      installAgents({ repoRoot: "/repo/checkout", homeDir, dev: true, runtimeOnly: true, log: () => {} }),
+      /opposite things/,
+    );
+    assert.equal(existsSync(join(homeDir, ".fuzzy-brain")), false);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("runInstall surfaces the runtime's own warnings without turning them into failures", async () => {
+  const homeDir = tempHome();
+  try {
+    const { log, lines } = captureLog();
+    await runInstall({
+      repoRoot: "/repo/checkout",
+      homeDir,
+      hasCli: () => false,
+      log,
+      syncRuntime: (options) => ({ ...fakeRuntimeSync(options), warnings: ["3 untracked file(s) in the source checkout will not reach the runtime"] }),
+    });
+    assert.ok(lines.some((l) => l.startsWith("[runtime] note: 3 untracked file(s)")));
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("parseArgs reads the runtime flags alongside the ones that already existed", () => {
+  assert.deepEqual(parseArgs([]), { dryRun: false, dev: false, runtimeOnly: false, only: null });
+  assert.deepEqual(parseArgs(["--dry-run", "--only", "codex,cursor"]), { dryRun: true, dev: false, runtimeOnly: false, only: ["codex", "cursor"] });
+  assert.equal(parseArgs(["--dev"]).dev, true);
+  assert.equal(parseArgs(["--runtime-only"]).runtimeOnly, true);
 });
