@@ -1,0 +1,31 @@
+#!/bin/sh
+# Stable launcher for Fuzzy Brain background tools (MCP server, fusion sync).
+# Global configs (~/.codex/config.toml, ~/.claude.json, the launchd plist,
+# and every other agent's MCP config) point here instead of into a git
+# worktree, so moving the checkout is a rerun of `npm run agents:install`
+# from the new checkout, not an edit of every agent config by hand.
+# Usage: brain-run <script-under-scripts/> [args...]
+set -eu
+
+bin_dir="$(cd "$(dirname "$0")" && pwd)"
+home_file="$HOME/.fuzzy-brain/home"
+[ -f "$home_file" ] || { echo "brain-run: $home_file is missing; run npm run agents:install from the checkout" >&2; exit 78; }
+root="$(sed -n '1p' "$home_file")"
+script="$root/scripts/$1"; shift
+[ -f "$script" ] || { echo "brain-run: $script does not exist; fix $home_file" >&2; exit 78; }
+
+# The installer freezes a resolved, upgrade-stable Node path here at
+# install time; if it is missing or has gone stale, fall back to
+# whatever Node is on PATH rather than failing outright.
+node_path=""
+node_path_file="$bin_dir/node-path"
+if [ -f "$node_path_file" ]; then
+  node_path="$(sed -n '1p' "$node_path_file")"
+fi
+if [ -z "$node_path" ] || [ ! -x "$node_path" ]; then
+  node_path="$(command -v node || true)"
+fi
+[ -n "$node_path" ] || { echo "brain-run: no node executable found; install Node or rerun npm run agents:install" >&2; exit 78; }
+
+cd "$root"
+exec "$node_path" "$script" "$@"

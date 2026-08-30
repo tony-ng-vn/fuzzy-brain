@@ -1,14 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderLaunchAgentPlist, resolveNodePath, runFusionSync } from "../scripts/fusion-sync.mjs";
-
-test("launch agent prefers a stable package-manager Node symlink", () => {
-  const selected = resolveNodePath({
-    candidates: ["/opt/homebrew/bin/node", "/opt/homebrew/Cellar/node/26.6.0/bin/node"],
-    isExecutable: (path) => path === "/opt/homebrew/bin/node",
-  });
-  assert.equal(selected, "/opt/homebrew/bin/node");
-});
+import { renderLaunchAgentPlist, runFusionSync } from "../scripts/fusion-sync.mjs";
 
 test("fusion sync ingests settled sessions before filling a bounded number of embeddings", async () => {
   const calls = [];
@@ -63,15 +55,19 @@ test("fusion sync stops before embedding when ingestion fails", async () => {
   assert.doesNotMatch(result.error, /DATABASE_URL|postgres/i);
 });
 
-test("launch agent plist uses stable absolute paths and a one-hour cadence", () => {
+test("launch agent plist launches through the stable brain-run launcher, never a checkout path", () => {
   const plist = renderLaunchAgentPlist({
-    nodePath: "/opt/homebrew/bin/node",
-    repoRoot: "/Users/tony/Desktop/fuzzy-brain",
     homeDir: "/Users/tony",
     intervalSeconds: 3600,
   });
   assert.match(plist, /com\.tony\.fuzzy-brain\.sync/);
   assert.match(plist, /<integer>3600<\/integer>/);
-  assert.match(plist, /\/Users\/tony\/Desktop\/fuzzy-brain\/scripts\/fusion-sync\.mjs/);
+  assert.match(plist, /<string>\/Users\/tony\/\.fuzzy-brain\/bin\/brain-run<\/string>/);
+  assert.match(plist, /<string>fusion-sync\.mjs<\/string>/);
+  assert.match(plist, /<key>WorkingDirectory<\/key>\s*<string>\/Users\/tony\/\.fuzzy-brain<\/string>/);
   assert.match(plist, /\/Users\/tony\/\.fuzzy-brain\/logs\/fusion-sync\.log/);
+  // Reinstalling this plist after moving the checkout must never bake a
+  // worktree or repo path back into launchd's ProgramArguments.
+  assert.doesNotMatch(plist, /Desktop\/fuzzy-brain/);
+  assert.doesNotMatch(plist, /worktrees/);
 });

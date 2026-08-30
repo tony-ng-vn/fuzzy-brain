@@ -5,31 +5,14 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { accessSync, constants, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { installLauncher, launcherPaths } from "./lib/agent-launcher.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const DEFAULT_EMBEDDING_LIMIT = 32;
 const LABEL = "com.tony.fuzzy-brain.sync";
-
-function executable(path) {
-  try {
-    accessSync(path, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function resolveNodePath({
-  candidates = [process.env.FUZZY_BRAIN_NODE_PATH, "/opt/homebrew/bin/node", "/usr/local/bin/node", process.execPath],
-  isExecutable = executable,
-} = {}) {
-  const selected = candidates.find((candidate) => candidate && isExecutable(candidate));
-  if (!selected) throw new Error("no executable Node binary found for the launch agent");
-  return selected;
-}
 
 function xml(value) {
   return String(value)
@@ -40,8 +23,14 @@ function xml(value) {
     .replaceAll("'", "&apos;");
 }
 
-export function renderLaunchAgentPlist({ nodePath, repoRoot, homeDir, intervalSeconds = 3600 }) {
-  const logDir = join(homeDir, ".fuzzy-brain", "logs");
+// ProgramArguments and WorkingDirectory only ever reference
+// ~/.fuzzy-brain (via brain-run) -- never the checkout itself -- so
+// reinstalling this plist after moving the checkout never bakes a
+// worktree path into launchd; only `npm run agents:install` from the
+// new checkout needs to run.
+export function renderLaunchAgentPlist({ homeDir, intervalSeconds = 3600 }) {
+  const { root: fuzzyBrainHome, brainRunPath } = launcherPaths(homeDir);
+  const logDir = join(fuzzyBrainHome, "logs");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,11 +39,11 @@ export function renderLaunchAgentPlist({ nodePath, repoRoot, homeDir, intervalSe
   <string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xml(nodePath)}</string>
-    <string>${xml(join(repoRoot, "scripts", "fusion-sync.mjs"))}</string>
+    <string>${xml(brainRunPath)}</string>
+    <string>fusion-sync.mjs</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${xml(repoRoot)}</string>
+  <string>${xml(fuzzyBrainHome)}</string>
   <key>StartInterval</key>
   <integer>${intervalSeconds}</integer>
   <key>RunAtLoad</key>
@@ -113,12 +102,14 @@ export async function runFusionSync({
 
 export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
   const userHome = homedir();
-  const logDir = join(userHome, ".fuzzy-brain", "logs");
+  // Refreshes ~/.fuzzy-brain/{home,bin/brain-run,bin/node-path} to point
+  // at this checkout before writing a plist that launches through them,
+  // so `--install` alone is enough after moving the checkout.
+  const launcher = installLauncher({ repoRoot: root, homeDir: userHome });
+  const logDir = join(launcher.root, "logs");
   const agentPath = join(userHome, "Library", "LaunchAgents", `${LABEL}.plist`);
   mkdirSync(logDir, { recursive: true });
   writeFileSync(agentPath, renderLaunchAgentPlist({
-    nodePath: resolveNodePath(),
-    repoRoot: root,
     homeDir: userHome,
     intervalSeconds,
   }), { mode: 0o600 });
@@ -130,7 +121,7 @@ export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
     // First install has nothing to unload.
   }
   await execFileAsync("launchctl", ["bootstrap", domain, agentPath]);
-  return { label: LABEL, path: agentPath, intervalSeconds };
+  return { label: LABEL, path: agentPath, intervalSeconds, brainRun: launcher.brainRunPath };
 }
 
 async function main() {
@@ -139,11 +130,7 @@ async function main() {
     return;
   }
   if (process.argv.includes("--print-plist")) {
-    process.stdout.write(renderLaunchAgentPlist({
-      nodePath: resolveNodePath(),
-      repoRoot: root,
-      homeDir: homedir(),
-    }));
+    process.stdout.write(renderLaunchAgentPlist({ homeDir: homedir() }));
     return;
   }
   const result = await runFusionSync({
