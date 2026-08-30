@@ -61,8 +61,12 @@ The runtime is a `git clone --local`, so the git objects are hardlinks and cost 
 Its `node_modules` is a real second copy at roughly 1 GB, which is the whole price of the arrangement.
 The installer also copies `.env.local` in, since the scripts read it from the repo root and the runtime would otherwise have no database to talk to.
 
-The installer refuses to build a runtime from a checkout with uncommitted changes to tracked files, or from a `main` that is behind `origin/main`, and prints what is wrong and the command that fixes it.
-Untracked files are only a warning, because they cannot end up in a clone anyway.
+The installer refuses to build a runtime from a checkout with no local `main`, or from a `main` that is behind `origin/main`, and prints what is wrong and the command that fixes it.
+Both mean the runtime would pin a state nobody has agreed is good.
+
+Your working tree is not one of those cases.
+The clone and the refresh both read the committed object database, so uncommitted edits and untracked files cannot reach the runtime by any path, and you can refresh in the middle of a change.
+You get a warning saying those edits stay behind, and another if `main` is ahead of `origin/main`, since the agents would then be running something that was never pushed.
 The drift check reads `origin/main` as it stands rather than fetching, so run `git fetch origin main` first if you want a fresh answer.
 
 After landing a change on `main`, one command brings the agents up to date without touching any agent config:
@@ -72,7 +76,8 @@ npm run agents:install -- --runtime-only
 ```
 
 That fetches from this checkout and hard-resets the runtime to `main`, then reinstalls dependencies only if `package-lock.json` actually changed.
-The same refusals apply, so commit or stash whatever you are in the middle of first: a working checkout with modified tracked files cannot build or refresh the runtime.
+You can run it mid-change.
+The refresh takes committed `main`, so whatever you have open stays yours and is reported as a warning rather than blocking the command.
 The runtime's `origin` is the path of the checkout it was cloned from, so a refresh needs that checkout to still be there; a rerun from a new location repoints it.
 Every install ends by printing the commit the runtime is on, so which version the agents are running is never a guess.
 
