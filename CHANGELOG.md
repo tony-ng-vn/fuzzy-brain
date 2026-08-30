@@ -4,6 +4,25 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.18.0
+
+Aug 30, 2026
+
+**Tools**
+
+- `npm run agents:install` registers the fuzzy-brain MCP server with every coding agent on this Mac in one step: Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code if it is already set up for MCP.
+  It skips and reports on any agent it does not find, and prints a plain JSON snippet at the end for anything else.
+  `--dry-run` previews every change without writing, and `--only` limits it to specific agents.
+- Every agent config, and the scheduled sync's launchd job, now points at `~/.fuzzy-brain/bin/brain-run`, a small launcher the repo ships and the installer keeps pointed at the current checkout, rather than at a path inside a git worktree.
+  Moving the checkout, including deleting the worktree it used to live in, is a rerun of the installer from the new location; nothing else needs to change by hand.
+  Existing hand-edited agent configs and the sync launch agent are safe to rewrite: each config is merged or backed up before being touched, never wholesale replaced.
+
+**Docs**
+
+- The fusion bridge guide and the README now point at `npm run agents:install` instead of the old by-hand `codex mcp add ... "$PWD/..."` command, which broke the moment the checkout it was run from moved or was deleted.
+
+---
+
 ## v0.17.1
 
 Aug 12, 2026

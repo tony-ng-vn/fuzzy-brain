@@ -38,7 +38,20 @@ It does not promote session text into ratified nodes.
 
 Setup, privacy boundaries, operations, and verification are documented in [docs/fusion-bridge.md](docs/fusion-bridge.md).
 
-That guide also includes the durable `codex mcp add fuzzy-brain` registration command for a stable checkout.
+## Connect a coding agent
+
+```bash
+npm run agents:install
+```
+
+This registers the `fuzzy-brain` MCP server with every coding agent it finds on the Mac: Claude Code (user scope), Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code if its user `mcp.json` already exists.
+It skips and reports on any agent it does not find installed, and prints a generic JSON snippet at the end for anything else.
+
+It writes `~/.fuzzy-brain/home` with this checkout's absolute path and installs `~/.fuzzy-brain/bin/brain-run`, a small launcher every agent config points at instead of a checkout path directly.
+Run `npm run agents:install -- --dry-run` first to preview every change without writing anything, or `-- --only codex,cursor` to limit it to specific agents.
+
+Moving the checkout, including deleting the git worktree it currently lives in, is a rerun of the same command from the new location: `npm run agents:install`.
+Nothing else needs to change, since every agent config and the scheduled sync's launchd job point at `~/.fuzzy-brain/bin/brain-run`, not at the checkout.
 
 ## Verification
 

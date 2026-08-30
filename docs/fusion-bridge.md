@@ -21,13 +21,15 @@ Run the server directly with:
 npm run mcp
 ```
 
-Register the stable checkout with Codex from the repository root:
+Register it with Codex, Claude Code, and every other coding agent this Mac has installed by running the installer once from the repository root:
 
 ```bash
-codex mcp remove fuzzy-brain
-codex mcp add fuzzy-brain -- "$(command -v node)" "$PWD/scripts/fuzzy-brain-mcp.mjs"
-codex mcp get fuzzy-brain
+npm run agents:install
 ```
+
+This points each agent's config at `~/.fuzzy-brain/bin/brain-run`, a stable launcher the installer keeps in sync with this checkout, rather than at a path inside the checkout itself.
+Moving the checkout later, including deleting the worktree it lives in now, is a rerun of the same command from the new location.
+See the "Connect a coding agent" section in the repository README for `--dry-run` and `--only`.
 
 The MCP process trusts the local Codex client as its caller security boundary.
 Write tools also require explicit save or completion language in the passed verbatim user text as defense in depth.
