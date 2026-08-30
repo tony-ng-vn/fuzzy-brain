@@ -20,6 +20,8 @@ const BASE = {
   dims: 256,
   depth: 30,
   oversample: 20,
+  efSearch: 600,
+  iterativeScan: 'off',
 };
 
 test('the candidate stage orders by the indexed expression verbatim', () => {
@@ -33,8 +35,31 @@ test('the candidate stage orders by the indexed expression verbatim', () => {
 test('the candidate stage takes depth times oversample rows', () => {
   const [cand] = binaryVectorLaneCtes({ ...BASE, depth: 30, oversample: 20 });
   assert.match(cand, /limit 600\b/);
-  const [wider] = binaryVectorLaneCtes({ ...BASE, depth: 30, oversample: 40 });
+  const [wider] = binaryVectorLaneCtes({
+    ...BASE, depth: 30, oversample: 40, iterativeScan: 'relaxed_order',
+  });
   assert.match(wider, /limit 1200\b/);
+});
+
+// pgvector's ef_search is a ceiling on rows RETURNED, not only on how wide the
+// beam is, so `limit 600` under ef_search 400 yields 400 rows and no error. An
+// arm that asked for oversample 20 and silently got 13 would report a latency
+// and a recall belonging to a different arm entirely -- the same failure
+// engine.assertEfSearch exists to prevent, one layer down.
+test('an oversample the beam cannot return is refused, not silently truncated', () => {
+  assert.throws(
+    () => binaryVectorLaneCtes({ ...BASE, oversample: 20, efSearch: 400, iterativeScan: 'off' }),
+    /asks for 600 rows[\s\S]*ef_search is 400/,
+  );
+  // An iterative scan keeps widening until the limit is satisfied, so the same
+  // arm is reachable there and must not be refused.
+  assert.doesNotThrow(
+    () => binaryVectorLaneCtes({ ...BASE, oversample: 20, efSearch: 400, iterativeScan: 'relaxed_order' }),
+  );
+  // Exactly at the ceiling is fine.
+  assert.doesNotThrow(
+    () => binaryVectorLaneCtes({ ...BASE, oversample: 20, efSearch: 600, iterativeScan: 'off' }),
+  );
 });
 
 test('the rerank stage reorders those candidates by exact halfvec cosine, cut to depth', () => {

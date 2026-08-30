@@ -409,7 +409,8 @@ function planScaleStatement(tier, profile, cfg) {
   if (profile.binaryVectorLane) {
     ctes.push(...binaryVectorLaneCtes({
       schema, vecParam, dims: tier.dims, depth,
-      oversample: scale.binaryOversample, spanClause, vectorGate,
+      oversample: scale.binaryOversample, efSearch: scale.efSearch,
+      iterativeScan: scale.filteredIterativeScan, spanClause, vectorGate,
     }));
   } else {
     ctes.push(`vec_lane as (

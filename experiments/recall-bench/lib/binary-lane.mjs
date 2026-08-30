@@ -29,6 +29,8 @@ export function binaryVectorLaneCtes({
   dims,
   depth,
   oversample,
+  efSearch,
+  iterativeScan = 'off',
   spanClause = '',
   vectorGate = '',
 }) {
@@ -39,6 +41,20 @@ export function binaryVectorLaneCtes({
     );
   }
   const candidates = depth * oversample;
+  // hnsw.ef_search is also a ceiling on how many rows the scan RETURNS. With
+  // iterative scan off, a `limit 600` under ef_search 400 quietly yields 400
+  // candidates and no error -- the same silent-default failure mode that
+  // engine.assertEfSearch exists for, one layer down. An arm that asked for an
+  // oversample it never got would report a latency and a recall belonging to a
+  // different oversample, so it fails here instead.
+  if (iterativeScan === 'off' && candidates > efSearch) {
+    throw new Error(
+      `binaryVectorLaneCtes: the candidate stage asks for ${candidates} rows (depth ${depth} x oversample ` +
+        `${oversample}) but hnsw.ef_search is ${efSearch} and hnsw.iterative_scan is off, so the scan would ` +
+        `return only ${efSearch}. Raise config.lanes.scale.efSearch to at least ${candidates} (pgvector's own ` +
+        'cap is 1000) or set filteredIterativeScan to relaxed_order.',
+    );
+  }
   // The candidate stage's ORDER BY has to be the index expression VERBATIM --
   // binary_quantize(m.embedding)::bit(N) -- or the planner matches nothing and
   // silently sequential-scans 10M rows. The query side is the same call over the
