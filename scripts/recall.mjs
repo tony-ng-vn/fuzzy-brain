@@ -1,5 +1,8 @@
 // The recall verb: find -> prove over the evidence store and the ratified
-// brain. Usage: node scripts/recall.mjs "<question>" [--json]
+// brain. Usage: node scripts/recall.mjs "<question>" [--json], or import
+// recall() and call it in-process -- the CLI is a thin wrapper over it, and a
+// long-lived caller like the MCP server keeps the embedding model loaded
+// between questions instead of paying a fresh load per spawn.
 //
 // READ-ONLY by law: this file contains SELECT statements and nothing else;
 // tests/sandbox-routing.test.mjs audits that claim on every run. Recall
@@ -662,6 +665,51 @@ function formatHuman(result) {
   return lines.join("\n").trimEnd();
 }
 
+/**
+ * One question, answered: exactly the object the `--json` CLI prints, as a
+ * value -- { question, state, note, hits }. The CLI below is a thin wrapper
+ * over this, and the MCP server calls it directly so the embedding model
+ * loads once for the life of that process instead of once per question.
+ *
+ * A caller holding its own connected client passes it in and keeps it; without
+ * one this opens a client and closes it again. Tearing the model down is the
+ * CLI's job alone, never this function's.
+ */
+export async function recall(question, options = {}) {
+  const { client, schema = process.env.BRAIN_SCHEMA || "public", embedQuery = embedQueryCached } = options;
+  if (client) return answerQuestion(client, question, schema, embedQuery);
+  const own = makeClient();
+  await own.connect();
+  try {
+    return await answerQuestion(own, question, schema, embedQuery);
+  } finally {
+    await own.end();
+  }
+}
+
+async function answerQuestion(client, question, schema, embedQuery) {
+  const tables = schemaTables(schema);
+
+  // The vector lane degrades, never blocks: if the local model cannot load,
+  // recall still answers from full-text and says so.
+  const notes = [];
+  let queryVec = null;
+  try {
+    queryVec = await embedQuery(question);
+  } catch (err) {
+    notes.push(`vector lane unavailable (${err.message}); text lanes only`);
+  }
+
+  const { hits } = await findCandidates(client, tables, question, queryVec, notes);
+  const state = classifyState(hits);
+  return {
+    question,
+    state,
+    note: STATE_NOTES[state] + (notes.length > 0 ? ` (${notes.join("; ")})` : ""),
+    hits: hits.map(toJsonHit),
+  };
+}
+
 async function main() {
   loadEnvLocal();
   const args = process.argv.slice(2);
@@ -672,41 +720,17 @@ async function main() {
     process.exit(1);
   }
 
-  const schema = process.env.BRAIN_SCHEMA || "public";
-  const tables = schemaTables(schema);
-
-  // The vector lane degrades, never blocks: if the local model cannot load,
-  // recall still answers from full-text and says so.
-  const notes = [];
-  let queryVec = null;
   try {
-    queryVec = await embedQueryCached(question);
-  } catch (err) {
-    notes.push(`vector lane unavailable (${err.message}); text lanes only`);
-  }
-
-  const client = makeClient();
-  await client.connect();
-  try {
-    const { hits } = await findCandidates(client, tables, question, queryVec, notes);
-    const state = classifyState(hits);
-    const result = {
-      question,
-      state,
-      note: STATE_NOTES[state] + (notes.length > 0 ? ` (${notes.join("; ")})` : ""),
-      hits: hits.map(toJsonHit),
-    };
+    const result = await recall(question);
     console.log(json ? JSON.stringify(result, null, 2) : formatHuman(result));
   } finally {
-    try {
-      await client.end();
-    } finally {
-      await disposeEmbeddingModel();
-    }
+    // The one place the model is torn down. A resident caller keeps it loaded
+    // for the next question; this process is about to exit anyway.
+    await disposeEmbeddingModel();
   }
 }
 
-function loadEnvLocal() {
+export function loadEnvLocal() {
   try {
     const text = readFileSync(join(here, "..", ".env.local"), "utf8");
     for (const line of text.split("\n")) {
