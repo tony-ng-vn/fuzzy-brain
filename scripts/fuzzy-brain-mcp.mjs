@@ -1,6 +1,12 @@
 // Global, local-only MCP bridge for Tony's Fuzzy Brain.
 // Stdout belongs exclusively to MCP JSON-RPC. Operational failures are
 // returned as tool errors; startup diagnostics, if any, go to stderr.
+//
+// Reads answer in-process. Spawning a fresh Node per question meant loading
+// the nomic embedding model from scratch every time -- about 1.9 seconds of
+// fixed cost against roughly 600 ms of real searching, and the query
+// embedding cache never survived long enough to hit. Writes still shell out
+// to brain.mjs: they are rare, and the CLI stays the one ratified write path.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -9,12 +15,14 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { getNode, listReminders, makePool, schemaTables } from "./brain.mjs";
+import { loadEnvLocal, recall } from "./recall.mjs";
+import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const brainScript = join(here, "brain.mjs");
-const recallScript = join(here, "recall.mjs");
 
 const EXEC_OPTIONS = Object.freeze({
   cwd: root,
@@ -22,6 +30,12 @@ const EXEC_OPTIONS = Object.freeze({
   timeout: 3 * 60 * 1000,
   maxBuffer: 16 * 1024 * 1024,
 });
+
+// Room for a couple of overlapping tool calls. One connection would be worse
+// than it looks: connectionTimeoutMillis doubles as the wait for a free
+// client, so a second question arriving during a slow one would time out
+// waiting rather than open its own.
+const POOL_OPTIONS = Object.freeze({ max: 3, idleTimeoutMillis: 30_000 });
 
 async function runJson(script, args, input) {
   const { stdout } = await execFileAsync(process.execPath, [script, ...args], {
@@ -31,11 +45,48 @@ async function runJson(script, args, input) {
   return JSON.parse(stdout);
 }
 
-export function productionServices() {
+/**
+ * The connections a resident server holds. Opened on the first call rather
+ * than at construction, so building the server never touches the network.
+ * Every call borrows a client and hands it straight back: pg discards one
+ * whose link died, so a failed question cannot poison the next one.
+ */
+export function residentPool({ open = () => makePool(POOL_OPTIONS), logError = () => {} } = {}) {
+  let pool = null;
   return {
-    recall: (question) => runJson(recallScript, [question, "--json"]),
-    listReminders: (at) => runJson(brainScript, ["list-reminders", ...(at ? [`--at=${at}`] : [])]),
-    getNode: (id) => runJson(brainScript, ["get-node", id]),
+    async withClient(fn) {
+      if (!pool) {
+        pool = open();
+        // An idle client whose link dies emits here. Unhandled, that event
+        // takes the whole server down between questions.
+        pool.on("error", logError);
+      }
+      const client = await pool.connect();
+      try {
+        return await fn(client);
+      } finally {
+        client.release();
+      }
+    },
+    async close() {
+      const pending = pool;
+      pool = null;
+      if (pending) await pending.end();
+    },
+  };
+}
+
+export function productionServices({
+  logError = (error) => console.error("[fuzzy-brain] connection failed:", error),
+  pool = residentPool({ logError }),
+} = {}) {
+  // Read per call, not once: BRAIN_SCHEMA is how a session points the server
+  // at the sandbox instead of the real brain.
+  const tables = () => schemaTables(process.env.BRAIN_SCHEMA || "public");
+  return {
+    recall: (question) => pool.withClient((client) => recall(question, { client })),
+    listReminders: (at) => pool.withClient((client) => listReminders(client, tables(), at)),
+    getNode: (id) => pool.withClient((client) => getNode(client, tables(), id)),
     remember: async ({ type, raw }) => {
       return runJson(brainScript, ["add-node"], {
         type: explicitTypeFromRaw(type, raw),
@@ -48,6 +99,7 @@ export function productionServices() {
       node_ids: nodeIds,
       raw,
     }),
+    close: () => pool.close(),
   };
 }
 
@@ -181,8 +233,30 @@ export function createFuzzyBrainServer(
 }
 
 async function main() {
-  const server = createFuzzyBrainServer();
-  await server.connect(new StdioServerTransport());
+  // The spawned CLIs used to read .env.local for themselves once per call.
+  // A resident server reads it once, here, or it has no DATABASE_URL at all.
+  loadEnvLocal();
+  const services = productionServices();
+  const server = createFuzzyBrainServer(services);
+
+  const transport = new StdioServerTransport();
+  // Set before connect: the SDK chains an existing handler rather than
+  // replacing it. Holding a pool and half a gigabyte of model weights after
+  // the host has hung up is exactly what a resident process must not do.
+  transport.onclose = () => {
+    void releaseResources(services);
+  };
+  await server.connect(transport);
+}
+
+async function releaseResources(services) {
+  try {
+    await services.close();
+  } catch (error) {
+    console.error("[fuzzy-brain] shutdown failed:", error);
+  } finally {
+    await disposeEmbeddingModel();
+  }
 }
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
