@@ -148,13 +148,35 @@ The headline number is open-loop, because a closed-loop run can report 2,400 QPS
 ## Tests
 
 ```sh
-node --test tests/recall-bench-*.test.mjs
+npm run test:bench
 ```
 
-All four files run without a database and without a model.
+Every file under `tests/recall-bench-*.test.mjs` runs without a database and without a model.
 They cover the safety allowlist and the no-managed-database audit, the corpus contract (determinism, record shape, dense ids, solvability certificates), the metric definitions in `lib/stats.mjs`, and the reciprocal-rank-fusion formula on both sides: a fixture-pinned oracle in JavaScript, and the SQL `engine.mjs` actually emits, asserted to compute the same thing.
 
-`npm test` runs these alongside the rest of the repo suite.
+Two tests inside `recall-bench-corpus.test.mjs` build the full 50,000-memory `quality50k` corpus, one of them a second and third time in child processes, which is minutes of single-core work.
+They are gated behind `RECALL_BENCH_HEAVY=1` and skip cleanly without it; `npm run test:heavy` runs them on their own.
+
+`npm test` runs the whole repo suite, this harness included, with those two still skipped by default.
+
+## Continuous integration
+
+`.github/workflows/recall-bench.yml` runs on every pull request and on push to `main`, scoped to paths under `experiments/recall-bench/**` and `tests/recall-bench-*`, plus `workflow_dispatch` for a manual run.
+It has three jobs.
+
+`recall-bench unit` runs `npm run test:bench` with no database, which is every file in `tests/recall-bench-*.test.mjs` except the two `RECALL_BENCH_HEAVY` corpus tests above.
+
+`recall-bench smoke` runs the harness end to end against a `pgvector/pgvector:pg17` service container published on `127.0.0.1:55433` as db `recallbench`, user `bench`, matching this file's own allowlist exactly.
+It generates the `smoke1k` corpus, loads it with real embeddings, verifies the oracle, then runs `bench-recall.mjs` for the `naive` and `tuned` profiles on the dev split.
+The job fails if tuned Recall@10 drops below 0.95, a floor set 0.05 under the 1.000 this measured on 2026-08-30 against a freshly built `smoke1k`, reproduced twice.
+That margin is not query-sampling noise -- recall@10 is deterministic SQL over a fixed corpus -- it is there because `--verify-oracle`'s repair loop re-embeds and re-verbalizes queries that no lane reached, and that loop is embedding-dependent, so a runner with different floating-point behavior can repair a different number of queries than this machine did.
+The embedding model (`nomic-ai/nomic-embed-text-v1.5`, about 650 MB) is cached with `actions/cache`, keyed on the model id, so it downloads once and every later run restores it instead of re-fetching from the Hugging Face hub.
+
+`recall-bench heavy corpus` runs `npm run test:heavy`, the two 50,000-memory corpus tests, and only runs on `workflow_dispatch` -- never on a pull request or a push -- because each run is minutes of single-core work.
+
+The service container only needs the `pgvector/pgvector:pg17` image plus `POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`.
+`load.mjs`'s own `createSchema` step already issues `create extension if not exists vector` and `pg_trgm` before it creates a tier's table, so nothing in `infra/schema.sql` needs to run separately.
+`infra/postgresql.bench.conf` is tuning for the million-row tiers (`shared_buffers`, parallel workers, `jit`), not correctness, so the smoke job runs on the image's defaults.
 
 ## Layout
 
