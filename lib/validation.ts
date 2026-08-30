@@ -39,7 +39,7 @@ export function validateNodeInput(input: unknown, referenceDate = new Date()): R
     if (!why) return { ok: false, error: "every connection needs a why sentence" };
     connections.push({ targetId, why });
   }
-  const deadline = inferDeadline({ type, title, text: raw, referenceDate });
+  const deadline = inferDeadline({ title, text: raw, referenceDate });
   return {
     ok: true,
     value: {
