@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { schemaTables, makeClient } from "./brain.mjs";
-import { embedQuery } from "./lib/embeddings.mjs";
+import { embedQueryCached } from "./lib/embeddings.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -306,7 +306,7 @@ async function main() {
   let queryVec = null;
   let vectorNote = "";
   try {
-    queryVec = await embedQuery(question);
+    queryVec = await embedQueryCached(question);
   } catch (err) {
     vectorNote = ` (vector lane unavailable: ${err.message}; text lanes only)`;
   }
