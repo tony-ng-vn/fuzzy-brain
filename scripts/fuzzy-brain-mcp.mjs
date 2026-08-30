@@ -82,9 +82,10 @@ export function productionServices({
 } = {}) {
   // Read per call, not once: BRAIN_SCHEMA is how a session points the server
   // at the sandbox instead of the real brain.
-  const tables = () => schemaTables(process.env.BRAIN_SCHEMA || "public");
+  const schema = () => process.env.BRAIN_SCHEMA || "public";
+  const tables = () => schemaTables(schema());
   return {
-    recall: (question) => pool.withClient((client) => recall(question, { client })),
+    recall: (question) => pool.withClient((client) => recall(question, { client, schema: schema() })),
     listReminders: (at) => pool.withClient((client) => listReminders(client, tables(), at)),
     getNode: (id) => pool.withClient((client) => getNode(client, tables(), id)),
     remember: async ({ type, raw }) => {
