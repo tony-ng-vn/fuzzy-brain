@@ -10,7 +10,9 @@
     "lint": "eslint",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "db:migrate": "node scripts/migrate.mjs",
-    "clippings:sweep": "node scripts/sweep-clippings.mjs"
+    "clippings:sweep": "node scripts/sweep-clippings.mjs",
+    "test:bench": "node --test --test-concurrency=1 tests/recall-bench-*.test.mjs",
+    "test:heavy": "RECALL_BENCH_HEAVY=1 node --test --test-concurrency=1 tests/recall-bench-corpus.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

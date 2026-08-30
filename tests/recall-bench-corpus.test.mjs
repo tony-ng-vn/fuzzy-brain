@@ -16,6 +16,13 @@ const benchRoot = join(repoRoot, "experiments", "recall-bench");
 const genCorpusPath = join(benchRoot, "gen-corpus.mjs");
 const configPath = join(benchRoot, "config.mjs");
 
+// The two quality50k tests below each build the full 50,000-memory corpus (one
+// of them twice more in child processes), minutes of single-core work per run.
+// They run only under `npm run test:heavy` so the default suite stays cheap and
+// parallel agent runs cannot peg every core on the same generator.
+const HEAVY = process.env.RECALL_BENCH_HEAVY === "1";
+const HEAVY_SKIP = "quality50k corpus generation is heavy; run `npm run test:heavy`";
+
 const VALID_KINDS = new Set(["event", "person", "preference", "quote", "place", "project", "note"]);
 
 async function loadFixture() {
@@ -300,6 +307,10 @@ test("charTrigrams matches pg_trgm's show_trgm, which every trigram bound rests 
 // ---------------------------------------------------------------------------
 
 test("quality50k: anchor resampling converges the corpus to fully solvable, and its evidence lands in both the stats and the written queries", async (t) => {
+  if (!HEAVY) {
+    t.skip(HEAVY_SKIP);
+    return;
+  }
   if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
     t.skip("gen-corpus.mjs / config.mjs not landed yet");
     return;
@@ -362,6 +373,10 @@ test("quality50k: anchor resampling converges the corpus to fully solvable, and 
 // same-process check would prove the cache works, not that two independent
 // runs agree.
 test("quality50k: anchor resampling is split-order-independent -- '--split test' alone repairs the identical corpus '--split both' would", async (t) => {
+  if (!HEAVY) {
+    t.skip(HEAVY_SKIP);
+    return;
+  }
   if (!existsSync(genCorpusPath) || !existsSync(configPath)) {
     t.skip("gen-corpus.mjs / config.mjs not landed yet");
     return;
