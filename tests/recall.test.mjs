@@ -28,6 +28,36 @@ function recall(question) {
   return JSON.parse(out);
 }
 
+// Two cosine scores measured 2026-08-30 against the brain_dev corpus (451
+// embedded session spans, all of them real transcript text):
+//   - 150 random letter-soup queries peaked at 0.6510, so anything at or
+//     below that number is centroid noise and must never read as an answer.
+//   - the rent paraphrase below scored 0.7438, and it is the only assertion
+//     in this file with no lexical overlap at all, so it is the weakest hit
+//     the vector lane has to call strong.
+// The strong-hit threshold has to sit between them. Pinning both edges here
+// keeps that calibration deterministic; the end-to-end "missing" case only
+// samples it, and sampled it wrong about two percent of the time.
+const GARBAGE_CEILING = 0.651;
+const WEAKEST_TRUE_POSITIVE = 0.7438;
+
+test("recall: the strong-hit threshold clears the measured garbage ceiling", async () => {
+  const { classifyState } = await import("../scripts/recall.mjs");
+  const evidenceHit = (sim) => ({ layer: "evidence", sim, strongLex: false, weakLex: true, row: {} });
+
+  assert.equal(classifyState([]), "missing");
+  assert.equal(
+    classifyState([evidenceHit(GARBAGE_CEILING)]),
+    "partial",
+    "a vector score inside the garbage band is a fragment, never an answer",
+  );
+  assert.equal(
+    classifyState([evidenceHit(WEAKEST_TRUE_POSITIVE)]),
+    "evidence",
+    "a real paraphrase must still carry the answer",
+  );
+});
+
 test("recall: hybrid find and epistemic answer states", async (t) => {
   // recall's vector lane needs the local model; same skip rule as the sweep.
   try {
