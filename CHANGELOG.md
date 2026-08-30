@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.16.1
+
+Aug 30, 2026
+
+**Tools**
+
+- `recall` no longer mistakes nonsense for evidence. The cosine score that counts as a strong vector hit moved from 0.65 to 0.70, because 0.65 sat right on top of the noise rather than above it. Measured against brain_dev (451 embedded spans of real session text), 150 random letter-soup questions scored a median of 0.61 and a maximum of 0.651 against their nearest neighbour: a nonsense question never scores near zero, it just lands somewhere in the middle of the corpus. So about one junk question in fifty came back labelled "evidence" when the honest answer was "missing". Real answers and paraphrases score 0.72 to 0.87, so nothing at all lives in the gap the new threshold sits in. The five answer states still mean exactly what they meant before.
+
+---
+
 ## v0.16.0
 
 Aug 30, 2026
