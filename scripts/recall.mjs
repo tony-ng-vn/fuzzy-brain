@@ -15,6 +15,8 @@
 //   - vector cosine over the local embeddings (paraphrase reach),
 //   - pg_trgm word similarity (a mistyped question, or a rare token no
 //     stemmer normalizes).
+// Plus one lane the bench has no equivalent of: ratified edge whys, searched
+// as text, with the nodes they join surfacing behind them.
 // Lane weights are chosen per question (parseQueryFeatures/laneWeights), a
 // question naming a month filters every lane by date, the lanes fuse by
 // reciprocal-rank fusion, and a linear reranker refines the fused order.
@@ -63,6 +65,26 @@ const TRIGRAM_NODE_CAP = 4000;
 // spans are assistant-voice, and "what did Tony say" must never drown his
 // turns. Modest on purpose -- a clearly better assistant hit still wins.
 const TONY_BOOST = 1.2;
+
+// Two scales for the two ways a ratified edge can put a node in front of you.
+//
+// EDGE_WHY_SCALE applies when the why sentence itself matched the question. A
+// why is about the connection, not about either node, so a node that only
+// arrived because its edge's why matched sits below a node whose own text
+// matched at the same rank. Half.
+//
+// EDGE_HOP_SCALE applies to the one-hop walk: a neighbour inherits this
+// fraction of the score of the hit it hung off. The whole fused band is
+// narrow -- a single-lane rank-1 hit scores about 0.0164 and a rank-10 one
+// about 0.0143 -- so the choice decides one thing: how strong a parent has to
+// be before its neighbour outranks a weak direct hit. At 0.35 a neighbour of
+// a three-lane rank-1 parent (about 0.049) lands at 0.017, just above the
+// weakest fragment, and a neighbour of an ordinary single-lane hit lands well
+// below every direct hit. That is the intent: a ratified why is real evidence
+// of relevance, worth more than the tail of a fragment lane and never worth
+// more than the hit it came from.
+const EDGE_WHY_SCALE = 0.5;
+const EDGE_HOP_SCALE = 0.35;
 
 // Cosine thresholds for nomic-embed-text-v1.5, recalibrated 2026-08-30
 // against the brain_dev corpus (451 embedded spans of real session text).
@@ -224,6 +246,48 @@ function buildLaneSql(mode, layer, tables, ctx) {
   };
 }
 
+// The edge lane: a ratified why, searched as text. Both nodes it joins come
+// back with it, because a why explains a connection and the connection has two
+// ends. Never invents an edge -- only rows in the edges table can match.
+function buildEdgeSql(mode, tables, question, orQuery) {
+  const p = paramBag();
+  const q = p.bind(mode === "and" ? question : orQuery);
+  const match = mode === "and"
+    ? `websearch_to_tsquery('english', ${q})`
+    : `to_tsquery('english', ${q})`;
+  return {
+    sql: `select ed.id, ed.source, ed.target, ed.why,
+            ns.title as source_title, nt.title as target_title,
+            ts_rank_cd(ed.fts, ${match}) as lane_score
+     from ${tables.edges} ed
+     join ${tables.nodes} ns on ns.id = ed.source
+     join ${tables.nodes} nt on nt.id = ed.target
+     where ed.fts @@ ${match}
+     order by lane_score desc, ed.id limit ${LANE_LIMIT}`,
+    values: p.values,
+  };
+}
+
+// Node rows for ids that arrived through an edge rather than through a lane,
+// carrying the same cosine and rare-word columns the lanes produce so the
+// reranker sees one shape.
+function buildNodeFetchSql(tables, ids, ctx) {
+  const p = paramBag();
+  const idParam = p.bind(ids);
+  const simExpr = ctx.vecLiteral
+    ? `1 - (n.embedding <=> ${p.bind(ctx.vecLiteral)}::vector)`
+    : "null::float";
+  const rareExpr = ctx.rareQuery
+    ? `(n.fts @@ to_tsquery('english', ${p.bind(ctx.rareQuery)}))`
+    : "false";
+  return {
+    sql: `select n.id, n.type, n.title, n.body, n.created_at, n.created_at as occurred_at,
+            0::float as lane_score, ${simExpr} as sim, ${rareExpr} as rare_hit
+     from ${tables.nodes} n where n.id = any(${idParam}::uuid[])`,
+    values: p.values,
+  };
+}
+
 function candidateKey(layer, id) {
   return `${layer}:${id}`;
 }
@@ -288,7 +352,7 @@ async function findCandidates(client, tables, question, queryVec, notes) {
   const flagsFor = (key) => {
     let f = flags.get(key);
     if (!f) {
-      f = { strongLex: false, weakLex: false, trigramLex: false, sim: null, cosine: null, lexical: 0, rareHit: false };
+      f = { strongLex: false, weakLex: false, trigramLex: false, viaEdge: false, sim: null, cosine: null, lexical: 0, rareHit: false };
       flags.set(key, f);
     }
     return f;
@@ -325,6 +389,38 @@ async function findCandidates(client, tables, question, queryVec, notes) {
     }
   }
 
+  // The edge lane runs on the same lexical weights the node lanes got, scaled
+  // down because a why explains the connection rather than either end of it.
+  const whyByNode = new Map();
+  const edgeEndpointIds = new Set();
+  for (const mode of ["and", "or"]) {
+    if ((weights[mode] ?? 0) === 0) continue;
+    if (mode === "or" && !orQuery) continue;
+    const { sql, values } = buildEdgeSql(mode, tables, question, orQuery);
+    let rows;
+    try {
+      ({ rows } = await client.query(sql, values));
+    } catch (err) {
+      notes.push(`edge lane unavailable (${err.message}); skipped`);
+      break;
+    }
+    const laneName = `edge-${mode}`;
+    laneWeightsByName[laneName] = weights[mode] * EDGE_WHY_SCALE;
+    const entries = [];
+    for (const { row, rank } of denseRanks(rows, (r) => r.lane_score)) {
+      for (const [end, otherTitle] of [[row.source, row.target_title], [row.target, row.source_title]]) {
+        const key = candidateKey("node", end);
+        entries.push({ key, rank });
+        edgeEndpointIds.add(end);
+        flagsFor(key).viaEdge = true;
+        if (!whyByNode.has(key)) whyByNode.set(key, { from_title: otherTitle, why: row.why });
+      }
+    }
+    laneResults[laneName] = entries;
+  }
+
+  await hydrateNodes(client, tables, ctx, [...edgeEndpointIds], rowByKey);
+
   const fused = fuseRrf(laneResults, laneWeightsByName, cfg.rrfK);
 
   let candidates = [];
@@ -341,10 +437,12 @@ async function findCandidates(client, tables, question, queryVec, notes) {
       strongLex: f.strongLex,
       weakLex: f.weakLex,
       trigramLex: f.trigramLex,
+      viaEdge: f.viaEdge,
       sim: f.sim,
       cosine: f.cosine,
       lexical: f.lexical,
       rareHit: f.rareHit,
+      via: whyByNode.get(key) ?? null,
     });
   }
 
@@ -353,14 +451,16 @@ async function findCandidates(client, tables, question, queryVec, notes) {
   // row has to have been matched by some lane that reads actual words -- a
   // lexeme, a fragment, a trigram, or a ratified why. This is the same rule
   // the old two-lane find had, widened to the lanes that now exist.
-  candidates = candidates.filter((c) => c.weakLex || c.trigramLex || isStrongHit(c));
+  candidates = candidates.filter((c) => c.weakLex || c.trigramLex || c.viaEdge || isStrongHit(c));
 
   for (const c of candidates) {
     if (c.layer === "evidence" && c.row.speaker === "tony") c.rrf *= TONY_BOOST;
   }
   candidates.sort((a, b) => b.rrf - a.rrf);
 
-  const edges = await loadEdges(client, tables, candidates);
+  const edges = await expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode);
+  candidates.sort((a, b) => b.rrf - a.rrf);
+
   for (const c of candidates) {
     if (c.layer !== "node") continue;
     c.edges = edges.filter((e) => e.source === c.row.id || e.target === c.row.id);
@@ -391,19 +491,81 @@ function titleHit(features, candidate) {
   return features.quoted.some((phrase) => title.includes(phrase));
 }
 
-// Bounded traversal, and ALL the traversal this phase gets: the ratified
-// why-edges touching each node hit, attached so the output can show them.
-async function loadEdges(client, tables, candidates) {
+async function hydrateNodes(client, tables, ctx, ids, rowByKey) {
+  const missing = ids.filter((id) => !rowByKey.has(candidateKey("node", id)));
+  if (missing.length === 0) return;
+  const { sql, values } = buildNodeFetchSql(tables, missing, ctx);
+  const { rows } = await client.query(sql, values);
+  for (const row of rows) rowByKey.set(candidateKey("node", row.id), row);
+}
+
+// Bounded traversal: exactly one hop of ratified why-edges out of the node
+// hits that survived admission. The neighbour inherits EDGE_HOP_SCALE of its
+// parent's fused score and the why sentence that reached it, and it never
+// expands further -- one hop is the whole traversal this phase gets.
+async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode) {
   const nodeIds = candidates.filter((c) => c.layer === "node").map((c) => c.row.id);
   if (nodeIds.length === 0) return [];
-  const { rows } = await client.query(
-    `select ed.source, ed.target, ed.why, ns.title as source_title, nt.title as target_title
-     from ${tables.edges} ed
-     join ${tables.nodes} ns on ns.id = ed.source
-     join ${tables.nodes} nt on nt.id = ed.target
-     where ed.source = any($1::uuid[]) or ed.target = any($1::uuid[])`,
-    [nodeIds],
-  );
+
+  let rows;
+  try {
+    ({ rows } = await client.query(
+      `select ed.id, ed.source, ed.target, ed.why,
+              ns.title as source_title, nt.title as target_title
+       from ${tables.edges} ed
+       join ${tables.nodes} ns on ns.id = ed.source
+       join ${tables.nodes} nt on nt.id = ed.target
+       where ed.source = any($1::uuid[]) or ed.target = any($1::uuid[])`,
+      [nodeIds],
+    ));
+  } catch {
+    return [];
+  }
+  if (rows.length === 0) return rows;
+
+  const byNodeId = new Map(candidates.filter((c) => c.layer === "node").map((c) => [c.row.id, c]));
+  const arrivals = new Map(); // neighbour node id -> { rrf, via }
+  for (const edge of rows) {
+    for (const [from, to, otherTitle] of [
+      [edge.source, edge.target, edge.source_title],
+      [edge.target, edge.source, edge.target_title],
+    ]) {
+      const parent = byNodeId.get(from);
+      if (!parent || byNodeId.has(to)) continue; // already a hit in its own right
+      const gain = parent.rrf * EDGE_HOP_SCALE;
+      const seen = arrivals.get(to);
+      if (!seen || gain > seen.rrf) {
+        arrivals.set(to, { rrf: gain, via: { from_title: otherTitle, why: edge.why } });
+      }
+    }
+  }
+  if (arrivals.size === 0) return rows;
+
+  await hydrateNodes(client, tables, ctx, [...arrivals.keys()], rowByKey);
+  for (const [id, arrival] of arrivals) {
+    const key = candidateKey("node", id);
+    const row = rowByKey.get(key);
+    if (!row) continue;
+    if (!whyByNode.has(key)) whyByNode.set(key, arrival.via);
+    candidates.push({
+      key,
+      id: key,
+      layer: "node",
+      row,
+      rrf: arrival.rrf,
+      strongLex: false,
+      weakLex: false,
+      trigramLex: false,
+      viaEdge: true,
+      // A neighbour arrives on the strength of a ratified why, never on its
+      // own retrieval score, so it can never make a question look answered.
+      sim: null,
+      cosine: row.sim === null || row.sim === undefined ? null : Number(row.sim),
+      lexical: 0,
+      rareHit: Boolean(row.rare_hit),
+      via: whyByNode.get(key),
+    });
+  }
   return rows;
 }
 
@@ -439,6 +601,7 @@ function toJsonHit(c) {
       body: clip(c.row.body, 700),
       created_at: c.row.created_at,
       score,
+      via_edge: c.via ? { from_title: c.via.from_title, why: c.via.why } : null,
       edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
     };
   }
@@ -470,6 +633,10 @@ function formatHuman(result) {
     if (h.layer === "node") {
       lines.push(`[node] ${h.title}  (${h.type || "untyped"}, ${isoDate(h.created_at)})  score ${h.score}`);
       lines.push(`  ${h.node_id}`);
+      if (h.via_edge) {
+        lines.push(`  surfaced through ${h.via_edge.from_title}`);
+        lines.push(`    why  ${h.via_edge.why}`);
+      }
       lines.push(`  readable: ${clip(h.body, 300)}`);
       for (const e of h.edges) {
         lines.push(`  edge: ${e.source_title} -> ${e.target_title}`);
