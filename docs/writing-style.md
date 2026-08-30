@@ -12,6 +12,10 @@ It is a living document: every time Tony corrects a readable pass, the correctio
 4. Tony reviews; only after his yes does the node get written (scripts/brain.mjs add-node, or POST /api/nodes).
 5. If Tony corrects something, the agent adds a rule or counter-example to this file so the same mistake doesn't happen on the next node.
 
+A direct instruction such as "remember this", "save it", or "add this to my brain" is already the yes.
+For that explicit capture path, the complete message is stored verbatim as both raw and readable, with no model-written pass to approve.
+Ordinary conversation and auto-ingested evidence never use this exception.
+
 ## The readable pass rules
 
 Do:

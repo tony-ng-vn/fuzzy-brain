@@ -108,7 +108,7 @@ test("renderClipping: raw carries every field and span offsets are exact", () =>
     assert.equal(raw.slice(span.start_offset, span.end_offset), span.quote);
     assert.equal(span.occurred_at, "2026-07-21T18:00:00.000Z");
   }
-  const note = evidence.find((s) => s.speaker === "Tony");
+  const note = evidence.find((s) => s.speaker === "tony");
   assert.equal(note.quote, "why I saved it");
   const selection = evidence.find((s) => s.speaker === null);
   assert.equal(selection.quote, "the highlighted bit");

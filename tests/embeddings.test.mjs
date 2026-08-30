@@ -4,6 +4,63 @@
 // cache), skip with a clear message instead of failing the whole suite.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Tensor } from "@huggingface/transformers";
+
+test("embedding cleanup does not replay a failed model load", async () => {
+  const { disposeExtractorPromise } = await import("../scripts/lib/embeddings.mjs");
+  await assert.doesNotReject(disposeExtractorPromise(Promise.reject(new Error("model unavailable"))));
+
+  let disposed = false;
+  await disposeExtractorPromise(Promise.resolve({
+    async dispose() {
+      disposed = true;
+    },
+  }));
+  assert.equal(disposed, true);
+});
+
+test("embedding inference disposes every temporary tensor", async () => {
+  const { embedWithExtractor } = await import("../scripts/lib/embeddings.mjs");
+  const disposed = new Set();
+  const originalDispose = Tensor.prototype.dispose;
+  Tensor.prototype.dispose = function () {
+    disposed.add(this);
+  };
+  const tensor = (type, data, dims) => new Tensor(type, data, dims);
+  const inputIds = tensor("int64", BigInt64Array.from([1n, 2n, 3n, 0n]), [1, 4]);
+  const attentionMask = tensor("int64", BigInt64Array.from([1n, 1n, 1n, 0n]), [1, 4]);
+  const hidden = tensor(
+    "float32",
+    Float32Array.from([
+      1, 2, 3,
+      2, 3, 4,
+      3, 4, 5,
+      100, 100, 100,
+    ]),
+    [1, 4, 3],
+  );
+  const extractor = {
+    tokenizer() {
+      return { input_ids: inputIds, attention_mask: attentionMask };
+    },
+    async model() {
+      return { last_hidden_state: hidden };
+    },
+  };
+
+  try {
+    const [embedding] = await embedWithExtractor(extractor, "search_document", ["hello"]);
+
+    assert.equal(embedding.length, 3);
+    assert.ok(embedding.every(Number.isFinite));
+    assert.ok(disposed.has(inputIds), "token IDs must be released after inference");
+    assert.ok(disposed.has(attentionMask), "attention masks must be released after pooling");
+    assert.ok(disposed.has(hidden), "the large hidden-state tensor must be released after pooling");
+    assert.ok(disposed.size >= 6, "pooled and normalization tensors must also be released");
+  } finally {
+    Tensor.prototype.dispose = originalDispose;
+  }
+});
 
 function cosine(a, b) {
   let dot = 0;

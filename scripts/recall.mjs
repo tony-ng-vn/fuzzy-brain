@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { schemaTables, makeClient } from "./brain.mjs";
-import { embedQueryCached } from "./lib/embeddings.mjs";
+import { disposeEmbeddingModel, embedQueryCached } from "./lib/embeddings.mjs";
 import { retrievalDefaults as cfg } from "./lib/retrieval/config.mjs";
 import { STOPWORDS, tokenize, stem } from "./lib/retrieval/text.mjs";
 import { parseQueryFeatures, laneWeights } from "./lib/retrieval/features.mjs";
@@ -698,7 +698,11 @@ async function main() {
     };
     console.log(json ? JSON.stringify(result, null, 2) : formatHuman(result));
   } finally {
-    await client.end();
+    try {
+      await client.end();
+    } finally {
+      await disposeEmbeddingModel();
+    }
   }
 }
 

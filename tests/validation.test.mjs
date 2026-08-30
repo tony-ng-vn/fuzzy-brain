@@ -41,6 +41,22 @@ test("body defaults to raw when absent or blank", () => {
   if (given.ok) assert.equal(given.value.body, "a readable");
 });
 
+test("an explicit deadline in node text becomes append-only temporal metadata", () => {
+  const res = validateNodeInput(
+    {
+      type: "startup",
+      title: "Stripe Atlas offer",
+      raw: "I can use this offer until Aug 5 2027.",
+    },
+    new Date("2026-08-06T12:00:00-07:00"),
+  );
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.deadlineAt, "2027-08-06T06:59:59.999Z");
+    assert.equal(res.value.deadlineOrigin, "derived");
+  }
+});
+
 test("trims and accepts a node with connections", () => {
   const res = validateNodeInput({
     type: " lesson ",

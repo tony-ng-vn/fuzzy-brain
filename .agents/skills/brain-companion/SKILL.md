@@ -69,6 +69,8 @@ throughout.
    Save his words as the raw layer exactly as he gave them: no typo fixes, no edits of any kind.
    Draft the readable layer per docs/writing-style.md: describe the moment, quote his phrases verbatim where the weight is, never interpret.
    Show him both layers before saving. Save only after he says yes.
+   If he directly says "remember this", "save it", or "add this to my brain", that instruction is the yes: save the whole message verbatim as both raw and readable, then confirm what was saved.
+   Do not treat ordinary conversation or auto-ingested evidence as this direct instruction.
    If he corrects the readable, log the correction as a new rule in docs/writing-style.md so it never recurs.
    Done when the saved node carries his verbatim raw and a readable he approved.
 
@@ -108,6 +110,10 @@ sentences and he needs to know which one is true.
 - **Broken lookup.** brain.mjs or the database failed: say the lookup broke, fix
   it, and rerun. Never dress a failed search as absent knowledge.
 
+For broad questions such as "what do I need to remember?", run `node scripts/brain.mjs list-reminders` before answering.
+Do not substitute unfinished threads, stale task context, or a narrow semantic search for the temporal ledger.
+The reminder list excludes completed nodes.
+
 On feelings and meaning, one more guard: a read of what something means is
 allowed only when it is explicitly labeled as yours ("my read, not your words"),
 and "in your own words" is earned only by quoting him verbatim -- never by a
@@ -144,18 +150,24 @@ and nothing in it is true -- it is what a source captured, not what Tony means.
 
 ## Writing
 
-The agent's write path is direct into the database (rule 4); the CHECK constraints are the
+The agent's write path is the controlled `scripts/brain.mjs` CLI (rule 4); database CHECK constraints are the
 final gate. Pass the payload as JSON on stdin so bodies and whys keep their line
 breaks and quotes. Write the JSON to a scratch file first, then pipe it -- do not
 fight shell quoting on a multi-paragraph body.
 
 - New node: `node scripts/brain.mjs add-node < node.json`
   where node.json is `{"type": "...", "title": "...", "raw": "...", "body": "..."}` (type may be ""; raw is his verbatim words; body is the readable and defaults to raw when omitted).
+- A deadline-bearing node automatically receives an append-only deadline event when its raw or title contains a deadline cue and a parseable date.
+- Set or correct a deadline: `node scripts/brain.mjs set-deadline <id> < deadline.json` where deadline.json is `{"due_at": "<ISO instant with timezone>", "raw": "<Tony's authorizing words>", "origin": "explicit"}`.
+- Clear a mistaken deadline: `node scripts/brain.mjs clear-deadline <id> < clear.json` where clear.json is `{"raw": "<Tony's authorizing words>"}`.
+- List active reminders: `node scripts/brain.mjs list-reminders`.
+- Mark nodes complete: `node scripts/brain.mjs mark-complete < complete.json` where complete.json is `{"node_ids": ["<id>"], "raw": "<Tony's verbatim instruction>"}`.
 - New edge: `node scripts/brain.mjs add-edge < edge.json`
   where edge.json is `{"source": "<id>", "target": "<id>", "why": "..."}`.
 - Re-ratify a readable: `node scripts/brain.mjs set-readable <id> < body.json` where body.json is `{"body": "..."}`; only after Tony approves the new version.
 - Save a ratified recap: `node scripts/brain.mjs add-talk < talk.json` where talk.json is `{"recap": "..."}`.
 - Snapshot for Tony: `node scripts/brain.mjs dump > backup.json` when he asks for a copy.
+- Temporal changes append events; they never rewrite the node.
 - There is no set-raw and no delete; that absence is the protection, never work around it (AGENTS.md rule 9).
 
 Nodes and edges are written separately, on purpose: a connection is usually ratified

@@ -15,6 +15,8 @@ test("brain table names are explicitly schema-qualified", async () => {
     nodes: '"brain_dev".nodes',
     edges: '"brain_dev".edges',
     talks: '"brain_dev".talks',
+    temporalEvents: '"brain_dev".node_temporal_events',
+    temporalState: '"brain_dev".node_temporal_state',
     sources: '"brain_dev".sources',
     episodes: '"brain_dev".episodes',
     evidence: '"brain_dev".evidence',
@@ -86,6 +88,13 @@ test("the embed sweep only ever fills null embeddings, nothing else", () => {
     2,
     "no update may exist beyond the two embedding fills",
   );
+});
+
+test("temporal state is append-only in the brain CLI", () => {
+  const source = readFileSync(join(root, "scripts", "brain.mjs"), "utf8");
+  assert.doesNotMatch(source, /delete\s+from\s+\$\{tables\.temporalEvents\}/i);
+  assert.doesNotMatch(source, /update\s+\$\{tables\.temporalEvents\}/i);
+  assert.match(source, /insert\s+into\s+\$\{tables\.temporalEvents\}/i);
 });
 
 test("recall is read-only: not one write statement in its source", () => {
