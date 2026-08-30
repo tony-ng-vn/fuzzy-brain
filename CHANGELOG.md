@@ -4,6 +4,20 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.21.0
+
+Aug 30, 2026
+
+**Tools**
+
+- Asking the brain a question from an agent is now about twice as fast. The MCP server used to start a whole new Node process for every question, and each one loaded the local embedding model from scratch before it could search anything. It now does the work in its own process, so the model loads once and stays loaded. Measured against `brain_dev` over ten questions in one server: the first question still costs about 1.9 seconds, every question after it takes a median of 898 milliseconds, against a flat 2.0 to 2.4 seconds per question before.
+- Reminders and single nodes come back almost instantly: about 85 milliseconds instead of about 900. Nothing about those two was slow; they were paying for a process start and a fresh database handshake every time.
+- Honest note on the query cache. It caches now that the server lives long enough for it to matter, but re-asking the same question only saves about 80 milliseconds. Once the model is loaded, embedding a question is cheap. Nearly all of the win is the model staying put.
+- Writing to the brain is unchanged. `remember` and `mark_complete` still go through `scripts/brain.mjs` as separate processes, so the one ratified write path stays exactly where it was.
+- `recall` is now importable as a function as well as a command. The command prints exactly what it printed before, byte for byte, so anything parsing its `--json` output keeps working.
+
+---
+
 ## v0.20.0
 
 Aug 30, 2026
