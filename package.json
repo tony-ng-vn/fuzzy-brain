@@ -14,7 +14,8 @@
     "watch:sweep": "node scripts/sweep-watch-items.mjs",
     "fusion:sync": "node scripts/fusion-sync.mjs",
     "fusion:install": "node scripts/fusion-sync.mjs --install",
-    "mcp": "node scripts/fuzzy-brain-mcp.mjs"
+    "mcp": "node scripts/fuzzy-brain-mcp.mjs",
+    "agents:install": "node scripts/install-agents.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
