@@ -1,0 +1,283 @@
+{
+  "tier": "quality50k",
+  "generatedAt": "2026-08-24T03:51:02.691Z",
+  "vector": {
+    "verified": true,
+    "method": "exact cosine rank in SQL over the loaded corpus",
+    "embedder": "nomic-embed-text-v1.5"
+  },
+  "overall": {
+    "n": 2000,
+    "bestLaneRankAt10": 1,
+    "depth100ReachabilityAt": 1
+  },
+  "perFamily": {
+    "paraphrase_nolex": {
+      "n": 400,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "vector": 400
+      }
+    },
+    "rare_token": {
+      "n": 300,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "and": 300,
+        "or": 300,
+        "trigram": 300,
+        "vector": 284
+      }
+    },
+    "entity_swap": {
+      "n": 300,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "and": 296,
+        "or": 171,
+        "vector": 157,
+        "trigram": 55
+      }
+    },
+    "near_dup": {
+      "n": 300,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "and": 300,
+        "or": 292,
+        "vector": 220,
+        "trigram": 200
+      }
+    },
+    "date_filter": {
+      "n": 300,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "and": 206,
+        "trigram": 298,
+        "vector": 147,
+        "or": 220
+      }
+    },
+    "partial_ref": {
+      "n": 200,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "or": 200,
+        "trigram": 71,
+        "vector": 54
+      }
+    },
+    "typo_noisy": {
+      "n": 200,
+      "bestLaneRankAt10": 1,
+      "depth100Reachability": 1,
+      "solvedByLane": {
+        "trigram": 200,
+        "vector": 117
+      }
+    }
+  },
+  "gate": {
+    "threshold": 0.97,
+    "passed": true,
+    "provisional": false
+  },
+  "repair": {
+    "rounds": [
+      {
+        "round": 1,
+        "attempted": 119,
+        "rewritten": 116,
+        "stillFailing": 79
+      },
+      {
+        "round": 2,
+        "attempted": 82,
+        "rewritten": 79,
+        "stillFailing": 63
+      },
+      {
+        "round": 3,
+        "attempted": 66,
+        "rewritten": 63,
+        "stillFailing": 54
+      },
+      {
+        "round": 4,
+        "attempted": 57,
+        "rewritten": 54,
+        "stillFailing": 48
+      }
+    ],
+    "repaired": 119,
+    "retargeted": 51,
+    "nonConverging": []
+  },
+  "unfiltered": {
+    "overall": {
+      "n": 2000,
+      "bestLaneRankAt10": 0.9965,
+      "depth100ReachabilityAt": 1
+    },
+    "perFamily": {
+      "paraphrase_nolex": {
+        "n": 400,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "vector": 400
+        }
+      },
+      "rare_token": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 300,
+          "or": 300,
+          "trigram": 300,
+          "vector": 284
+        }
+      },
+      "entity_swap": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 296,
+          "or": 171,
+          "vector": 157,
+          "trigram": 55
+        }
+      },
+      "near_dup": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 300,
+          "or": 292,
+          "vector": 220,
+          "trigram": 200
+        }
+      },
+      "date_filter": {
+        "n": 300,
+        "bestLaneRankAt10": 0.9766666666666667,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 206,
+          "trigram": 272,
+          "vector": 31,
+          "or": 156
+        }
+      },
+      "partial_ref": {
+        "n": 200,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "or": 200,
+          "trigram": 71,
+          "vector": 54
+        }
+      },
+      "typo_noisy": {
+        "n": 200,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "trigram": 200,
+          "vector": 117
+        }
+      }
+    }
+  },
+  "provisionalOffline": {
+    "overall": {
+      "n": 2000,
+      "bestLaneRankAt10": 0.9435,
+      "depth100ReachabilityAt": 0.982
+    },
+    "perFamily": {
+      "paraphrase_nolex": {
+        "n": 400,
+        "bestLaneRankAt10": 0.865,
+        "depth100Reachability": 0.9125,
+        "solvedByLane": {
+          "vector": 346
+        }
+      },
+      "rare_token": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 300,
+          "or": 300,
+          "trigram": 300,
+          "vector": 284
+        }
+      },
+      "entity_swap": {
+        "n": 300,
+        "bestLaneRankAt10": 0.9733333333333334,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 286,
+          "or": 148,
+          "vector": 156,
+          "trigram": 53
+        }
+      },
+      "near_dup": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 300,
+          "or": 279,
+          "vector": 128,
+          "trigram": 164
+        }
+      },
+      "date_filter": {
+        "n": 300,
+        "bestLaneRankAt10": 0.83,
+        "depth100Reachability": 0.9966666666666667,
+        "solvedByLane": {
+          "and": 202,
+          "or": 131,
+          "trigram": 30,
+          "vector": 16
+        }
+      },
+      "partial_ref": {
+        "n": 200,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "or": 200,
+          "trigram": 103,
+          "vector": 48
+        }
+      },
+      "typo_noisy": {
+        "n": 200,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "trigram": 200,
+          "vector": 119
+        }
+      }
+    }
+  }
+}

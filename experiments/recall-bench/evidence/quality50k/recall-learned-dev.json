@@ -1,0 +1,310 @@
+{
+  "tier": "quality50k",
+  "split": "dev",
+  "generatedAt": "2026-08-30T17:20:32.396Z",
+  "profile": "learned",
+  "metrics": {
+    "n": 50,
+    "recallAt1": 0.32,
+    "recallAt5": 0.76,
+    "recallAt10": 0.98,
+    "recallAt20": 0.98,
+    "mrrAt10": 0.5092460317460317,
+    "recallAt10CI": {
+      "point": 0.98,
+      "lower": 0.94,
+      "upper": 1,
+      "resamples": 10000,
+      "level": 0.95
+    },
+    "perFamily": {
+      "paraphrase_nolex": {
+        "n": 50,
+        "recallAt10": 0.98
+      }
+    }
+  },
+  "oracle": {
+    "tier": "quality50k",
+    "generatedAt": "2026-08-24T04:45:18.344Z",
+    "vector": {
+      "verified": true,
+      "method": "exact cosine rank in SQL over the loaded corpus",
+      "embedder": "nomic-embed-text-v1.5"
+    },
+    "overall": {
+      "n": 2000,
+      "bestLaneRankAt10": 1,
+      "depth100ReachabilityAt": 1
+    },
+    "perFamily": {
+      "paraphrase_nolex": {
+        "n": 460,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "vector": 460
+        }
+      },
+      "rare_token": {
+        "n": 440,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 440,
+          "or": 440,
+          "trigram": 440,
+          "vector": 409
+        }
+      },
+      "entity_swap": {
+        "n": 220,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 220,
+          "or": 125,
+          "vector": 114,
+          "trigram": 44
+        }
+      },
+      "near_dup": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 300,
+          "or": 288,
+          "trigram": 296,
+          "vector": 223
+        }
+      },
+      "date_filter": {
+        "n": 300,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 204,
+          "or": 298,
+          "trigram": 300,
+          "vector": 249
+        }
+      },
+      "partial_ref": {
+        "n": 140,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "or": 140,
+          "trigram": 53,
+          "vector": 44
+        }
+      },
+      "typo_noisy": {
+        "n": 140,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "trigram": 140,
+          "vector": 88
+        }
+      }
+    },
+    "gate": {
+      "threshold": 0.97,
+      "passed": true,
+      "provisional": false
+    },
+    "repair": {
+      "rounds": [
+        {
+          "round": 1,
+          "attempted": 149,
+          "rewritten": 146,
+          "stillFailing": 101
+        },
+        {
+          "round": 2,
+          "attempted": 104,
+          "rewritten": 101,
+          "stillFailing": 81
+        },
+        {
+          "round": 3,
+          "attempted": 84,
+          "rewritten": 81,
+          "stillFailing": 68
+        },
+        {
+          "round": 4,
+          "attempted": 71,
+          "rewritten": 68,
+          "stillFailing": 60
+        }
+      ],
+      "repaired": 149,
+      "retargeted": 63,
+      "nonConverging": []
+    },
+    "unfiltered": {
+      "overall": {
+        "n": 2000,
+        "bestLaneRankAt10": 1,
+        "depth100ReachabilityAt": 1
+      },
+      "perFamily": {
+        "paraphrase_nolex": {
+          "n": 460,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "vector": 460
+          }
+        },
+        "rare_token": {
+          "n": 440,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 440,
+            "or": 440,
+            "trigram": 440,
+            "vector": 409
+          }
+        },
+        "entity_swap": {
+          "n": 220,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 220,
+            "or": 125,
+            "vector": 114,
+            "trigram": 44
+          }
+        },
+        "near_dup": {
+          "n": 300,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 300,
+            "or": 288,
+            "trigram": 296,
+            "vector": 223
+          }
+        },
+        "date_filter": {
+          "n": 300,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 204,
+            "or": 288,
+            "trigram": 300,
+            "vector": 144
+          }
+        },
+        "partial_ref": {
+          "n": 140,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "or": 140,
+            "trigram": 53,
+            "vector": 44
+          }
+        },
+        "typo_noisy": {
+          "n": 140,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "trigram": 140,
+            "vector": 88
+          }
+        }
+      }
+    },
+    "provisionalOffline": {
+      "overall": {
+        "n": 2000,
+        "bestLaneRankAt10": 1,
+        "depth100ReachabilityAt": 1
+      },
+      "perFamily": {
+        "paraphrase_nolex": {
+          "n": 400,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "vector": 400
+          }
+        },
+        "rare_token": {
+          "n": 300,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 300,
+            "or": 300,
+            "trigram": 300,
+            "vector": 284
+          }
+        },
+        "entity_swap": {
+          "n": 300,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 296,
+            "or": 171,
+            "vector": 157,
+            "trigram": 55
+          }
+        },
+        "near_dup": {
+          "n": 300,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 300,
+            "or": 292,
+            "vector": 220,
+            "trigram": 200
+          }
+        },
+        "date_filter": {
+          "n": 300,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 206,
+            "trigram": 298,
+            "vector": 147,
+            "or": 220
+          }
+        },
+        "partial_ref": {
+          "n": 200,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "or": 200,
+            "trigram": 71,
+            "vector": 54
+          }
+        },
+        "typo_noisy": {
+          "n": 200,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "trigram": 200,
+            "vector": 117
+          }
+        }
+      }
+    }
+  }
+}

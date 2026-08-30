@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-30T16:39:56.766Z","tier":"smoke1k","profile":"naive","configHash":"67921f7fd5de333848a71493e2cf2e8a0468d403e2a6c7e831d467e5240ea412","recallAt10":0.89,"recallAt10CI":{"point":0.89,"lower":0.82,"upper":0.95,"resamples":10000,"level":0.95}}
+{"timestamp":"2026-08-30T16:39:58.514Z","tier":"smoke1k","profile":"tuned","configHash":"bcaee6f4ec3c38b7e51b957b171f8dddad68cf1a702bee742beb77ecc5d5cbaf","recallAt10":1,"recallAt10CI":{"point":1,"lower":1,"upper":1,"resamples":10000,"level":0.95}}
