@@ -4,6 +4,22 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.20.0
+
+Aug 30, 2026
+
+**API**
+
+- New POST /api/companion route: a bridge to the brain companion that runs a local Claude Code session on your subscription, so talking to the brain from the app costs nothing beyond the subscription you already have. The route feeds the whole brain to the session as text and gives it an empty tool set with slash commands turned off, so the session can only talk and propose; it cannot run commands, read files, reach the network, or write to the database on its own. It answers on localhost only and needs a custom header, matching the sync route's guards.
+- The dev and start servers now bind to 127.0.0.1 (localhost only) instead of every network interface, so nothing off your machine can reach the app. If you used to open the brain from your phone on the same wifi, that no longer works by default; this is the real boundary that keeps the companion bridge from being driven by another device.
+
+**UI**
+
+- New "talk" button opens a chat panel where you can think out loud and the companion picks up the thread, the same core loop that used to live only in the terminal. When something is worth keeping it proposes a node as a save card showing both layers (your verbatim words and the readable draft); nothing is saved until you click, and saving goes through the same add-node path the form already uses. The conversation stays one continuous session across messages, which also keeps each turn cheap.
+- A node that will not save now says why in plain words. A connection pointing at a node that no longer exists comes back as exactly that, instead of the raw database error the page used to print, which named tables and constraints.
+
+---
+
 ## v0.19.0
 
 Aug 30, 2026
