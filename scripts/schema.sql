@@ -248,3 +248,34 @@ create index if not exists nodes_fts_idx on nodes using gin (fts);
 -- enter the index, which is how unswept rows stay invisible to it.
 create index if not exists evidence_embedding_idx on evidence using hnsw (embedding vector_cosine_ops);
 create index if not exists nodes_embedding_idx on nodes using hnsw (embedding vector_cosine_ops);
+
+-- === Ratified-why search and the trigram lane (Phase 3, recall v2) ===
+-- Additive only, same discipline as the retrieval columns above: no existing
+-- column, row, or constraint changes.
+
+-- An edge's why sentence is ratified meaning, decided in conversation with
+-- Tony, and until now it was only ever readable by following an edge to a node
+-- that had already been found some other way. Projecting it into a tsvector
+-- makes the reason itself a way in.
+alter table edges add column if not exists fts tsvector
+  generated always as (to_tsvector('english', left(why, 100000))) stored;
+
+create index if not exists edges_fts_idx on edges using gin (fts);
+
+-- pg_trgm powers recall's trigram lane, which is how a mistyped question still
+-- finds its answer. WITH SCHEMA public so the operators resolve from both
+-- public and brain_dev through the migration's search_path, exactly like
+-- vector above.
+create extension if not exists pg_trgm with schema public;
+
+-- Trigram indexes for that lane. The `left(...)` caps are not cosmetic: a
+-- trigram index is far denser than a tsvector one, real spans reach 365k
+-- characters, and the evidence store already holds tens of thousands of rows.
+-- Capping the indexed prefix bounds the index instead of the corpus. Recall's
+-- trigram predicate reads the SAME capped expression, so the index is usable;
+-- text past the cap is reachable through full text and vectors, just not
+-- through trigrams.
+create index if not exists evidence_quote_trgm_idx
+  on evidence using gin (left(quote, 2000) gin_trgm_ops);
+create index if not exists nodes_text_trgm_idx
+  on nodes using gin (left(title || ' ' || body, 4000) gin_trgm_ops);

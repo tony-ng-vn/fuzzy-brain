@@ -4,6 +4,36 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.19.0
+
+Aug 30, 2026
+
+**Data**
+
+- Edge why sentences are indexed for full-text search, and `pg_trgm` plus two trigram indexes back the new typo lane. All additive; the migration rehearses on `brain_dev` before touching the real tables, as always. The trigram indexes cover the first 2,000 characters of a quote and the first 4,000 of a node, which bounds them at about 36MB instead of letting the corpus decide.
+
+**Tools**
+
+- `recall` now runs the retrieval design the recall bench proved, instead of the two-lane sketch it grew from. On the bench's frozen 50,000-memory corpus that design took Recall@10 from 0.697 to 0.977, and the whole schema-independent half of it now lives in `scripts/lib/retrieval/`, imported by both the bench harness and `scripts/recall.mjs`, so the two cannot drift apart.
+- Four lanes per layer instead of two: exact full text, fragments, vector meaning, and trigram similarity for a question you mistyped. Which lanes matter is decided per question -- a short question whose words are not in the brain at all leans on trigrams, a long reworded one leans on meaning -- and the lanes are fused and then reranked rather than simply added up.
+- A mistyped question finds its answer. "securty vulnerabilites reviw" used to come back with nothing at all; it now returns the security-review span it was asking for. Measured against the real store, real typos score 0.44 to 0.69 on trigram similarity against their own answer and letter soup tops out at 0.25, so the cutoff sits at 0.40, in the gap.
+- A question that names a month or a year filters every lane by date. "what happened to the brass lantern in march 2024" now excludes the September span instead of ranking it. Bare month names are deliberately not a date signal, because "may" and "march" are ordinary words.
+- Ratified edge whys are searchable, and hits walk one hop. Ask about the words in a why sentence and both nodes it joins come back. Find a node any other way and its ratified neighbours come with it, each carrying the why that surfaced it, so an answer can always say why something is in front of you. A node that arrived through an edge never counts as a strong hit, so it can never make a question look answered when it is not.
+- The five answer states mean exactly what they meant before, and letter soup still answers "missing": twenty randomized nonsense questions returned zero hits each. The rule that keeps them out is unchanged in substance -- a vector score on its own is only trusted above 0.70, and below that a row has to have been matched by something that reads actual words.
+- The trade-off worth knowing: a question now costs roughly 150ms more, and a mistyped one costs about two seconds against the full evidence store, because trigram matching is expensive. That lane only runs when a question looks mistyped, so ordinary questions do not pay for it.
+- That 0.70 is itself a change. The cosine score that counts as a strong vector hit moved from 0.65, because 0.65 sat right on top of the noise rather than above it. Measured against brain_dev (451 embedded spans of real session text), 150 random letter-soup questions scored a median of 0.61 and a maximum of 0.651 against their nearest neighbour: a nonsense question never scores near zero, it just lands somewhere in the middle of the corpus. So about one junk question in fifty came back labelled "evidence" when the honest answer was "missing". Real answers and paraphrases score 0.72 to 0.87, so nothing at all lives in the gap the new threshold sits in.
+- That threshold move is a real answer-state change, not only a nonsense filter. A span that scores between 0.65 and 0.70 against your question used to come back as "evidence"; now it comes back as "partial". If a recall that used to answer starts saying "fragments surfaced but no direct answer is stored", that band is why, and the threshold is one named constant near the top of `scripts/recall.mjs`.
+- Query embeddings now run through a small bounded LRU cache (500 entries, keyed by trimmed/lowercased text): a cache hit skips the ~20ms model call and measured under 0.01ms on this machine. `scripts/recall.mjs` is wired to it, but that script is a one-shot CLI process (it embeds one question, then exits), so its cache is empty on every run and this does not yet speed up that command. The win lands whenever a caller of `embedQueryCached` stays resident across questions -- a long-lived server process, not this CLI.
+- The recall benchmark refuses to run itself into the ground. A load run now checks the working set against available RAM, the connection count against the core count, and whether the machine is already swapping, and it stops mid-run if the run itself starts swapping. This follows a 10M benchmark that took this laptop to 15.6GB of swap and load average 72 and made the desktop unusable; `--force` overrides it on a machine that can take it.
+- Added `scripts/bench-embed.mjs`, a rerunnable benchmark for query-embedding latency (cold model load, warm p50/p95 over realistic 5-30 word questions, and the cache-hit path), printing load average before and after since this machine is shared and often under heavy contention.
+- Looked into whether a faster ONNX backend exists for the query-embedding model on this Apple Silicon Mac. CoreML execution (`device: "coreml"`) was clearly slower, not faster (cold model load roughly 3x, warm p50 roughly 4x versus plain CPU), likely from unsupported-op fallback overhead on a small encoder at batch size 1. The q8-quantized weights were about 2.5x faster warm, but the minimum cosine similarity against the fp32 embeddings across 20 sample questions came out to 0.964, under the 0.99 bar needed to trust it as the same retrieval signal, so it stays out. The query path keeps the default CPU/fp32 backend.
+
+**Docs**
+
+- `experiments/recall-bench/PRODUCT-RECALL.md` records the port: what is shared, every tunable that had to change and the measurement behind it, and the same eighteen real questions run before and after.
+
+---
+
 ## v0.18.0
 
 Aug 30, 2026

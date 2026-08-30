@@ -1,6 +1,6 @@
 {
   "name": "fuzzy-brain",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,9 @@
     "fusion:sync": "node scripts/fusion-sync.mjs",
     "fusion:install": "node scripts/fusion-sync.mjs --install",
     "mcp": "node scripts/fuzzy-brain-mcp.mjs",
-    "agents:install": "node scripts/install-agents.mjs"
+    "agents:install": "node scripts/install-agents.mjs",
+    "test:bench": "node --test --test-concurrency=1 tests/recall-bench-*.test.mjs",
+    "test:heavy": "RECALL_BENCH_HEAVY=1 node --test --test-concurrency=1 tests/recall-bench-corpus.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
