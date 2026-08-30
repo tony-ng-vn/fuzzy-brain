@@ -164,7 +164,8 @@ export function syncRuntime({
       action: freshClone ? "clone" : "update",
       commit: state.commit,
       subject: state.subject,
-      dependencies: { install: true, reason: "decided after the reset, from the lockfile" },
+      // Only knowable after the reset, so a preview cannot promise either way.
+      dependencies: { install: null, reason: "decided from the lockfile after the reset" },
       warnings: check.warnings,
     };
   }

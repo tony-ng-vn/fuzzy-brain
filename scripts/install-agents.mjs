@@ -168,9 +168,11 @@ function devWarning(root) {
 }
 
 function describeRuntime(runtime) {
-  const deps = runtime.dependencies.install
-    ? `npm ci (${runtime.dependencies.reason})`
-    : `dependencies reused (${runtime.dependencies.reason})`;
+  const deps = runtime.dryRun
+    ? (runtime.action === "clone" ? "then npm ci" : "then npm ci only if the lockfile changed")
+    : (runtime.dependencies.install
+      ? `npm ci (${runtime.dependencies.reason})`
+      : `dependencies reused (${runtime.dependencies.reason})`);
   return `${runtime.action} ${runtime.runtimeRoot} at main, ${deps}`;
 }
 
