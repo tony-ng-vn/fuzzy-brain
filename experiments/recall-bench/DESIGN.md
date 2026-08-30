@@ -2377,6 +2377,72 @@ Until it lands, the rungs that can carry a recall claim are the real-embedding o
 Those are real measurements of a real system under a real query load.
 They are simply not a recall claim.
 
+### 7.7 RESULT (2026-08-30): the lane weights and rerank coefficients were fit from the dev split, and the fit beats hand tuning on both splits
+
+Section 6.3 calls the lane-weighting dials "a small set of legible rules rather than a learned model," and section 6.5 says the rerank weights were "fit on the dev split by coordinate descent over a small grid."
+Both were true but neither was a learned fit in the machine-learning sense: the coordinate descent in `fit-rerank.mjs` explored one feature at a time against a fixed grid, and DESIGN.md 6.5's own account of it says every variant it reached tied at dev Recall@10 0.9890, with the committed vector picked by hand from that tie for interpretability.
+The lane dials in `config.weighting` were tuned the same way, one family at a time, with the reasoning recorded next to each number.
+
+This section asks the question directly: does an actual fit, searched over every dial at once instead of one family at a time, beat that hand tuning.
+
+**Method.** `fit-rerank.mjs --dump` now writes two things per dev query in one database pass: the same production-shaped top-25 rerank features it always wrote, and a wider candidate pool (4x the per-lane depth, which is the whole `fused` CTE, not a truncation of it) carrying each candidate's raw per-lane rank.
+`--fit-logistic` trains `config.rerank.weights` by logistic regression (plain gradient descent, no dependency) over the top-25 pool, one training example per candidate, labeled 1 for the ground-truth target and 0 otherwise.
+`--fit-lanes` recombines RRF from the wide pool's raw ranks for each trial and reruns the real `rerank()`, so a trial's score comes from the same functions production uses, not a re-derived copy of them.
+`--bootstrap` adds percentile confidence intervals: for the rerank weights, by refitting on resampled dev queries; for the lane dials, by a local refinement search centered on the fitted point (a global grid resample was tried first and rejected -- see the note on degenerate CIs below).
+
+Two dial groups were excluded from the lane search rather than searched and left at zero.
+`rareTermBoost` never fires on this corpus: measured maxIdf across all 1,000 dev queries tops out at 8.87, still under the 9.5 `rareIdfFloor`, so there is no dev query it could be fit against.
+`weighting.base.trigram` was left pinned at its committed 0.
+Widening the trigram lane's dev coverage past the ~15% of queries that already turn it on (typoBoost) means forcing the lane into the SQL for every query, which was measured before committing to it: 20 dev queries at ~153 ms/query with the lane gated as production gates it, ~3,523 ms/query with it forced on -- the unindexed `word_similarity` scan over the full 50,000-row table, and not affordable over 1,000 queries.
+
+**The offline objective was checked against the live pipeline twice before anything was trusted.**
+Recombining RRF from the wide pool with the fully committed dials reproduces a live `bench-recall.mjs --profile tuned --split dev` run exactly: 0.989 either way.
+After the lane search, a live run of the fitted dials through the real `retrieve()`/`rerank()` (not the offline recombination) landed on exactly the offline prediction: 998/1000.
+
+**Results.**
+
+```
+node fit-rerank.mjs --tier quality50k --dump
+node fit-rerank.mjs --tier quality50k --fit-logistic --fit-lanes --bootstrap --resamples 100
+node bench-recall.mjs --tier quality50k --profile learned --split test
+```
+
+| | dev Recall@10 | test Recall@10 |
+| --- | --- | --- |
+| hand-tuned (`tuned`) | 0.989 | 0.977, 95% CI [0.968, 0.986] |
+| learned (`learned`) | 0.998 | 0.998, 95% CI [0.995, 1.000] |
+
+The logistic-regression fit for the rerank weights scored WORSE than the committed values on dev (0.980 against 0.989) and was not adopted -- the committed `config.rerank.weights` carried through to the `learned` profile unchanged.
+This is not a bug in the method; it is per-candidate likelihood (is this row the target) optimizing a different objective than top-10 ranking, over a feature set where `fused` already carries almost everything (DESIGN.md 6.5's own finding).
+`cosine` and `entity` fit to negative coefficients, which is the signature of a model fitting correlation noise among 24 negatives per positive rather than real signal.
+
+The lane-weight coordinate descent did win, on both splits, and the win is the paired-bootstrap delta, not the raw score gap: resampling dev query-by-query with the learned and hand-tuned pipelines run on the SAME resampled queries (so noise shared by both cancels), the delta is +0.009, 95% CI [0.004, 0.015], which excludes zero.
+That is what authorized spending the one test-split invocation; the test result then confirmed it rather than being needed to decide it.
+
+Fitted `weightingOverrides` (in `config.mjs`'s `learned` profile):
+
+```
+base:            { and: 2.6, or: 0.2, vector: -1.4 }   // vector clamps to 0 -- see below
+paraphraseBoost: { vector: 1.6, or: -1.3, and: -0.7 }   // unchanged from tuned
+typoBoost:       { trigram: 0.2, and: -0.8 }            // trigram down from 1.5
+entityBoost:     { and: 2 }                             // unchanged from tuned
+dateBoost:       { vector: 0.2 }                         // unchanged from tuned
+```
+
+Two things worth flagging plainly rather than letting the table imply more precision than it has.
+
+`base.vector` fit to -1.4, which `laneWeights`'s own clamp to `[0, 3]` (section 6.3) turns into an effective 0.
+Combined with `base.or` moving from 1.3 to 0.2, the learned profile is close to "the AND lane carries every query that trips no boost rule, and the vector/OR lanes exist only for the families whose boosts turn them back on."
+That is a structural change to the retrieval design fitted from 9 queries moving net-positive on a 1,000-query dev split, not a small nudge, and it is the reason this fit was checked against the live pipeline before being trusted (the recombination and live-confirmation checks above) and against a second, independent split (the test run) before being adopted.
+The test-split per-family table backs it up -- every family held at or above its `tuned` score, with `entity_swap` moving 0.936 to 1.000 and `date_filter` 0.993 to 1.000 -- but a profile this close to single-lane should be watched if the corpus or query mix ever changes.
+
+The bootstrap CIs on the individual lane dials are degenerate: zero width, at exactly the fitted point, for all ten searched dials.
+That is not evidence of unusual precision.
+At dev Recall@10 0.998 there are only 2 missed queries left out of 1,000, and a local-refinement search starting from an already-near-ceiling point has almost nothing left to move -- most bootstrap resamples redraw the same 998 already-solved queries and a couple of the 2 hard ones, and neither outcome gives the coordinate descent a reason to leave the point it started from.
+The paired-delta CI above (which resamples the OUTCOME, not the search) is the number that actually says the win is real; the per-weight CIs say the fitted point is locally stable given how little residual error is left to probe it with, and no more than that.
+
+`.out/quality50k/learned-weights.json` carries the full comparison: both rerank-weight arms with their scores, the ten fitted lane dials with their (degenerate) bootstrap CIs, the combined dev/test recall, and the paired-delta CI.
+
 ---
 
 ## 8. Measuring claim B honestly
