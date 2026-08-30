@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "clippings:sweep": "node scripts/sweep-clippings.mjs",
