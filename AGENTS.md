@@ -10,8 +10,8 @@ Rules for any session that touches the brain data:
    Connections are decided in conversation with Tony: discuss first, write only after he agrees.
 3. Every edge must carry a "why" sentence explaining the connection.
    The database rejects blank whys; do not work around that.
-4. There are two write paths: Claude inserting directly into Polygres (DATABASE_URL in .env.local), and the in-app add-node panel (POST /api/nodes).
-   Both enforce the why rule; the database CHECK constraint is the final gate.
+4. There are two controlled write paths: `scripts/brain.mjs` (used by companions and the local MCP server) and the in-app add-node panel (`POST /api/nodes`).
+   Both enforce the raw and why rules; database CHECK constraints are the final gate.
 5. Do not delete or rewrite existing nodes without Tony's explicit ask.
    The brain is append-mostly; history is part of the story.
 6. Every node is a raw and messy thought Tony wants to keep, not a polished artifact.
@@ -24,6 +24,8 @@ Rules for any session that touches the brain data:
    No meaning enters the brain unless Tony said it or approved it: ratified meaning lives in edge whys, in his raw words, and in readable lines he explicitly approved.
    raw is immutable forever; the readable may be re-ratified later via set-readable, only with Tony's approval.
    If Tony corrects a readable pass, log the correction as a new rule in docs/writing-style.md so it doesn't recur.
+   A direct instruction such as "remember this", "save it", or "add this to my brain" is itself approval to append a node with raw and readable both equal to Tony's exact message; a model-written readable still requires preview and approval.
+   A direct instruction to mark named nodes complete is approval to append completion events carrying Tony's exact instruction; it never rewrites the nodes.
 8. Keep CHANGELOG.md up to date after any user-visible change, following the format defined in the global changelog rule (see ~/.codex/AGENTS.md).
    This repo's fixed categories are: Face, Map, Data, API, Tools, UI, Docs -- use whichever apply, in that order, and add a new one only if a change genuinely does not fit.
    Bump package.json's version to match the newest changelog entry: patch for small fixes or docs-only changes, minor for new features or visible behavior changes.

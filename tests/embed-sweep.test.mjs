@@ -5,10 +5,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import pg from "pg";
+import {
+  acquireSweepLock,
+  EMBED_BATCH_SIZE,
+  EMBED_PAGE_SIZE,
+  remainingLimit,
+} from "../scripts/embed-sweep.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -16,6 +23,27 @@ loadEnvLocal();
 
 const TEST_LABEL = "embed-sweep-test";
 const NODE_TITLE = "embed-sweep-test-node";
+
+test("embed sweep uses bounded local inference and refuses a concurrent run", () => {
+  assert.equal(EMBED_BATCH_SIZE, 1, "local inference must process one document at a time");
+  assert.ok(EMBED_PAGE_SIZE <= 64, "database pages must not retain hundreds of large quotes");
+  assert.equal(remainingLimit(32, 12), 20, "the row cap must be shared across evidence and nodes");
+  assert.equal(remainingLimit(8, 8), 0);
+
+  const dir = mkdtempSync(join(tmpdir(), "fuzzy-brain-sweep-lock-test-"));
+  const lockPath = join(dir, "sweep.lock");
+  try {
+    const release = acquireSweepLock(lockPath);
+    assert.throws(() => acquireSweepLock(lockPath), /already running/i);
+    release();
+
+    writeFileSync(lockPath, "99999999");
+    const releaseRecovered = acquireSweepLock(lockPath);
+    releaseRecovered();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("embed-sweep: fills null embeddings in brain_dev, idempotently", async (t) => {
   // The sweep needs the model; if it cannot load, skip like embeddings.test.
@@ -34,7 +62,11 @@ test("embed-sweep: fills null embeddings in brain_dev, idempotently", async (t) 
   const run = () =>
     execFileSync("node", [join(root, "scripts", "embed-sweep.mjs"), "--limit", "8"], {
       encoding: "utf8",
-      env: { ...process.env, BRAIN_SCHEMA: "brain_dev" },
+      env: {
+        ...process.env,
+        BRAIN_SCHEMA: "brain_dev",
+        FUZZY_BRAIN_EMBED_LOCK: join(tmpdir(), `fuzzy-brain-embed-test-${process.pid}.lock`),
+      },
     });
 
   try {

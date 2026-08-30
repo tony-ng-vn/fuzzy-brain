@@ -11,10 +11,31 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
+import {
+  acquireIngestLock,
+  sessionFileIsUnchanged,
+  unseenSessionRevision,
+} from "../scripts/ingest-sessions.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 loadEnvLocal();
+
+test("session ingestion refuses a concurrent process and recovers a stale lock", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fuzzy-brain-ingest-lock-test-"));
+  const lockPath = join(dir, "ingest.lock");
+  try {
+    const release = acquireIngestLock(lockPath);
+    assert.throws(() => acquireIngestLock(lockPath), /already running/i);
+    release();
+
+    writeFileSync(lockPath, "99999999");
+    const releaseRecovered = acquireIngestLock(lockPath);
+    releaseRecovered();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // Unit tests for the allowlist gate: the wildcard is the ONE way to open it
 // wide, and every fail-closed refusal stays a refusal. Import happens with
@@ -64,6 +85,24 @@ test("loadConfig and admits: wildcard opens, everything else stays fail-closed",
     await t.test("only the exact string '*' is a wildcard; other strings refuse", () => {
       writeFileSync(configPath, JSON.stringify({ allowlist: "fuzzy-brain" }));
       assert.throws(loadConfig, /allowlist/);
+    });
+
+    await t.test("blank and non-string allowlist entries refuse instead of matching everything", () => {
+      for (const allowlist of [[""], ["   "], ["fuzzy-brain", 7]]) {
+        writeFileSync(configPath, JSON.stringify({ allowlist }));
+        assert.throws(loadConfig, /non-blank string/);
+      }
+    });
+
+    await t.test("settledHours must be finite and non-negative", () => {
+      for (const settledHours of [-1, "24", null]) {
+        writeFileSync(configPath, JSON.stringify({ allowlist: ["fuzzy-brain"], settledHours }));
+        if (settledHours === null) {
+          assert.equal(loadConfig().settledHours, 24);
+        } else {
+          assert.throws(loadConfig, /settledHours/);
+        }
+      }
     });
   } finally {
     if (savedEnv === undefined) delete process.env.FUZZY_BRAIN_INGEST_CONFIG;
@@ -120,6 +159,49 @@ function makeSession(sessionId, cwd, userTexts) {
   }
   return lines.join("\n");
 }
+
+test("resumed sessions append only their unseen turns as a versioned episode", () => {
+  const parsed = {
+    cwd: "/Users/tony/Desktop/fuzzy-brain",
+    occurredAt: "2026-07-10T09:00:00.000Z",
+    occurredUntil: "2026-07-10T09:03:00.000Z",
+    turns: [
+      { speaker: "tony", text: "first", ts: "2026-07-10T09:00:00.000Z" },
+      { speaker: "assistant", text: "reply", ts: "2026-07-10T09:01:00.000Z" },
+      { speaker: "tony", text: "resumed", ts: "2026-07-10T09:02:00.000Z" },
+      { speaker: "assistant", text: "new reply", ts: "2026-07-10T09:03:00.000Z" },
+    ],
+  };
+
+  const revision = unseenSessionRevision(
+    [{ source_locator: SESSION_A, evidence_count: 2 }],
+    SESSION_A,
+    parsed,
+  );
+  assert.equal(revision.locator, `${SESSION_A}:turns:4`);
+  assert.deepEqual(revision.parsed.turns.map((turn) => turn.text), ["resumed", "new reply"]);
+  assert.equal(revision.parsed.occurredAt, "2026-07-10T09:02:00.000Z");
+
+  const existing = [{
+    source_locator: SESSION_A,
+    evidence_count: 2,
+    ingested_at: "2026-07-10T10:00:00.000Z",
+  }];
+  assert.equal(sessionFileIsUnchanged(existing, SESSION_A, Date.parse("2026-07-10T09:30:00.000Z")), true);
+  assert.equal(sessionFileIsUnchanged(existing, SESSION_A, Date.parse("2026-07-10T10:30:00.000Z")), false);
+
+  assert.equal(
+    unseenSessionRevision(
+      [
+        { source_locator: SESSION_A, evidence_count: 2 },
+        { source_locator: `${SESSION_A}:turns:4`, evidence_count: 2 },
+      ],
+      SESSION_A,
+      parsed,
+    ),
+    null,
+  );
+});
 
 test("ingest-sessions: archive fixtures flow into brain_dev with every guard enforced", async (t) => {
   const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
@@ -192,6 +274,7 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
     ...process.env,
     BRAIN_SCHEMA: "brain_dev",
     FUZZY_BRAIN_INGEST_CONFIG: configPath,
+    FUZZY_BRAIN_INGEST_LOCK: join(home, "ingest.lock"),
   };
 
   const run = () =>

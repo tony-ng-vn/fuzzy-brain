@@ -4,9 +4,13 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
-## v0.18.0
+## v0.19.0
 
 Aug 30, 2026
+
+**Data**
+
+- Edge why sentences are indexed for full-text search, and `pg_trgm` plus two trigram indexes back the new typo lane. All additive; the migration rehearses on `brain_dev` before touching the real tables, as always. The trigram indexes cover the first 2,000 characters of a quote and the first 4,000 of a node, which bounds them at about 36MB instead of letting the corpus decide.
 
 **Tools**
 
@@ -17,10 +21,11 @@ Aug 30, 2026
 - Ratified edge whys are searchable, and hits walk one hop. Ask about the words in a why sentence and both nodes it joins come back. Find a node any other way and its ratified neighbours come with it, each carrying the why that surfaced it, so an answer can always say why something is in front of you. A node that arrived through an edge never counts as a strong hit, so it can never make a question look answered when it is not.
 - The five answer states mean exactly what they meant before, and letter soup still answers "missing": twenty randomized nonsense questions returned zero hits each. The rule that keeps them out is unchanged in substance -- a vector score on its own is only trusted above 0.70, and below that a row has to have been matched by something that reads actual words.
 - The trade-off worth knowing: a question now costs roughly 150ms more, and a mistyped one costs about two seconds against the full evidence store, because trigram matching is expensive. That lane only runs when a question looks mistyped, so ordinary questions do not pay for it.
-
-**Data**
-
-- Edge why sentences are indexed for full-text search, and `pg_trgm` plus two trigram indexes back the new typo lane. All additive; the migration rehearses on `brain_dev` before touching the real tables, as always. The trigram indexes cover the first 2,000 characters of a quote and the first 4,000 of a node, which bounds them at about 36MB instead of letting the corpus decide.
+- That 0.70 is itself a change: the cosine score that counts as a strong vector hit moved from 0.65, because 0.65 sat right on top of the noise rather than above it. Measured against brain_dev (451 embedded spans of real session text), 150 random letter-soup questions scored a median of 0.61 and a maximum of 0.651 against their nearest neighbour: a nonsense question never scores near zero, it just lands somewhere in the middle of the corpus. So about one junk question in fifty came back labelled "evidence" when the honest answer was "missing". Real answers and paraphrases score 0.72 to 0.87, so nothing at all lives in the gap the new threshold sits in.
+- That threshold move is a real answer-state change, not only a nonsense filter. A span that scores between 0.65 and 0.70 against your question used to come back as "evidence"; now it comes back as "partial". If a recall that used to answer starts saying "fragments surfaced but no direct answer is stored", that band is why, and the threshold is one named constant near the top of `scripts/recall.mjs`.
+- Query embeddings now run through a small bounded LRU cache (500 entries, keyed by trimmed/lowercased text): a cache hit skips the ~20ms model call and measured under 0.01ms on this machine. `scripts/recall.mjs` is wired to it, but that script is a one-shot CLI process (it embeds one question, then exits), so its cache is empty on every run and this does not yet speed up that command. The win lands whenever a caller of `embedQueryCached` stays resident across questions -- a long-lived server process, not this CLI.
+- Added `scripts/bench-embed.mjs`, a rerunnable benchmark for query-embedding latency (cold model load, warm p50/p95 over realistic 5-30 word questions, and the cache-hit path), printing load average before and after since this machine is shared and often under heavy contention.
+- Looked into whether a faster ONNX backend exists for the query-embedding model on this Apple Silicon Mac. CoreML execution (`device: "coreml"`) was clearly slower, not faster (cold model load roughly 3x, warm p50 roughly 4x versus plain CPU), likely from unsupported-op fallback overhead on a small encoder at batch size 1. The q8-quantized weights were about 2.5x faster warm, but the minimum cosine similarity against the fp32 embeddings across 20 sample questions came out to 0.964, under the 0.99 bar needed to trust it as the same retrieval signal, so it stays out. The query path keeps the default CPU/fp32 backend.
 
 **Docs**
 
@@ -28,26 +33,79 @@ Aug 30, 2026
 
 ---
 
-## v0.17.0
+## v0.18.0
 
 Aug 30, 2026
 
 **Tools**
 
-- `recall` no longer mistakes nonsense for evidence. The cosine score that counts as a strong vector hit moved from 0.65 to 0.70, because 0.65 sat right on top of the noise rather than above it. Measured against brain_dev (451 embedded spans of real session text), 150 random letter-soup questions scored a median of 0.61 and a maximum of 0.651 against their nearest neighbour: a nonsense question never scores near zero, it just lands somewhere in the middle of the corpus. So about one junk question in fifty came back labelled "evidence" when the honest answer was "missing". Real answers and paraphrases score 0.72 to 0.87, so nothing at all lives in the gap the new threshold sits in. The five answer states still mean exactly what they meant before.
-- The trade-off worth knowing: this is a real answer-state change, not only a nonsense filter. A span that scores between 0.65 and 0.70 against your question used to come back as "evidence"; now it comes back as "partial". If a recall that used to answer starts saying "fragments surfaced but no direct answer is stored", that band is why, and the threshold is one named constant at the top of `scripts/recall.mjs`.
+- `npm run agents:install` registers the fuzzy-brain MCP server with every coding agent on this Mac in one step: Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code if it is already set up for MCP.
+  It skips and reports on any agent it does not find, and prints a plain JSON snippet at the end for anything else.
+  `--dry-run` previews every change without writing, and `--only` limits it to specific agents.
+- Every agent config, and the scheduled sync's launchd job, now points at `~/.fuzzy-brain/bin/brain-run`, a small launcher the repo ships and the installer keeps pointed at the current checkout, rather than at a path inside a git worktree.
+  Moving the checkout, including deleting the worktree it used to live in, is a rerun of the installer from the new location; nothing else needs to change by hand.
+  Existing hand-edited agent configs and the sync launch agent are safe to rewrite: each config is merged or backed up before being touched, never wholesale replaced.
+
+**Docs**
+
+- The fusion bridge guide and the README now point at `npm run agents:install` instead of the old by-hand `codex mcp add ... "$PWD/..."` command, which broke the moment the checkout it was run from moved or was deleted.
+
+---
+
+## v0.17.1
+
+Aug 12, 2026
+
+**Tools**
+
+- Notes captured through the share sheet are now attributed the same way notes from every other source are, so recall treats them as Tony's own words and weighs them accordingly.
+  They were labelled with a capital T, which recall did not recognise, so those notes had been quietly missing the boost since the clippings sweep was written.
+  Notes already stored keep their old label, since evidence is never rewritten; anything captured from now on gets the boost.
+
+---
+
+## v0.17.0
+
+Aug 12, 2026
+
+**Tools**
+
+- Video transcripts pasted into the todo app now land in the brain's evidence store on their own, one episode per video, with the title, channel, link, and the date it was watched kept alongside them.
+- Each transcript is stored in pieces cut at its own timestamps, so every piece opens with the moment it was said and a quote can be traced straight back to that point in the video.
+- Notes written about a video are stored as Tony's own words, which is the attribution recall leans on when it decides what is worth bringing up.
+- The hourly sync now runs this sweep between session ingest and embeddings, so a transcript pasted on the phone is searchable by the next cycle.
+  If the todo app's backend cannot be reached, that step is skipped and the rest of the sync still finishes.
+- Re-running is always safe: a video already captured is never stored twice, and a run that landed a transcript but never got to tell the app about it finishes that half on its next pass.
+- `npm run watch:sweep` runs the sweep by hand, and `--dry-run` reports what would land without writing anything anywhere.
 
 ---
 
 ## v0.16.0
 
-Aug 30, 2026
+Aug 6, 2026
+
+**Data**
+
+- Deadlines and completion status now live in an append-only temporal event ledger, so the brain can know what is overdue, upcoming, or finished without rewriting old nodes or their raw words.
+- Automatic deadlines now require explicit deadline language and a current or future date, can be cleared through another append-only event, and render with the correct Los Angeles calendar date.
+- The two completed August goals are recorded as finished, and the Stripe Atlas offer remains active through August 5, 2027.
+
+**API**
+
+- A local MCP server now gives Codex and other compatible agents five guarded tools for recall, reminders, node reads, explicit memory capture, and explicit completion.
+- MCP writes now require matching explicit user command language in addition to the trusted local-client boundary.
+- The in-app and command-line node paths now recognize clear deadline language and create temporal metadata in the same transaction as the node.
 
 **Tools**
 
-- Query embeddings now run through a small bounded LRU cache (500 entries, keyed by trimmed/lowercased text): a cache hit skips the ~20ms model call and measured under 0.01ms on this machine. `scripts/recall.mjs` is wired to it, but that script is a one-shot CLI process (it embeds one question, then exits), so its cache is empty on every run and this does not yet speed up that command. The win lands whenever a caller of `embedQueryCached` stays resident across questions -- a long-lived server process, not this CLI.
-- Added `scripts/bench-embed.mjs`, a rerunnable benchmark for query-embedding latency (cold model load, warm p50/p95 over realistic 5-30 word questions, and the cache-hit path), printing load average before and after since this machine is shared and often under heavy contention.
-- Looked into whether a faster ONNX backend exists for the query-embedding model on this Apple Silicon Mac. CoreML execution (`device: "coreml"`) was clearly slower, not faster (cold model load roughly 3x, warm p50 roughly 4x versus plain CPU), likely from unsupported-op fallback overhead on a small encoder at batch size 1. The q8-quantized weights were about 2.5x faster warm, but the minimum cosine similarity against the fp32 embeddings across 20 sample questions came out to 0.964, under the 0.99 bar needed to trust it as the same retrieval signal, so it stays out. The query path keeps the default CPU/fp32 backend.
+- A macOS LaunchAgent can now ingest settled Claude Code and Codex sessions every hour into the unratified evidence store, then fill a bounded number of local embeddings; absolute executable paths and a cross-process lock keep scheduled and manual runs reliable.
+- Resumed sessions now append only their unseen turns, and malformed allowlists or settlement windows fail closed before any cloud write.
+- Embedding sweeps now process one document at a time, release native tensors, and refuse overlapping runs so unattended sync cannot exhaust the Mac.
+
+**Docs**
+
+- The companion ritual now distinguishes an explicit remember or completion command from ordinary conversation, and documents the fusion bridge's truth, privacy, reminder, and operating boundaries.
+- The fusion guide now includes a reproducible Codex registration command for a stable checkout.
 
 ---
 

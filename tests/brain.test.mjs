@@ -81,6 +81,17 @@ test("formatIndex handles an empty brain without crashing", () => {
   assert.match(out, /edges=0/);
 });
 
+test("formatIndex renders deadlines as Los Angeles calendar dates", () => {
+  const out = formatIndex([
+    {
+      ...nodes[0],
+      status: "active",
+      due_at: "2027-08-06T06:59:59.999Z",
+    },
+  ], [], null);
+  assert.match(out, /\[due 2027-08-05\]/);
+});
+
 const episode = {
   id: "33333333-3333-3333-3333-333333333333",
   source_locator: "session-abc",

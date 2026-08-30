@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const parsed = validateNodeInput(payload);
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
 
-  const { type, title, body, raw, connections } = parsed.value;
+  const { type, title, body, raw, connections, deadlineAt, deadlineOrigin } = parsed.value;
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -23,6 +23,13 @@ export async function POST(request: Request) {
       [type, title, body, raw],
     );
     const node = rows[0];
+    if (deadlineAt) {
+      await client.query(
+        `insert into node_temporal_events (node_id, event_type, value_at, raw, origin)
+         values ($1, 'deadline_set', $2, $3, $4)`,
+        [node.id, deadlineAt, raw, deadlineOrigin],
+      );
+    }
     const edges = [];
     for (const c of connections) {
       const res = await client.query(
@@ -32,7 +39,7 @@ export async function POST(request: Request) {
       edges.push(res.rows[0]);
     }
     await client.query("commit");
-    return NextResponse.json({ node, edges }, { status: 201 });
+    return NextResponse.json({ node: { ...node, due_at: deadlineAt }, edges }, { status: 201 });
   } catch (err) {
     await client.query("rollback");
     const message = err instanceof Error ? err.message : String(err);

@@ -104,6 +104,73 @@ test("database schema and constraints", async (t) => {
         await client.query("rollback");
       }
     });
+
+    await t.test("temporal events preserve deadline and completion history", async () => {
+      const table = await client.query("select to_regclass('brain_dev.node_temporal_events') as name");
+      assert.equal(table.rows[0].name, "brain_dev.node_temporal_events");
+
+      await client.query("begin");
+      try {
+        const node = await client.query(
+          "insert into brain_dev.nodes (type, title, body, raw) values ('goal', 'test deadline', 'test deadline', 'finish it by friday') returning id",
+        );
+        const nodeId = node.rows[0].id;
+        await client.query(
+          `insert into brain_dev.node_temporal_events
+             (node_id, event_type, value_at, raw, origin)
+           values ($1, 'deadline_set', '2027-08-06T06:59:59.999Z', 'finish it by friday', 'derived')`,
+          [nodeId],
+        );
+        let state = await client.query("select * from brain_dev.node_temporal_state where node_id = $1", [nodeId]);
+        assert.equal(state.rows[0].status, "active");
+        assert.equal(state.rows[0].due_at.toISOString(), "2027-08-06T06:59:59.999Z");
+
+        await client.query(
+          `insert into brain_dev.node_temporal_events
+             (node_id, event_type, occurred_at, raw, origin)
+           values ($1, 'completed', '2026-08-06T23:08:16Z', 'i finished it please mark it', 'explicit')`,
+          [nodeId],
+        );
+        state = await client.query("select * from brain_dev.node_temporal_state where node_id = $1", [nodeId]);
+        assert.equal(state.rows[0].status, "completed");
+        assert.equal(state.rows[0].status_changed_at.toISOString(), "2026-08-06T23:08:16.000Z");
+
+        await client.query("delete from brain_dev.node_temporal_events where node_id = $1", [nodeId]);
+        const remaining = await client.query(
+          "select count(*)::int as n from brain_dev.node_temporal_events where node_id = $1",
+          [nodeId],
+        );
+        assert.equal(remaining.rows[0].n, 0, "sandbox cleanup must remain available");
+
+        await assert.rejects(
+          client.query(
+            `insert into brain_dev.node_temporal_events
+               (node_id, event_type, raw, origin)
+             values ($1, 'deadline_set', 'missing the deadline value', 'derived')`,
+            [nodeId],
+          ),
+          /check constraint/i,
+        );
+      } finally {
+        await client.query("rollback");
+      }
+    });
+
+    await t.test("public temporal history has an append-only mutation trigger", async () => {
+      const { rows } = await client.query(
+        `select t.tgenabled, pg_get_triggerdef(t.oid) as definition
+         from pg_trigger t
+         join pg_class c on c.oid = t.tgrelid
+         join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public'
+           and c.relname = 'node_temporal_events'
+           and t.tgname = 'node_temporal_events_append_only'
+           and not t.tgisinternal`,
+      );
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].tgenabled, "O");
+      assert.match(rows[0].definition, /before delete or update|before update or delete/i);
+    });
   } finally {
     await client.end();
   }
