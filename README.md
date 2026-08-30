@@ -72,6 +72,7 @@ npm run agents:install -- --runtime-only
 ```
 
 That fetches from this checkout and hard-resets the runtime to `main`, then reinstalls dependencies only if `package-lock.json` actually changed.
+The same refusals apply, so commit or stash whatever you are in the middle of first: a working checkout with modified tracked files cannot build or refresh the runtime.
 The runtime's `origin` is the path of the checkout it was cloned from, so a refresh needs that checkout to still be there; a rerun from a new location repoints it.
 Every install ends by printing the commit the runtime is on, so which version the agents are running is never a guess.
 
