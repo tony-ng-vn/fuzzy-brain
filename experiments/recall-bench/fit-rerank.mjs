@@ -305,7 +305,7 @@ async function fit(dumpPath, gridSpec) {
 // coordinate descent, over the same cached top-K features --dump wrote.
 // ---------------------------------------------------------------------------
 
-function sigmoid(z) {
+export function sigmoid(z) {
   // The textbook two-branch form: exp(-z) overflows for very negative z if
   // computed the other way, and 25 features' worth of dot products can land
   // there during early gradient-descent iterations.
@@ -321,7 +321,7 @@ function sigmoid(z) {
 // 1 for the ground-truth target, 0 for everything else. Skips queries whose
 // target never made the candidate set, same population --fit's coordinate
 // descent scores against (recallAt10 above) -- no weight can recover those.
-function buildLogisticDataset(records) {
+export function buildLogisticDataset(records) {
   const X = [];
   const y = [];
   for (const rec of records) {
@@ -360,7 +360,7 @@ function standardize(X) {
 // compares candidates WITHIN one query's set. A constant that cannot change
 // which candidate outranks another cannot change Recall@10, so dropping it
 // matches what rerank.mjs's intercept-free scorer actually needs.
-function trainLogistic(X, y, { l2 = 1e-3, lr = 0.3, iters = 2000 } = {}) {
+export function trainLogistic(X, y, { l2 = 1e-3, lr = 0.3, iters = 2000 } = {}) {
   const { Z, std } = standardize(X);
   const n = Z.length;
   const d = Z[0].length;
@@ -465,7 +465,7 @@ function committedDialGroups() {
   };
 }
 
-function dialsFromVector(vector) {
+export function dialsFromVector(vector) {
   const dials = committedDialGroups();
   DIAL_SPEC.forEach(([group, key], i) => { dials[group][key] = vector[i]; });
   return dials;
@@ -476,7 +476,7 @@ function dialsFromVector(vector) {
 // the REAL rerank() -- the one function neither this file nor engine.mjs
 // re-derives, so a change to its normalization or dupPenalty logic cannot
 // silently drift from what this search scores.
-function recombineAndRerank(rec, laneW, rrfK, topK, rerankCfg) {
+export function recombineAndRerank(rec, laneW, rrfK, topK, rerankCfg) {
   const scored = rec.wideCands.map((c) => {
     let rrf = 0;
     for (const lane of LANES) {
@@ -510,7 +510,7 @@ function pipelineTopK(rec, weightingDials, rerankWeights, rrfK, topK) {
 // score -- the same bug --dump's own "ceiling" line deliberately avoids by
 // dividing recallAt10 by records.length rather than by however many queries
 // had a candidate at all.
-function pipelineRecallAt10(records, weightingDials, rerankWeights, rrfK, topK) {
+export function pipelineRecallAt10(records, weightingDials, rerankWeights, rrfK, topK) {
   const trialCfg = { ...config, weighting: { ...config.weighting, ...weightingDials } };
   const rerankCfg = { ...config, rerank: { ...config.rerank, weights: rerankWeights } };
   let hits = 0;
