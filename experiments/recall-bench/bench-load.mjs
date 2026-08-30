@@ -67,6 +67,7 @@ import { performance } from 'node:perf_hooks';
 import { config, resolveTier } from './config.mjs';
 import { assertBenchTarget, benchPool } from './lib/safety.mjs';
 import { loadTermStats } from './lib/term-stats.mjs';
+import { readMachine, assessHeadroom, watchPressure } from './lib/resource-guard.mjs';
 import { makeRng } from './lib/rng.mjs';
 import { queryVector, DEFAULT_QUERY_DRIFT } from './lib/synth-vectors.mjs';
 import * as engine from './engine.mjs';
@@ -344,7 +345,7 @@ async function assertDiskBudget(pgPool, schema) {
   const { rows } = await pgPool.query('select to_regclass($1) as reg', [`${schema}.memories`]);
   if (!rows[0].reg) {
     console.log(`schema ${schema}.memories does not exist yet -- skipping disk-budget check`);
-    return;
+    return null;
   }
   const { rows: sizeRows } = await pgPool.query('select pg_total_relation_size($1) as bytes', [
     `${schema}.memories`,
@@ -356,6 +357,30 @@ async function assertDiskBudget(pgPool, schema) {
       `refusing to start: ${schema} totals ${gb.toFixed(1)} GB, over the ${DISK_BUDGET_GB} GB budget (DESIGN.md 3.5)`,
     );
   }
+  return gb;
+}
+
+// The schema's on-disk size is the working set a load run pulls through the
+// page cache: every lane reads the heap and at least one index, and the ANN
+// lane touches the graph in an order no prefetcher can predict.
+function assertMachineHeadroom(workingSetGb, connections, force) {
+  const machine = readMachine();
+  const problems = assessHeadroom({ workingSetGb, connections, machine });
+  console.log(
+    `machine: ${machine.totalRamGb.toFixed(0)} GB RAM, ${machine.cpus} cores, ` +
+      `load ${machine.load1.toFixed(1)}, swap used ` +
+      (machine.swapUsedGb == null ? 'unknown' : `${machine.swapUsedGb.toFixed(1)} GB`),
+  );
+  if (problems.length === 0) return machine;
+  const detail = problems.map((p) => `  - ${p}`).join('\n');
+  if (force) {
+    console.warn(`WARNING: --force overrides the machine guard:\n${detail}`);
+    return machine;
+  }
+  throw new Error(
+    `refusing to start, this run would overwhelm the machine:\n${detail}\n` +
+      'Run a smaller tier, fewer connections, or pass --force if you accept an unusable desktop.',
+  );
 }
 
 function makeQueryCycler(queryPool, rng) {
@@ -702,6 +727,7 @@ async function main() {
       'recall-sample-rate': { type: 'string' },
       split: { type: 'string' },
       seed: { type: 'string', default: 'recall-bench-load-v1' },
+      force: { type: 'boolean', default: false },
     },
   });
 
@@ -738,8 +764,22 @@ async function main() {
   const pgPool = benchPool(connections, config.db.url,
     profile ? engine.vectorSessionSettings(tier, config, false) : null);
 
+  let stopWatch;
   try {
-    await assertDiskBudget(pgPool, tier.schema);
+    const workingSetGb = await assertDiskBudget(pgPool, tier.schema);
+    // The sweep's widest rung is the one that has to fit, not the default pool.
+    const peakConnections = values.sweep
+      ? Math.max(connections, ...values.sweep.split(',').map((n) => Number(n.trim())))
+      : connections;
+    const machine = assertMachineHeadroom(workingSetGb, peakConnections, values.force);
+    stopWatch = watchPressure({
+      machine,
+      onAbort: (message) => {
+        console.error(message);
+        console.error('the benchmark is not worth an unusable machine; stopping.');
+        process.exit(1);
+      },
+    });
 
     const outPath = values.out ?? `${OUT_DIR}/${tierName}/load-${mode}.json`;
     mkdirSync(dirname(outPath), { recursive: true });
@@ -934,6 +974,7 @@ async function main() {
     console.log(`report written: ${outPath}`);
     printSummary(report);
   } finally {
+    stopWatch?.();
     await pgPool.end();
   }
 }
