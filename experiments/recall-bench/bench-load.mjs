@@ -150,9 +150,20 @@ function parseVectorLiteral(text) {
 // setup: query pool, target vectors, vocab, disk budget, cache stats
 // ---------------------------------------------------------------------------
 
-function loadQueryPool(tierName) {
+// Which splits a load window draws from. Both, historically and by default, so
+// every number in DESIGN.md 7.4 and 7.6 still reproduces with no flag set. The
+// filter exists so a tuning sweep can stay off the test split: bench-load never
+// writes TEST-RUNS.log, but a setting chosen on the same queries it is later
+// reported against is chosen on the test split all the same.
+export function splitsToLoad(value) {
+  if (value === undefined || value === 'both') return ['dev', 'test'];
+  if (value === 'dev' || value === 'test') return [value];
+  throw new Error(`--split must be one of dev, test, both (got "${value}")`);
+}
+
+function loadQueryPool(tierName, split) {
   const dir = `${OUT_DIR}/${tierName}`;
-  const splits = ['dev', 'test'];
+  const splits = splitsToLoad(split);
   const pool = [];
   let found = 0;
   for (const split of splits) {
@@ -173,7 +184,7 @@ function loadQueryPool(tierName) {
   }
   if (found === 0) {
     throw new Error(
-      `no query files found under ${dir}/ -- run gen-corpus.mjs --tier ${tierName} first`,
+      `no query files found under ${dir}/ for split(s) ${splits.join(', ')} -- run gen-corpus.mjs --tier ${tierName} first`,
     );
   }
   return pool;
@@ -689,6 +700,7 @@ async function main() {
       out: { type: 'string' },
       'skip-select1-probe': { type: 'boolean', default: false },
       'recall-sample-rate': { type: 'string' },
+      split: { type: 'string' },
       seed: { type: 'string', default: 'recall-bench-load-v1' },
     },
   });
@@ -763,7 +775,7 @@ async function main() {
       return;
     }
 
-    const queryPool = loadQueryPool(tierName);
+    const queryPool = loadQueryPool(tierName, values.split);
     const cappedPool =
       queryPool.length > config.load.distinctQueries
         ? makeRng(values.seed).sample(queryPool, config.load.distinctQueries)
