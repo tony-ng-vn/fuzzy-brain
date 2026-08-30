@@ -15,12 +15,26 @@ export const retrievalDefaults = {
   // equivalent of; it uses the same damping as every other lane.
   rrfK: { and: 60, or: 60, vector: 60, trigram: 60, edge: 60 },
 
-  // word_similarity floor for the trigram lane, straight from the bench.
-  trigramThreshold: 0.3,
+  // DIFFERS from the bench (0.3). Measured against the real evidence store
+  // (47,366 spans) on 2026-08-30: five hand-typed typo questions scored
+  // 0.44 to 0.69 against their own answer, and three letter-soup queries
+  // topped out at 0.25. 0.40 sits in that gap with about 0.15 of margin on
+  // each side. It is also where the lane becomes affordable -- the GIN
+  // prefilter is threshold-driven, so the same typo query costs 3.1 s at
+  // 0.30, 1.9 s at 0.40 and 0.79 s at 0.45, and 0.45 already drops one of
+  // the five real typos (0.440).
+  trigramThreshold: 0.4,
 
   weighting: {
     base: { and: 1.0, or: 1.3, vector: 1.0, trigram: 0.0 },
-    rareTermBoost: { and: 1.8, trigram: 0.2 },
+    // DIFFERS from the bench, which also adds 0.2 to trigram here. At brain
+    // scale the rare-term rule fires on most specific questions (any word in
+    // three rows or fewer clears the floor below), and the trigram lane costs
+    // roughly two seconds against the real evidence store. Paying that on
+    // most questions to help a lane the AND boost already covers is the wrong
+    // trade, so the trigram lane is left to the one rule that needs it: a
+    // short question whose words are not in the brain at all.
+    rareTermBoost: { and: 1.8, trigram: 0.0 },
     paraphraseBoost: { vector: 1.6, or: -1.3, and: -0.7 },
     typoBoost: { trigram: 1.5, and: -0.8 },
     // Inert in the product until a person lexicon exists: nothing fills
