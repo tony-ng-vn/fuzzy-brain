@@ -4,6 +4,30 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.18.0
+
+Aug 30, 2026
+
+**Tools**
+
+- `recall` now runs the retrieval design the recall bench proved, instead of the two-lane sketch it grew from. On the bench's frozen 50,000-memory corpus that design took Recall@10 from 0.697 to 0.977, and the whole schema-independent half of it now lives in `scripts/lib/retrieval/`, imported by both the bench harness and `scripts/recall.mjs`, so the two cannot drift apart.
+- Four lanes per layer instead of two: exact full text, fragments, vector meaning, and trigram similarity for a question you mistyped. Which lanes matter is decided per question -- a short question whose words are not in the brain at all leans on trigrams, a long reworded one leans on meaning -- and the lanes are fused and then reranked rather than simply added up.
+- A mistyped question finds its answer. "securty vulnerabilites reviw" used to come back with nothing at all; it now returns the security-review span it was asking for. Measured against the real store, real typos score 0.44 to 0.69 on trigram similarity against their own answer and letter soup tops out at 0.25, so the cutoff sits at 0.40, in the gap.
+- A question that names a month or a year filters every lane by date. "what happened to the brass lantern in march 2024" now excludes the September span instead of ranking it. Bare month names are deliberately not a date signal, because "may" and "march" are ordinary words.
+- Ratified edge whys are searchable, and hits walk one hop. Ask about the words in a why sentence and both nodes it joins come back. Find a node any other way and its ratified neighbours come with it, each carrying the why that surfaced it, so an answer can always say why something is in front of you. A node that arrived through an edge never counts as a strong hit, so it can never make a question look answered when it is not.
+- The five answer states mean exactly what they meant before, and letter soup still answers "missing": twenty randomized nonsense questions returned zero hits each. The rule that keeps them out is unchanged in substance -- a vector score on its own is only trusted above 0.70, and below that a row has to have been matched by something that reads actual words.
+- The trade-off worth knowing: a question now costs roughly 150ms more, and a mistyped one costs about two seconds against the full evidence store, because trigram matching is expensive. That lane only runs when a question looks mistyped, so ordinary questions do not pay for it.
+
+**Data**
+
+- Edge why sentences are indexed for full-text search, and `pg_trgm` plus two trigram indexes back the new typo lane. All additive; the migration rehearses on `brain_dev` before touching the real tables, as always. The trigram indexes cover the first 2,000 characters of a quote and the first 4,000 of a node, which bounds them at about 36MB instead of letting the corpus decide.
+
+**Docs**
+
+- `experiments/recall-bench/PRODUCT-RECALL.md` records the port: what is shared, every tunable that had to change and the measurement behind it, and the same eighteen real questions run before and after.
+
+---
+
 ## v0.17.0
 
 Aug 30, 2026
