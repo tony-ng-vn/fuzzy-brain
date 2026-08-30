@@ -41,6 +41,11 @@ DUR=${DUR:-120}
 CONC=${CONC:-8,16,32,64}
 RATES=${RATES:-"1200 1800 2400"}
 TAG=${TAG:-final}
+# PROFILE and SPLIT are overridable for the same reason TIER is: 7.8 measures a
+# second scale profile against the dev half, and it has to be the same
+# instrument that produced 7.4 and 7.6 or the tables cannot be set side by side.
+PROFILE=${PROFILE:-tunedScale}
+SPLIT=${SPLIT:-both}
 
 on_ac() { pmset -g batt | head -1 | grep -q 'AC Power'; }
 
@@ -51,7 +56,7 @@ fi
 
 wait_for_tuner() {
   local waited=0
-  while pgrep -f 'bench-recall.mjs' > /dev/null 2>&1; do
+  while pgrep -f 'bench-recall\.mjs|scripts/recall\.mjs|bench-load\.mjs' > /dev/null 2>&1; do
     [ $((waited % 60)) -eq 0 ] && echo "[$(date +%T)] tuning agent busy on bench_q50k, waiting (${waited}s)"
     sleep 15
     waited=$((waited + 15))
@@ -63,7 +68,7 @@ wait_for_tuner() {
 sampled() {
   local marker=$(mktemp)
   ( while :; do
-      pgrep -f 'bench-recall.mjs' > /dev/null 2>&1 && echo x >> "$marker"
+      pgrep -f 'bench-recall\.mjs|scripts/recall\.mjs' > /dev/null 2>&1 && echo x >> "$marker"
       sleep 5
     done ) &
   local sampler=$!
@@ -72,7 +77,7 @@ sampled() {
   local n=$(wc -l < "$marker" | tr -d ' ')
   rm -f "$marker"
   if [ "$n" -gt 0 ]; then
-    echo "[$(date +%T)] CONTENDED: tuning agent overlapped this window in $n of the 5s samples -- treat the number as a floor, not a result"
+    echo "[$(date +%T)] CONTENDED: another bench process overlapped this window in $n of the 5s samples -- treat the number as a floor, not a result"
   else
     echo "[$(date +%T)] clean: no competing bench-recall during this window"
   fi
@@ -82,9 +87,9 @@ echo "[$(date +%T)] ================ closed-loop ceiling sweep ${CONC} =========
 echo "[$(date +%T)] warmup ${WARM}s, measured ${DUR}s per concurrency"
 wait_for_tuner
 on_ac || { echo "ABORT: dropped to battery"; exit 1; }
-sampled node bench-load.mjs --tier "$TIER" --profile tunedScale --mode closed \
+sampled node bench-load.mjs --tier "$TIER" --profile "$PROFILE" --mode closed \
   --sweep "$CONC" --sweep-duration "$DUR" --sweep-warmup "$WARM" \
-  --recall-sample-rate 0.1 \
+  --recall-sample-rate 0.1 --split "$SPLIT" \
   --out "$OUT/$TAG-closed.json"
 
 cat > "$OUT/read-closed.cjs" <<'JS'
@@ -109,9 +114,9 @@ for RATE in ${=RATES}; do
   echo "[$(date +%T)] ================ open-loop, offered ${RATE} QPS ================"
   wait_for_tuner
   on_ac || { echo "ABORT: dropped to battery"; exit 1; }
-  sampled node bench-load.mjs --tier "$TIER" --profile tunedScale --mode open \
+  sampled node bench-load.mjs --tier "$TIER" --profile "$PROFILE" --mode open \
     --offered-qps "$RATE" --duration "$DUR" --warmup "$WARM" --skip-select1-probe \
-    --recall-sample-rate 0.1 \
+    --recall-sample-rate 0.1 --split "$SPLIT" \
     --out "$OUT/$TAG-open-$RATE.json"
   node -e '
     const r = require(process.argv[1]);
