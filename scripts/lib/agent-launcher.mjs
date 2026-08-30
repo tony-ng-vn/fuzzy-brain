@@ -37,6 +37,8 @@ export function launcherPaths(homeDir) {
   return {
     root,
     binDir,
+    // The pinned clone the agents actually run; see lib/agent-runtime.mjs.
+    runtimeRoot: join(root, "runtime"),
     homeFile: join(root, "home"),
     brainRunPath: join(binDir, "brain-run"),
     nodePathFile: join(binDir, "node-path"),
