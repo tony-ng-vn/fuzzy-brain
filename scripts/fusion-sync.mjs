@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { installLauncher, launcherPaths } from "./lib/agent-launcher.mjs";
+import { resolveLaunchRoot } from "./lib/agent-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -102,10 +103,16 @@ export async function runFusionSync({
 
 export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
   const userHome = homedir();
-  // Refreshes ~/.fuzzy-brain/{home,bin/brain-run,bin/node-path} to point
-  // at this checkout before writing a plist that launches through them,
-  // so `--install` alone is enough after moving the checkout.
-  const launcher = installLauncher({ repoRoot: root, homeDir: userHome });
+  // Refreshes ~/.fuzzy-brain/{home,bin/brain-run,bin/node-path} before
+  // writing a plist that launches through them, so `--install` alone is
+  // enough after moving the checkout. It follows the pinned runtime when
+  // one exists, so installing the job from a feature branch cannot drag
+  // every agent onto that branch; a machine without a runtime yet falls
+  // back to this checkout.
+  const launcher = installLauncher({
+    repoRoot: resolveLaunchRoot({ homeDir: userHome, fallbackRoot: root }),
+    homeDir: userHome,
+  });
   const logDir = join(launcher.root, "logs");
   const agentPath = join(userHome, "Library", "LaunchAgents", `${LABEL}.plist`);
   mkdirSync(logDir, { recursive: true });
