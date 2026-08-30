@@ -30,7 +30,16 @@ let extractorPromise = null;
 function loadExtractor() {
   // fp32 weights: reference quality; the sweep is a rare batch job, so
   // fidelity wins over quantized speed.
-  extractorPromise ??= pipeline("feature-extraction", MODEL_ID, { dtype: "fp32" });
+  //
+  // A rejected load must not stick. It used to clear itself: every recall was
+  // its own process and disposed the model on the way out, so the next
+  // question retried the load. In a resident server one transient failure
+  // would otherwise leave the vector lane dead for the life of the process,
+  // and every answer would quietly come back from the text lanes alone.
+  extractorPromise ??= pipeline("feature-extraction", MODEL_ID, { dtype: "fp32" }).catch((err) => {
+    extractorPromise = null;
+    throw err;
+  });
   return extractorPromise;
 }
 
