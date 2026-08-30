@@ -44,6 +44,17 @@ export function makeClient(overrides = {}) {
   });
 }
 
+// The same guardrails for a process that outlives one command. A pool, not a
+// long-held client, because pg drops a connection whose link died and hands
+// the next caller a fresh one -- one failed call cannot poison the next.
+export function makePool(overrides = {}) {
+  return new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ...CLIENT_GUARDRAILS,
+    ...overrides,
+  });
+}
+
 // Explicit qualification survives transaction-pooling proxies that discard
 // session-level search_path settings between statements.
 export function schemaTables(schema) {
@@ -254,6 +265,44 @@ async function addOneEpisode(client, tables, input) {
   return { ...episodeRow, evidence_count: insertedCount };
 }
 
+// The two read verbs the MCP server needs, as values rather than printed
+// JSON, so a resident server can answer from one connection instead of one
+// spawn per call. Both stay the only implementation: the CLI branches below
+// call them and print what they return, so the two callers cannot drift.
+export async function getNode(client, tables, id) {
+  if (!id) throw new Error("get-node needs a node id");
+  const { rows, rowCount } = await client.query(
+    `select n.id, n.type, n.title, n.body, n.raw, n.created_at,
+            ts.status, ts.status_changed_at, ts.due_at, ts.temporal_origin
+     from ${tables.nodes} n
+     join ${tables.temporalState} ts on ts.node_id = n.id
+     where n.id = $1`,
+    [id],
+  );
+  if (rowCount === 0) throw new Error(`no node with id ${id}`);
+  return rows[0];
+}
+
+// `at` arrives as raw text either way (the CLI's --at=, the MCP argument) and
+// is normalized here, so both callers read an instant the same way.
+export async function listReminders(client, tables, at) {
+  const asOf = at ? new Date(normalizeTimestamp(at)) : new Date();
+  const { rows } = await client.query(
+    `select n.id as node_id, n.type, n.title, ts.status, ts.status_changed_at,
+            ts.due_at, ts.temporal_origin
+     from ${tables.nodes} n
+     join ${tables.temporalState} ts on ts.node_id = n.id
+     where ts.status = 'active' and ts.due_at is not null
+     order by ts.due_at asc, n.created_at asc`,
+  );
+  return {
+    at: asOf.toISOString(),
+    overdue: rows.filter((row) => row.due_at && new Date(row.due_at) < asOf),
+    upcoming: rows.filter((row) => new Date(row.due_at) >= asOf),
+    summary: formatReminderSummary(rows, asOf),
+  };
+}
+
 async function main() {
   loadEnvLocal();
   const [command, ...args] = process.argv.slice(2);
@@ -299,18 +348,7 @@ async function main() {
       );
       console.log(formatShow(rows));
     } else if (command === "get-node") {
-      const [id] = args;
-      if (!id) throw new Error("get-node needs a node id");
-      const { rows, rowCount } = await client.query(
-        `select n.id, n.type, n.title, n.body, n.raw, n.created_at,
-                ts.status, ts.status_changed_at, ts.due_at, ts.temporal_origin
-         from ${tables.nodes} n
-         join ${tables.temporalState} ts on ts.node_id = n.id
-         where n.id = $1`,
-        [id],
-      );
-      if (rowCount === 0) throw new Error(`no node with id ${id}`);
-      console.log(JSON.stringify(rows[0], null, 2));
+      console.log(JSON.stringify(await getNode(client, tables, args[0]), null, 2));
     } else if (command === "add-node") {
       const { type, title, raw, body, deadline_at, deadline_origin } = JSON.parse(await readStdin());
       if (!title) throw new Error("a node needs a title");
@@ -399,18 +437,7 @@ async function main() {
       }
     } else if (command === "list-reminders") {
       const atArg = args.find((arg) => arg.startsWith("--at="));
-      const at = atArg ? new Date(normalizeTimestamp(atArg.slice(5))) : new Date();
-      const { rows } = await client.query(
-        `select n.id as node_id, n.type, n.title, ts.status, ts.status_changed_at,
-                ts.due_at, ts.temporal_origin
-         from ${tables.nodes} n
-         join ${tables.temporalState} ts on ts.node_id = n.id
-         where ts.status = 'active' and ts.due_at is not null
-         order by ts.due_at asc, n.created_at asc`,
-      );
-      const overdue = rows.filter((row) => row.due_at && new Date(row.due_at) < at);
-      const upcoming = rows.filter((row) => new Date(row.due_at) >= at);
-      console.log(JSON.stringify({ at: at.toISOString(), overdue, upcoming, summary: formatReminderSummary(rows, at) }, null, 2));
+      console.log(JSON.stringify(await listReminders(client, tables, atArg?.slice(5)), null, 2));
     } else if (command === "add-edge") {
       const { source, target, why } = JSON.parse(await readStdin());
       // No client-side why check: the CHECK constraint is the one true gate.
