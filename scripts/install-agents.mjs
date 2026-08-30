@@ -4,6 +4,11 @@
 // write is a merge or an in-place table replace, never a rewrite of the
 // whole file, and --dry-run previews every change without touching disk.
 //
+// brain-run follows ~/.fuzzy-brain/home, and that points at
+// ~/.fuzzy-brain/runtime: a pinned clone of main, not the working
+// checkout, so a feature branch in the checkout can never become every
+// agent's brain. --dev opts back out of that for debugging.
+//
 // Never reads .env.local or DATABASE_URL, and never prints file
 // contents or a diff -- only the path, action, and our own entry -- so a
 // dry-run against a real config with live tokens in it (Codex's
@@ -15,6 +20,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installLauncher } from "./lib/agent-launcher.mjs";
+import { syncRuntime as defaultSyncRuntime } from "./lib/agent-runtime.mjs";
 import { mergeMcpServer, replaceTomlTable, tomlTableExists } from "./lib/mcp-config.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -137,6 +143,13 @@ function formatResult(result) {
   return `[${result.id}] ${label}: ${result.detail}`;
 }
 
+// The one line that answers "which version are the agents actually on".
+function runtimeLine(runtime, dryRun) {
+  if (!runtime) return "runtime: not used (--dev)";
+  const verb = dryRun ? "would resolve to" : "is at";
+  return `runtime ${verb} ${runtime.commit} ${runtime.subject}`;
+}
+
 function genericSnippet(brainRunPath) {
   const snippet = { mcpServers: { [SERVER_NAME]: { command: brainRunPath, args: [SERVER_SCRIPT] } } };
   return [
@@ -145,21 +158,64 @@ function genericSnippet(brainRunPath) {
   ].join("\n");
 }
 
+function devWarning(root) {
+  return [
+    "WARNING: --dev points every coding agent on this Mac at the working checkout",
+    `  ${root}`,
+    "  Whatever branch that checkout is on is the brain every agent gets, half-finished work included.",
+    "  Run `npm run agents:install` with no flags to put the agents back on the pinned runtime.",
+  ].join("\n");
+}
+
+function describeRuntime(runtime) {
+  const deps = runtime.dependencies.install
+    ? `npm ci (${runtime.dependencies.reason})`
+    : `dependencies reused (${runtime.dependencies.reason})`;
+  return `${runtime.action} ${runtime.runtimeRoot} at main, ${deps}`;
+}
+
 export async function runInstall({
   repoRoot: root = repoRoot,
   homeDir,
   dryRun = false,
+  dev = false,
+  runtimeOnly = false,
   only = null,
   hasCli = defaultHasClaudeCli,
   runCli = defaultRunCli,
+  syncRuntime = defaultSyncRuntime,
   log = console.log,
 } = {}) {
-  const launcher = installLauncher({ repoRoot: root, homeDir, dryRun });
-  const results = [
+  if (dev && runtimeOnly) throw new Error("--dev and --runtime-only ask for opposite things; pick one");
+
+  const results = [];
+  let runtime = null;
+  if (dev) {
+    log(devWarning(root));
+    log("");
+    results.push(skip("runtime", `--dev: agents follow the working checkout at ${root}`));
+  } else {
+    runtime = syncRuntime({ sourceRoot: root, homeDir, dryRun });
+    for (const warning of runtime.warnings) log(`[runtime] note: ${warning}`);
+    results.push(dryRun ? planned("runtime", describeRuntime(runtime)) : written("runtime", describeRuntime(runtime)));
+  }
+
+  // The runtime is the whole point of the launcher, so refreshing it alone
+  // is a safe no-touch update after landing a change on main.
+  if (runtimeOnly) {
+    for (const result of results) log(formatResult(result));
+    log("");
+    log(runtimeLine(runtime, dryRun));
+    return results;
+  }
+
+  const launchRoot = dev ? root : runtime.runtimeRoot;
+  const launcher = installLauncher({ repoRoot: launchRoot, homeDir, dryRun });
+  results.push(
     dryRun
-      ? planned("launcher", `~/.fuzzy-brain/{home,bin/brain-run,bin/node-path}: home -> ${root}, node -> ${launcher.nodePath}`)
-      : written("launcher", `home -> ${root}, node -> ${launcher.nodePath}`),
-  ];
+      ? planned("launcher", `~/.fuzzy-brain/{home,bin/brain-run,bin/node-path}: home -> ${launchRoot}, node -> ${launcher.nodePath}`)
+      : written("launcher", `home -> ${launchRoot}, node -> ${launcher.nodePath}`),
+  );
 
   const brainRunPath = launcher.brainRunPath;
   const agents = [
@@ -179,19 +235,24 @@ export async function runInstall({
   for (const result of results) log(formatResult(result));
   log("");
   log(genericSnippet(brainRunPath));
+  log("");
+  log(runtimeLine(runtime, dryRun));
+  if (dev) log(devWarning(root));
   return results;
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const dryRun = argv.includes("--dry-run");
+  const dev = argv.includes("--dev");
+  const runtimeOnly = argv.includes("--runtime-only");
   const onlyIndex = argv.indexOf("--only");
   const only = onlyIndex !== -1 && argv[onlyIndex + 1] ? argv[onlyIndex + 1].split(",").map((s) => s.trim()).filter(Boolean) : null;
-  return { dryRun, only };
+  return { dryRun, dev, runtimeOnly, only };
 }
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { dryRun, only } = parseArgs(process.argv.slice(2));
-  runInstall({ homeDir: homedir(), dryRun, only }).catch((error) => {
+  const { dryRun, dev, runtimeOnly, only } = parseArgs(process.argv.slice(2));
+  runInstall({ homeDir: homedir(), dryRun, dev, runtimeOnly, only }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
