@@ -45,7 +45,7 @@ function installAgents(options) {
 
 // A scripted git that answers the read-only questions readSourceState asks
 // and records every command, so a test can assert what was and was not run.
-function fakeGit({ dirty = [], untracked = [], hasMain = true, hasRemoteMain = true, behind = 0, described = "abc1234\tland the thing" } = {}) {
+function fakeGit({ dirty = [], untracked = [], hasMain = true, hasRemoteMain = true, ahead = 0, behind = 0, described = "abc1234\tland the thing" } = {}) {
   const calls = [];
   const git = (args, cwd) => {
     calls.push({ args, cwd });
@@ -60,7 +60,7 @@ function fakeGit({ dirty = [], untracked = [], hasMain = true, hasRemoteMain = t
     }
     if (args[0] === "status") return `${dirty.join("\n")}\n`;
     if (args[0] === "ls-files") return `${untracked.join("\n")}\n`;
-    if (args[0] === "rev-list") return `${behind}\n`;
+    if (args[0] === "rev-list") return `${ahead}\t${behind}\n`;
     if (args[0] === "log") return `${described}\n`;
     // Real git creates the destination; the copy step after it depends on that.
     if (args[0] === "clone") mkdirSync(args[args.length - 1], { recursive: true });
@@ -404,12 +404,19 @@ test("checkSourceReady passes a clean checkout whose main matches the remote", (
   assert.deepEqual(check.warnings, []);
 });
 
-test("checkSourceReady refuses a checkout with uncommitted tracked changes, and says how to fix it", () => {
+test("checkSourceReady only warns about uncommitted tracked changes, because a clone reads committed main", () => {
   const check = checkSourceReady({ hasMain: true, trackedChanges: ["M scripts/brain.mjs"], behindCount: 0 });
-  assert.equal(check.ok, false);
-  assert.match(check.problems[0].what, /1 uncommitted change\(s\)/);
-  assert.match(check.problems[0].what, /scripts\/brain\.mjs/);
-  assert.match(check.problems[0].fix, /commit or stash/);
+  assert.equal(check.ok, true, "refusing here would block the ordinary refresh-while-mid-edit for no gain");
+  assert.deepEqual(check.problems, []);
+  assert.match(check.warnings[0], /1 uncommitted change\(s\)/);
+  assert.match(check.warnings[0], /built from committed main and will not have them/);
+});
+
+test("checkSourceReady warns when main is ahead of origin/main, since the agents would run unpushed code", () => {
+  const check = checkSourceReady({ hasMain: true, aheadCount: 2, behindCount: 0 });
+  assert.equal(check.ok, true);
+  assert.match(check.warnings[0], /2 commit\(s\) ahead of origin\/main/);
+  assert.match(check.warnings[0], /never pushed/);
 });
 
 test("checkSourceReady refuses a main that is behind origin/main and names the gap", () => {
@@ -438,17 +445,18 @@ test("checkSourceReady warns, but does not refuse, when there is no origin/main 
 });
 
 test("checkSourceReady reports every problem at once instead of stopping at the first", () => {
-  const check = checkSourceReady({ hasMain: true, trackedChanges: ["M a", "M b"], behindCount: 2 });
+  const check = checkSourceReady({ hasMain: false, behindCount: 2 });
   assert.equal(check.problems.length, 2);
 });
 
 test("readSourceState reads cleanliness, drift, and the commit main is on without fetching", () => {
-  const { git, calls } = fakeGit({ dirty: ["M scripts/brain.mjs"], untracked: ["docs/scratch.md"], behind: 4 });
+  const { git, calls } = fakeGit({ dirty: ["M scripts/brain.mjs"], untracked: ["docs/scratch.md"], ahead: 1, behind: 4 });
   const state = readSourceState({ sourceRoot: "/repo", git });
 
   assert.equal(state.hasMain, true);
   assert.deepEqual(state.trackedChanges, ["M scripts/brain.mjs"]);
   assert.deepEqual(state.untracked, ["docs/scratch.md"]);
+  assert.equal(state.aheadCount, 1);
   assert.equal(state.behindCount, 4);
   assert.equal(state.commit, "abc1234");
   assert.equal(state.subject, "land the thing");
@@ -458,7 +466,9 @@ test("readSourceState reads cleanliness, drift, and the commit main is on withou
 
 test("readSourceState reports an unknown drift rather than zero when origin/main is missing", () => {
   const { git } = fakeGit({ hasRemoteMain: false });
-  assert.equal(readSourceState({ sourceRoot: "/repo", git }).behindCount, null);
+  const state = readSourceState({ sourceRoot: "/repo", git });
+  assert.equal(state.behindCount, null);
+  assert.equal(state.aheadCount, null);
 });
 
 test("needsDependencyInstall installs on a fresh clone and whenever node_modules is gone", () => {
@@ -541,17 +551,18 @@ test("syncRuntime updates an existing runtime with a hard reset and reuses node_
   }
 });
 
-test("syncRuntime refuses a dirty source checkout and builds nothing", () => {
+test("syncRuntime builds from committed main even while the source checkout has uncommitted edits", () => {
   const homeDir = tempHome();
+  const sourceRoot = tempHome();
   try {
-    const { git } = fakeGit({ dirty: ["M scripts/brain.mjs"] });
-    assert.throws(
-      () => syncRuntime({ sourceRoot: "/repo/checkout", homeDir, git, npmInstall: () => { throw new Error("must not install"); } }),
-      (error) => error instanceof SourceNotReadyError && /uncommitted change/.test(error.message) && /commit or stash/.test(error.message),
-    );
-    assert.equal(existsSync(runtimePaths(homeDir).runtimeRoot), false);
+    const { git, calls } = fakeGit({ dirty: ["M scripts/brain.mjs"] });
+    const result = syncRuntime({ sourceRoot, homeDir, git, npmInstall: () => {} });
+
+    assert.ok(calls.some((c) => c.args[0] === "clone"), "a mid-edit checkout must still be able to refresh the runtime");
+    assert.match(result.warnings[0], /1 uncommitted change\(s\)/);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
+    rmSync(sourceRoot, { recursive: true, force: true });
   }
 });
 
@@ -689,4 +700,25 @@ test("parseArgs reads the runtime flags alongside the ones that already existed"
   assert.deepEqual(parseArgs(["--dry-run", "--only", "codex,cursor"]), { dryRun: true, dev: false, runtimeOnly: false, only: ["codex", "cursor"] });
   assert.equal(parseArgs(["--dev"]).dev, true);
   assert.equal(parseArgs(["--runtime-only"]).runtimeOnly, true);
+});
+
+test("runInstall --runtime-only still prints the runtime's warnings, not only the full install", async () => {
+  const homeDir = tempHome();
+  try {
+    const { log, lines } = captureLog();
+    await runInstall({
+      repoRoot: "/repo/checkout",
+      homeDir,
+      runtimeOnly: true,
+      hasCli: () => false,
+      log,
+      syncRuntime: (options) => ({
+        ...fakeRuntimeSync(options),
+        warnings: ["2 uncommitted change(s) to tracked files stay in this checkout; the runtime is built from committed main and will not have them"],
+      }),
+    });
+    assert.ok(lines.some((l) => l.startsWith("[runtime] note: 2 uncommitted change(s)")));
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
 });

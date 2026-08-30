@@ -56,8 +56,8 @@ function tryGit(git, args, cwd) {
 
 // Reads every fact the readiness check needs. Read-only: no fetch, so a
 // --dry-run leaves the source checkout's .git exactly as it found it. The
-// cost is that behindCount is only as fresh as the last fetch, which the
-// refusal message says out loud.
+// cost is that the drift counts are only as fresh as the last fetch, which
+// the messages say out loud.
 export function readSourceState({ sourceRoot, git = defaultGit } = {}) {
   const hasMain = tryGit(git, ["rev-parse", "--verify", "--quiet", "refs/heads/main"], sourceRoot) !== null;
   const trackedChanges = (tryGit(git, ["status", "--porcelain", "--untracked-files=no"], sourceRoot) ?? "")
@@ -69,21 +69,29 @@ export function readSourceState({ sourceRoot, git = defaultGit } = {}) {
     .map((line) => line.trim())
     .filter(Boolean);
 
+  // One call answers both directions: left is main-only, right is remote-only.
   const hasRemoteMain = tryGit(git, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], sourceRoot) !== null;
-  const behindCount = hasRemoteMain
-    ? Number.parseInt((tryGit(git, ["rev-list", "--count", "main..origin/main"], sourceRoot) ?? "0").trim(), 10)
+  const drift = hasRemoteMain
+    ? (tryGit(git, ["rev-list", "--left-right", "--count", "main...origin/main"], sourceRoot) ?? "").trim().split(/\s+/)
     : null;
+  const aheadCount = drift ? Number.parseInt(drift[0] ?? "0", 10) : null;
+  const behindCount = drift ? Number.parseInt(drift[1] ?? "0", 10) : null;
 
   const described = hasMain ? (tryGit(git, ["log", "-1", "--format=%h%x09%s", "main"], sourceRoot) ?? "").trim() : "";
   const [commit = "", subject = ""] = described.split("\t");
 
-  return { hasMain, trackedChanges, untracked, behindCount, commit, subject };
+  return { hasMain, trackedChanges, untracked, aheadCount, behindCount, commit, subject };
 }
 
-// The runtime is only worth anything if it is a state someone could point at
-// and say "that is main". Untracked files are only a warning: they cannot
-// enter a clone, and the checkout legitimately carries scratch notes.
-export function checkSourceReady({ hasMain, trackedChanges = [], untracked = [], behindCount } = {}) {
+// Only two things are worth refusing over, and both mean the runtime would
+// pin a state nobody has agreed is good: no main to build from, and a main
+// that is behind the remote.
+//
+// The working tree is deliberately not one of them. Both the clone and the
+// refresh read the committed object database, so a modified or untracked
+// file cannot reach the runtime by any path. Refusing over one would block
+// the ordinary refresh-while-mid-edit and prevent no contamination at all.
+export function checkSourceReady({ hasMain, trackedChanges = [], untracked = [], aheadCount, behindCount } = {}) {
   const problems = [];
   const warnings = [];
 
@@ -93,17 +101,18 @@ export function checkSourceReady({ hasMain, trackedChanges = [], untracked = [],
       fix: "git fetch origin main:main",
     });
   }
-  if (trackedChanges.length > 0) {
-    problems.push({
-      what: `${trackedChanges.length} uncommitted change(s) to tracked files: ${trackedChanges.slice(0, 5).join(", ")}${trackedChanges.length > 5 ? ", ..." : ""}`,
-      fix: "commit or stash them, then rerun",
-    });
-  }
   if (typeof behindCount === "number" && behindCount > 0) {
     problems.push({
       what: `main is ${behindCount} commit(s) behind origin/main as of the last fetch`,
       fix: "git fetch origin && git merge --ff-only origin/main on main, then rerun",
     });
+  }
+
+  if (trackedChanges.length > 0) {
+    warnings.push(`${trackedChanges.length} uncommitted change(s) to tracked files stay in this checkout; the runtime is built from committed main and will not have them`);
+  }
+  if (typeof aheadCount === "number" && aheadCount > 0) {
+    warnings.push(`main is ${aheadCount} commit(s) ahead of origin/main, so the runtime will run code that was never pushed`);
   }
   if (behindCount === null) {
     warnings.push("no origin/main ref, so how far main has drifted from the remote is unknown");
