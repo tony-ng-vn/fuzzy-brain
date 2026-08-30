@@ -55,6 +55,7 @@ import { createHash } from "node:crypto";
 
 import { config as defaultConfig } from "./config.mjs";
 import { shouldIssueSessionSql } from "./lib/safety.mjs";
+import { binaryVectorLaneCtes } from "./lib/binary-lane.mjs";
 
 // ---------------------------------------------------------------------------
 // Query analysis: tokenizer, stemmer, closed-world date parser, query
@@ -108,7 +109,11 @@ function profileSignature(profile) {
   // vectorGate is part of the signature because it changes the SQL text, and
   // two different statements sharing one prepared-statement name is a silent
   // wrong-plan bug rather than a slow one.
-  return `${lanes}_w${profile.weighting}_f${profile.filters ? 1 : 0}_r${profile.rerank ? 1 : 0}${profile.vectorGate ? "_vg" : ""}`;
+  // binaryVectorLane is here for the same reason vectorGate is: it swaps the
+  // vector lane's SQL for a two-stage Hamming-then-cosine one, and bench-recall
+  // --ablation runs several profiles down one pool, so two shapes sharing a
+  // prepared-statement name would be a wrong-plan bug rather than a slow one.
+  return `${lanes}_w${profile.weighting}_f${profile.filters ? 1 : 0}_r${profile.rerank ? 1 : 0}${profile.vectorGate ? "_vg" : ""}${profile.binaryVectorLane ? "_bq" : ""}`;
 }
 
 // Postgres identifiers truncate at NAMEDATALEN - 1 = 63 bytes, silently, which
@@ -401,13 +406,20 @@ function planScaleStatement(tier, profile, cfg) {
   const vectorGate = profile.vectorGate && hasAnd
     ? `\n    and (select count(*) from and_lane) < ${scale.vectorSkipAndFloor}`
     : '';
-  ctes.push(`vec_lane as (
+  if (profile.binaryVectorLane) {
+    ctes.push(...binaryVectorLaneCtes({
+      schema, vecParam, dims: tier.dims, depth,
+      oversample: scale.binaryOversample, spanClause, vectorGate,
+    }));
+  } else {
+    ctes.push(`vec_lane as (
   select m.id, row_number() over (order by m.embedding <=> ${vecParam}::halfvec) as rnk, null::real as score
   from ${schema}.memories m
   where m.embedding is not null${spanClause}${vectorGate}
   order by m.embedding <=> ${vecParam}::halfvec
   limit ${depth}
 )`);
+  }
   fusedBranches.push(`select id, rnk, score, 'vector' as lane, ${vectorWeightParam}::float / (${rrfK.vector} + rnk) as w from vec_lane`);
 
   // The lexical rerank feature rides out of the lanes instead of being

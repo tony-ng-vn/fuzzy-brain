@@ -338,6 +338,15 @@ export const config = {
       // the wrong trade when the gate is already met at 0.915. The knob is
       // where the throughput claim is priced, not where the recall gate is won.
       filteredMaxScanTuples: 2_000,
+      // Candidate depth multiplier for the binary-quantized vector lane
+      // (profiles.tunedScaleBinary, lib/binary-lane.mjs). The lane takes
+      // depth * this many rows by Hamming distance over binary_quantize(embedding)
+      // and reranks them by exact halfvec cosine, so this is the only knob that
+      // trades the quantizer's lost precision back for candidate-stage work.
+      // 20 is where scripts/bq-agreement.mjs measured the cosine top-3 recovered
+      // 0.983 of the time by an exact Hamming scan of this corpus; see DESIGN.md
+      // 7.8 for what it measured once an approximate graph was in the way.
+      binaryOversample: 20,
     },
     rrfK: { and: 60, or: 60, vector: 60, trigram: 60 },
     trigramThreshold: 0.3,
@@ -405,6 +414,14 @@ export const config = {
     // runs this three-lane profile.
     tunedScale: { lanes: ["and", "or", "vector"], weighting: "query-dependent",
                   filters: true, rerank: true },
+    // tunedScale with the vector lane's candidate stage moved onto a
+    // binary_quantize HNSW index and reranked by exact halfvec cosine before
+    // fusion (DESIGN.md 7.8). Everything else -- lanes, weighting, filters,
+    // rerank -- is tunedScale's, so a difference between the two profiles is a
+    // difference in the vector lane and nothing else. It needs
+    // memories_embedding_bq_hnsw to exist on the tier's schema.
+    tunedScaleBinary: { lanes: ["and", "or", "vector"], weighting: "query-dependent",
+                        filters: true, rerank: true, binaryVectorLane: true },
   },
 
   weighting: {
