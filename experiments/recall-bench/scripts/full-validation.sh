@@ -128,7 +128,18 @@ for RATE in ${=RATES}; do
       + ` R@10=${(o.recall?.mixWeighted?.recallAt10 ?? NaN).toFixed(3)}`
       + ` inFlightGrowing=${o.inFlightGrowing} window=${w.valid === true ? "valid" : "INVALID: " + w.reason}`
       + ` gate=${r.gate?.pass ? "PASS" : "FAIL"}`);
+    // Exit 3 means the system is saturated at this rate. Climbing past a
+    // saturated window cannot produce a better number, and on a machine whose
+    // working set does not fit in RAM it produces an unusable desktop: the
+    // 10M run that escalated from an already-INVALID 150 QPS window to 200
+    // took the laptop to 15.6 GB of swap and load average 72.
+    const saturated = w.valid !== true || o.inFlightGrowing === true;
+    process.exit(saturated ? 3 : 0);
   ' "$PWD/$OUT/$TAG-open-$RATE.json"
+  if [ $? -eq 3 ]; then
+    echo "[$(date +%T)] SATURATED at ${RATE} QPS -- stopping the climb rather than escalating into swap"
+    break
+  fi
 done
 
 echo ""
