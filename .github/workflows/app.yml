@@ -1,0 +1,35 @@
+name: app
+
+# The type checker is the gate that was missing. `npm test` runs node:test over
+# the .mjs files and never looks at the TypeScript half of the repo, and the
+# only other workflow here covers the recall benchmark, so a type error in
+# lib/validation.ts reached main and stayed there.
+#
+# This runs tsc directly rather than `next build`, on purpose: a full build
+# imports every route to collect page data, and lib/db.ts throws at import when
+# DATABASE_URL is unset. Giving CI a fake connection string to get past that
+# would buy nothing, because the type error is what we are trying to catch and
+# tsc catches it without a database.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
