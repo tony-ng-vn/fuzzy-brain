@@ -44,7 +44,7 @@
 //   }
 // Both Map and plain-object forms are accepted for df/people/places since
 // a JSON-serialized vocab (the likely form load.mjs writes) cannot carry a
-// Map. `stem`/`tokenize` below are exported (additive to section 3.6's
+// Map. `stem`/`tokenize` are re-exported below (additive to section 3.6's
 // list) so whatever module builds Vocab.df can key it with the exact same
 // function this file uses to look words up -- that consistency matters
 // more than matching Postgres's real snowball stemmer, since SQL-side
@@ -57,379 +57,42 @@ import { config as defaultConfig } from "./config.mjs";
 import { shouldIssueSessionSql } from "./lib/safety.mjs";
 
 // ---------------------------------------------------------------------------
-// Tokenizer + approximate stemmer (feature scoring only -- never touches SQL)
-// ---------------------------------------------------------------------------
-
-// Postgres's default 'english' stopword list, trimmed to the common core.
-// Approximate on purpose: this only gates what counts toward idf/oov
-// scoring and the OR-lane fragment terms, not what Postgres itself matches.
-const STOPWORDS = new Set([
-  "a", "about", "above", "after", "again", "against", "all", "am", "an",
-  "and", "any", "are", "aren't", "as", "at", "be", "because", "been",
-  "before", "being", "below", "between", "both", "but", "by", "can", "did",
-  "do", "does", "doing", "don't", "down", "during", "each", "few", "for",
-  "from", "further", "had", "has", "have", "having", "he", "her", "here",
-  "hers", "herself", "him", "himself", "his", "how", "i", "if", "in",
-  "into", "is", "it", "its", "itself", "just", "me", "more", "most", "my",
-  "myself", "no", "nor", "not", "now", "of", "off", "on", "once", "only",
-  "or", "other", "our", "ours", "ourselves", "out", "over", "own", "s",
-  "same", "she", "should", "so", "some", "such", "t", "than", "that",
-  "the", "their", "theirs", "them", "themselves", "then", "there", "these",
-  "they", "this", "those", "through", "to", "too", "under", "until", "up",
-  "very", "was", "we", "were", "what", "when", "where", "which", "while",
-  "who", "whom", "why", "will", "with", "won't", "would", "you", "your",
-  "yours", "yourself", "yourselves",
-]);
-
-// Words with internal hyphens/apostrophes stay one token (planted rare
-// tokens look like "kbz-4417"; splitting on "-" would hide them).
-const TOKEN_RE = /[a-z0-9]+(?:[-'][a-z0-9]+)*/g;
-const QUOTED_RE = /"([^"]+)"/g;
-
-export function tokenize(text) {
-  const quoted = [];
-  const withoutQuotes = String(text ?? "").replace(QUOTED_RE, (_, inner) => {
-    quoted.push(inner.trim().toLowerCase());
-    return ` ${inner} `;
-  });
-  const terms = withoutQuotes.toLowerCase().match(TOKEN_RE) ?? [];
-  return { terms, quoted };
-}
-
-// Suffix-stripping approximation of Porter stemming. Not a faithful Porter
-// implementation -- deliberately conservative (skips -er/-est comparative
-// stripping, which misfires badly on ordinary nouns like "father") since
-// this only feeds idf/rareness scoring, never SQL matching (deviation 1).
-export function stem(word) {
-  let w = String(word ?? "").toLowerCase();
-  if (w.length < 4) return w;
-  w = w.replace(/'s$/, "");
-  if (w.endsWith("ies") && w.length > 5) w = `${w.slice(0, -3)}y`;
-  else if (/[^s]s$/.test(w) && !/(ss|us|is)$/.test(w)) w = w.slice(0, -1);
-  if (w.length > 5 && w.endsWith("ing")) w = collapseDoubled(w.slice(0, -3));
-  else if (w.length > 4 && w.endsWith("ed") && !w.endsWith("eed")) w = collapseDoubled(w.slice(0, -2));
-  if (w.endsWith("iness") && w.length > 6) w = `${w.slice(0, -5)}y`;
-  else if (w.endsWith("ness") && w.length > 5) w = w.slice(0, -4);
-  else if (w.endsWith("ly") && w.length > 4) w = w.slice(0, -2);
-  return w;
-}
-
-function collapseDoubled(w) {
-  // "stopp" (from "stopped") -> "stop"; leaves legitimate double letters
-  // like "ll"/"ss"/"zz" alone since those are rarely stemming artifacts.
-  if (/([b-df-hj-np-tv-z])\1$/.test(w) && !/(ll|ss|zz)$/.test(w)) return w.slice(0, -1);
-  return w;
-}
-
-function dfLookup(vocab, key) {
-  const df = vocab?.df;
-  if (!df) return undefined;
-  if (df instanceof Map) return df.get(key);
-  return Object.prototype.hasOwnProperty.call(df, key) ? df[key] : undefined;
-}
-
-function entriesOf(mapOrObj) {
-  if (!mapOrObj) return [];
-  if (mapOrObj instanceof Map) return [...mapOrObj.entries()];
-  return Object.entries(mapOrObj);
-}
-
-const EMPTY_VOCAB = { totalDocs: 1, df: new Map(), people: new Map(), places: new Map() };
-
-// ---------------------------------------------------------------------------
-// Closed-world date parser (section 3.6: "must stay that way" -- no general
-// NL date parsing, only the finite template list below).
-// ---------------------------------------------------------------------------
-
-const MONTHS = [
-  "january", "february", "march", "april", "may", "june",
-  "july", "august", "september", "october", "november", "december",
-];
-const SEASON_MONTHS = {
-  spring: [3, 4, 5], summer: [6, 7, 8], fall: [9, 10, 11],
-  autumn: [9, 10, 11], winter: [12, 1, 2],
-};
-const MONTH_ALT = MONTHS.join("|");
-const SEASON_ALT = Object.keys(SEASON_MONTHS).join("|");
-
-const DATE_PATTERNS = [
-  { kind: "in-month-year", re: new RegExp(`\\bin\\s+(${MONTH_ALT})\\s+(\\d{4})\\b`, "i") },
-  { kind: "that-season-of-year", re: new RegExp(`\\bthat\\s+(${SEASON_ALT})\\s+of\\s+(\\d{4})\\b`, "i") },
-  { kind: "before-year", re: /\bbefore\s+(\d{4})\b/i },
-  { kind: "after-year", re: /\bafter\s+(\d{4})\b/i },
-  { kind: "in-year", re: /\bin\s+(\d{4})\b/i },
-  { kind: "last-month", re: new RegExp(`\\blast\\s+(${MONTH_ALT})\\b`, "i") },
-  { kind: "around-month", re: new RegExp(`\\baround\\s+(${MONTH_ALT})\\b`, "i") },
-  { kind: "bare-month", re: new RegExp(`\\b(${MONTH_ALT})\\b`, "i") },
-];
-
-function isoDate(ms) {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-function monthRange(year, month1to12) {
-  return { from: isoDate(Date.UTC(year, month1to12 - 1, 1)), to: isoDate(Date.UTC(year, month1to12, 1)) };
-}
-
-function yearRange(year) {
-  return { from: isoDate(Date.UTC(year, 0, 1)), to: isoDate(Date.UTC(year + 1, 0, 1)) };
-}
-
-function seasonRange(season, year) {
-  const months = SEASON_MONTHS[season];
-  if (season === "winter") {
-    return { from: isoDate(Date.UTC(year, 11, 1)), to: isoDate(Date.UTC(year + 1, 2, 1)) };
-  }
-  const first = months[0];
-  const last = months[months.length - 1];
-  return { from: isoDate(Date.UTC(year, first - 1, 1)), to: isoDate(Date.UTC(year, last, 1)) };
-}
-
-// "last <Month>" / "around <Month>" / bare month names have no year in the
-// text at all, so a closed-world parser has to resolve one against some
-// reference point. cfg.dates.referenceIso pins it to lib/lexicon.mjs's own
-// REFERENCE_NOW (2026-01-01, fixed rather than wall-clock, precisely so
-// this resolves the same way regardless of when the bench actually runs).
-// Falls back to real wall-clock time only if cfg carries no referenceIso at
-// all, which should not happen once config.mjs's own default is in play.
-function referenceDate(cfg) {
-  const iso = cfg?.dates?.referenceIso;
-  return iso ? new Date(iso) : new Date();
-}
-
-// Matches lib/lexicon.mjs's buildDateTemplate exactly (that file landed
-// mid-implementation and is the actual generator, so its rule beats the
-// earlier guess this replaced): a month with no year in the text
-// ("last <Month>", bare month names) rolls back a year whenever the target
-// month's index is >= the reference month's index -- note >=, not >, so at
-// REFERENCE_NOW's own month the year still rolls back. With REFERENCE_NOW
-// pinned at 2026-01-01 (January, the smallest possible index), this rolls
-// every month back to 2025 -- a real edge case of the boundary rule, not a
-// bug in either implementation.
-function lastOccurrenceYear(month1to12, reference) {
-  const refYear = reference.getUTCFullYear();
-  const refMonth = reference.getUTCMonth() + 1;
-  return month1to12 >= refMonth ? refYear - 1 : refYear;
-}
-
-// Same width lib/lexicon.mjs's aroundMonth uses: the named month plus the
-// one immediately before and after -- a fixed 3-calendar-month window, not
-// a day-count pad.
-function aroundMonthRange(year, month1to12) {
-  return { from: isoDate(Date.UTC(year, month1to12 - 2, 1)), to: isoDate(Date.UTC(year, month1to12 + 1, 1)) };
-}
-
-function parseDateRange(lowerText, cfg) {
-  for (const { kind, re } of DATE_PATTERNS) {
-    const m = lowerText.match(re);
-    if (!m) continue;
-    const reference = referenceDate(cfg);
-    switch (kind) {
-      case "in-month-year":
-        return monthRange(Number(m[2]), MONTHS.indexOf(m[1].toLowerCase()) + 1);
-      case "that-season-of-year":
-        return seasonRange(m[1].toLowerCase(), Number(m[2]));
-      case "before-year":
-        return { from: null, to: yearRange(Number(m[1])).from };
-      case "after-year":
-        return { from: yearRange(Number(m[1]) + 1).from, to: null };
-      case "in-year":
-        return yearRange(Number(m[1]));
-      case "last-month": {
-        const month = MONTHS.indexOf(m[1].toLowerCase()) + 1;
-        return monthRange(lastOccurrenceYear(month, reference), month);
-      }
-      case "around-month": {
-        // The query text carries no year at all ("around march"), and
-        // lib/lexicon.mjs's generator picks one per-query when building
-        // the fixture (matched against a specific target's occurred_at)
-        // that never reaches the text. A closed-world parser reading only
-        // the text cannot recover that year; this is the same
-        // lastOccurrenceYear best guess as bareMonth/lastMonth, and a wrong
-        // guess here is an accepted, already-named cost (DESIGN.md 5.2's
-        // filter_excluded bucket), not something this parser can close.
-        const month = MONTHS.indexOf(m[1].toLowerCase()) + 1;
-        return aroundMonthRange(lastOccurrenceYear(month, reference), month);
-      }
-      case "bare-month": {
-        const month = MONTHS.indexOf(m[1].toLowerCase()) + 1;
-        return monthRange(lastOccurrenceYear(month, reference), month);
-      }
-      default:
-        return { from: null, to: null };
-    }
-  }
-  return { from: null, to: null };
-}
-
-// ---------------------------------------------------------------------------
-// Entity extraction
-// ---------------------------------------------------------------------------
-
-function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function extractEntities(lowerText, vocab) {
-  const people = extractOneKind(lowerText, vocab?.people, vocab, vocab?.peopleDocs);
-  const places = extractOneKind(lowerText, vocab?.places, vocab, null);
-  return {
-    people: people.map((h) => h.slug),
-    places: places.map((h) => h.slug),
-    // Mentions confident enough to drive a HARD metadata filter. See
-    // extractOneKind for what makes one ambiguous.
-    peopleConfident: people.filter((h) => !h.ambiguous).map((h) => h.slug),
-  };
-}
-
-// An alias that is also ordinary English costs more than it earns. This corpus
-// names people with Vietnamese given names, several of which are also common
-// words: "an" is the indefinite article, and "van" is a vehicle. Measured on
-// the dev split, those two alone produced 37 of the 98 person extractions and
-// 33 queries whose inferred people filter excluded their own ground-truth
-// target -- DESIGN.md 5.2's "most dangerous bucket".
+// Query analysis: tokenizer, stemmer, closed-world date parser, query
+// features, and lane weighting.
 //
-// Two guards, because the two words fail differently:
-//   - A stopword alias carries no entity evidence at all, so "an" is dropped
-//     outright. No retrieval system should filter on the article "an".
-//   - A non-stopword alias is ambiguous when it appears in materially more
-//     documents than actually carry the person tag. Measured over this corpus,
-//     every genuine name has df exactly equal to its tagged-document count,
-//     while "van" sits at 2.3x. Ambiguous mentions still feed the entity
-//     rerank feature and the AND-lane boost, which only reorder; they are kept
-//     out of the hard filter and out of looksParaphrase, which delete.
-const AMBIGUOUS_ALIAS_DF_RATIO = 1.25;
-
-function extractOneKind(lowerText, mapOrObj, vocab, docCounts) {
-  const hits = []; // { slug, index, ambiguous }
-  for (const [slug, aliasesRaw] of entriesOf(mapOrObj)) {
-    const aliases = Array.isArray(aliasesRaw) ? aliasesRaw : [aliasesRaw];
-    let earliest = -1;
-    let ambiguous = false;
-    for (const alias of aliases) {
-      const needle = String(alias ?? "").toLowerCase().trim();
-      if (!needle || STOPWORDS.has(needle)) continue;
-      const re = new RegExp(`\\b${escapeRe(needle)}\\b`);
-      const idx = lowerText.search(re);
-      if (idx < 0) continue;
-      if (earliest === -1 || idx < earliest) earliest = idx;
-      const tagged = docCounts instanceof Map ? docCounts.get(slug) : docCounts?.[slug];
-      const df = dfLookup(vocab, stem(needle));
-      if (tagged > 0 && df !== undefined && df > tagged * AMBIGUOUS_ALIAS_DF_RATIO) ambiguous = true;
-    }
-    if (earliest >= 0) hits.push({ slug, index: earliest, ambiguous });
-  }
-  hits.sort((a, b) => a.index - b.index);
-  return hits;
-}
-
+// All five moved to scripts/lib/retrieval/, which the product's recall verb
+// (scripts/recall.mjs) imports too. They were duplicated for exactly as long
+// as the bench was the only caller; the moment recall.mjs started running the
+// same design, one copy of each became the only way the two could not drift.
+// The shared files are pure -- no database, no model, no config of their own
+// -- and every one of them takes cfg explicitly, so the bench keeps passing
+// its own frozen config and behaves exactly as it did before the move.
+//
+// Re-exported here rather than re-pointed at the call sites, because
+// bench-recall.mjs, load.mjs, and fit-rerank.mjs all import these from this
+// module and DESIGN.md 3.6 names engine.mjs as where they live.
 // ---------------------------------------------------------------------------
-// parseQueryFeatures
-// ---------------------------------------------------------------------------
+
+import {
+  STOPWORDS,
+  tokenize as sharedTokenize,
+  stem as sharedStem,
+} from "../../scripts/lib/retrieval/text.mjs";
+import {
+  EMPTY_VOCAB,
+  parseQueryFeatures as sharedParseQueryFeatures,
+  laneWeights as sharedLaneWeights,
+} from "../../scripts/lib/retrieval/features.mjs";
+
+export const tokenize = sharedTokenize;
+export const stem = sharedStem;
 
 export function parseQueryFeatures(text, vocab, cfg = defaultConfig) {
-  const raw = String(text ?? "");
-  const lower = raw.toLowerCase();
-  const v = vocab ?? EMPTY_VOCAB;
-  const w = cfg.weighting;
-
-  const { terms, quoted } = tokenize(raw);
-  // Pure-digit tokens (years, mostly) are handled by the dedicated date
-  // parser below and excluded here: no word vocabulary tracks bare numbers,
-  // so a literal "2024" is always OOV and was silently forcing every
-  // date_filter query to look typoSuspect regardless of its actual words.
-  const contentTerms = terms.filter((t) => !STOPWORDS.has(t) && !/^\d+$/.test(t));
-  // Key df lookups with the SAME stemmer that built the index. This file's own
-  // stem() is a near-copy, but the two disagree on doubled consonants
-  // ("scrubbed" -> scrub here, scrubb there), and every disagreement reads as
-  // an out-of-vocabulary term that never happened -- which inflates oovRatio
-  // and suppresses maxIdf, the two features every weighting rule keys on.
-  const stemFor = typeof v.stem === "function" ? v.stem : stem;
-  const stems = contentTerms.map(stemFor);
-
-  let idfSum = 0;
-  let idfCount = 0;
-  let maxIdf = 0;
-  let oovCount = 0;
-  const rareSet = new Set();
-  const N = Math.max(1, v.totalDocs ?? 1);
-  for (const s of stems) {
-    const df = dfLookup(v, s);
-    if (df === undefined || df <= 0) {
-      oovCount += 1;
-      continue;
-    }
-    const idf = Math.log(N / df);
-    idfSum += idf;
-    idfCount += 1;
-    if (idf > maxIdf) maxIdf = idf;
-    if (idf >= w.rareIdfFloor) rareSet.add(s);
-  }
-  const meanIdf = idfCount > 0 ? idfSum / idfCount : 0;
-  const oovRatio = stems.length > 0 ? oovCount / stems.length : 0;
-
-  const entities = extractEntities(lower, v);
-  const dateRange = parseDateRange(lower, cfg);
-
-  // Confident mentions only: "our hired van showed up late" is a paraphrase
-  // query, and letting the vehicle disqualify it costs the whole vector
-  // up-weighting this family depends on.
-  const looksParaphrase =
-    terms.length >= w.paraphrase.minTerms &&
-    oovRatio >= w.paraphrase.oovFloor &&
-    entities.peopleConfident.length === 0 &&
-    entities.places.length === 0;
-  // Length is what separates a mistyped query from a reworded one; both are
-  // out-of-vocabulary, and only the short one wants the trigram lane.
-  const typoSuspect = oovRatio >= w.oovRatioFloor && terms.length <= w.typoMaxTerms;
-
-  return {
-    raw,
-    terms,
-    stems,
-    maxIdf,
-    meanIdf,
-    rareTerms: [...rareSet],
-    oovRatio,
-    entities,
-    dateRange,
-    quoted,
-    looksParaphrase,
-    typoSuspect,
-  };
+  return sharedParseQueryFeatures(text, vocab, cfg);
 }
 
-// ---------------------------------------------------------------------------
-// laneWeights (section 6.3)
-// ---------------------------------------------------------------------------
-
-const LANES = ["and", "or", "vector", "trigram"];
-
 export function laneWeights(features, profile, cfg = defaultConfig) {
-  if (profile.weighting === "fixed") {
-    const weights = profile.weights ?? {};
-    const out = {};
-    for (const lane of LANES) out[lane] = weights[lane] ?? 0;
-    return out;
-  }
-  if (profile.weighting !== "query-dependent") {
-    throw new Error(`laneWeights: unknown weighting mode "${profile.weighting}"`);
-  }
-  const w = cfg.weighting;
-  const out = { ...w.base };
-  const addAll = (delta) => {
-    for (const [lane, amount] of Object.entries(delta ?? {})) out[lane] = (out[lane] ?? 0) + amount;
-  };
-  // Section 6.3's rules, applied additively; clamp once at the end so a
-  // query matching several rules (rare-term AND paraphrase, say) still
-  // lands where the sum of deltas says before any single rule saturates it.
-  if (features.maxIdf >= w.rareIdfFloor) addAll(w.rareTermBoost);
-  if (features.looksParaphrase) addAll(w.paraphraseBoost);
-  if (features.typoSuspect) addAll(w.typoBoost);
-  if (features.entities.people.length > 0) addAll(w.entityBoost);
-  if (features.dateRange.from || features.dateRange.to) addAll(w.dateBoost);
-  for (const lane of LANES) out[lane] = Math.min(3, Math.max(0, out[lane] ?? 0));
-  return out;
+  return sharedLaneWeights(features, profile, cfg);
 }
 
 // ---------------------------------------------------------------------------
