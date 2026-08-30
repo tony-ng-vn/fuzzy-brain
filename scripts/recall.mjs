@@ -36,16 +36,28 @@ const RRF_K = 60; // standard reciprocal-rank-fusion damping constant
 // turns. Modest on purpose -- a clearly better assistant hit still wins.
 const TONY_BOOST = 1.2;
 
-// Cosine thresholds calibrated 2026-07-16 against nomic-embed-text-v1.5 on
-// representative pairs: direct answers/paraphrases scored 0.73-0.77,
-// topic-adjacent fragments ~0.58, natural-language junk at or below 0.43.
-// One measured trap drives the corroboration rule below: garbage queries
-// (random letter soup) score ~0.60 against machine-voice spans full of
-// code tokens, overlapping the topic-adjacent band -- so a sub-STRONG
-// vector hit is only trusted when a text lane also matched the same row;
-// uncorroborated ones are indistinguishable from centroid noise and drop.
-const SIM_STRONG = 0.65;
+// Cosine thresholds for nomic-embed-text-v1.5, recalibrated 2026-08-30
+// against the brain_dev corpus (451 embedded spans of real session text).
+// 150 random letter-soup queries landed at p50 0.6135, p99 0.6508, max
+// 0.6510: garbage never scores near zero, because a nonsense query still
+// lands somewhere in the machine-voice centroid. Real answers and
+// paraphrases scored 0.72-0.87, the floor of that band being 0.7438 for a
+// paraphrase with no shared words at all. STRONG sits in the empty gap
+// between the two, with about 0.05 of margin on each side.
+//
+// The old 0.65 sat on the garbage ceiling itself and let roughly one soup
+// query in fifty read as evidence. Note the ceiling is a max over the
+// corpus, so it creeps up as brain_dev grows; re-measure when it does.
+//
+// SIM_FLOOR keeps the corroboration rule below: a sub-STRONG vector hit is
+// trusted only when a text lane matched the same row. Uncorroborated ones
+// are indistinguishable from centroid noise and drop.
+const SIM_STRONG = 0.7;
 const SIM_FLOOR = 0.5;
+
+// One row earns "strong" the same way everywhere: an exact lexical match, or
+// a vector hit clear of the garbage band. Fragments are handled separately.
+const isStrongHit = (c) => c.strongLex || (c.sim ?? 0) >= SIM_STRONG;
 
 function clip(text, max) {
   return text.length > max ? `${text.slice(0, max)} ...` : text;
@@ -177,9 +189,7 @@ async function findCandidates(client, tables, question, queryVec) {
   }
   // The corroboration rule (see the threshold comment): a weak vector hit
   // with no lexical echo anywhere is centroid noise, not a fragment.
-  const candidates = [...byKey.values()].filter(
-    (c) => c.strongLex || c.weakLex || (c.sim ?? 0) >= SIM_STRONG,
-  );
+  const candidates = [...byKey.values()].filter((c) => c.weakLex || isStrongHit(c));
   for (const c of candidates) {
     if (c.layer === "evidence" && c.row.speaker === "tony") c.score *= TONY_BOOST;
   }
@@ -208,9 +218,8 @@ async function attachEdges(client, tables, candidates) {
 }
 
 export function classifyState(candidates) {
-  const isStrong = (c) => c.strongLex || (c.sim ?? 0) >= SIM_STRONG;
-  const strongNodes = candidates.filter((c) => c.layer === "node" && isStrong(c));
-  const strongEvidence = candidates.filter((c) => c.layer === "evidence" && isStrong(c));
+  const strongNodes = candidates.filter((c) => c.layer === "node" && isStrongHit(c));
+  const strongEvidence = candidates.filter((c) => c.layer === "evidence" && isStrongHit(c));
   if (candidates.length === 0) return "missing";
   // Disagreement is never inferred by the machine: it counts only when Tony
   // ratified it himself, as a contradicts-flavored why on an edge touching
