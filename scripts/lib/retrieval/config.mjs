@@ -26,7 +26,16 @@ export const retrievalDefaults = {
   trigramThreshold: 0.4,
 
   weighting: {
-    base: { and: 1.0, or: 1.3, vector: 1.0, trigram: 0.0 },
+    // DIFFERS from the bench, which sets or to 1.3. That number was tuned for
+    // the bench's partial_ref family -- queries deliberately built as
+    // half-remembered fragments -- and the brain has no such family. Measured
+    // over 18 real-shaped questions against brain_dev, 1.3 changed exactly one
+    // answer against 1.0, and changed it for the worse: an OR-lane fragment
+    // pushed a strong vector hit out of the top ten and the state fell from
+    // "evidence" to "partial". The OR lane is what feeds "partial", so
+    // ranking it above the exact lane inverts the ordering this store is
+    // about. 0.8 measured identical to 1.0, so 1.0 it is.
+    base: { and: 1.0, or: 1.0, vector: 1.0, trigram: 0.0 },
     // DIFFERS from the bench, which also adds 0.2 to trigram here. At brain
     // scale the rare-term rule fires on most specific questions (any word in
     // three rows or fewer clears the floor below), and the trigram lane costs
@@ -50,12 +59,17 @@ export const retrievalDefaults = {
     // brain grows.
     rareIdfFloor: 5.0,
     oovRatioFloor: 0.34,
-    // DIFFERS from the bench (minTerms 16). The bench's paraphrase family is
-    // generated at a median of 25 terms; a person types 5 to 12. 8 is the
-    // smallest length that cannot collide with typoMaxTerms below, which
-    // matters because the two rules pull the AND lane in the same direction
-    // and firing both at once would zero it.
-    paraphrase: { minTerms: 8, oovFloor: 0.5 },
+    // DIFFERS from the bench (minTerms 16, oovFloor 0.5). The bench's
+    // paraphrase family is generated at a median of 25 terms; a person types 5
+    // to 12. 8 is the smallest length that cannot collide with typoMaxTerms
+    // below, which matters because the two rules pull the AND lane in the same
+    // direction and firing both at once would zero it. The floor moves up
+    // because this rule DELETES the OR lane: at 0.5 exactly half the question's
+    // words are in the brain, which is not a rewording, and "what does the
+    // embed sweep actually fill in" lost every fragment it used to find. At
+    // 0.6 the rule fires only when the question really does share almost
+    // nothing with what is stored.
+    paraphrase: { minTerms: 8, oovFloor: 0.6 },
     // DIFFERS from the bench (8), for the collision reason just above: a typo
     // query is short, a paraphrase is long, and 6 versus 8 keeps a gap.
     typoMaxTerms: 6,

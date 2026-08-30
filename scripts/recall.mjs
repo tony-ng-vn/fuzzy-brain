@@ -218,7 +218,7 @@ function buildLaneSql(mode, layer, tables, ctx) {
     where = `${a}.embedding is not null`;
     orderBy = `${a}.embedding <=> ${vecParam}::vector`;
   } else if (mode === "trigram") {
-    const q = p.bind(ctx.question);
+    const q = p.bind(ctx.trigramQuery);
     laneScore = `word_similarity(${q}, ${trigramText})`;
     where = `${q} <% ${trigramText}`;
     orderBy = "lane_score desc";
@@ -311,6 +311,12 @@ async function findCandidates(client, tables, question, queryVec, notes) {
 
   const ctx = {
     question,
+    // The trigram lane reads the question's content words only, never the raw
+    // sentence. Measured against brain_dev: "where is the kite festival"
+    // matched "where is the url to the site?" at word similarity above 0.4 on
+    // the strength of "where is the" alone. A shared stopword prefix is not a
+    // typo, and a lane meant to rescue misspellings must not rank on it.
+    trigramQuery: contentTerms.join(" "),
     orQuery,
     lexemes: contentTerms,
     fragmentBar,
@@ -328,6 +334,7 @@ async function findCandidates(client, tables, question, queryVec, notes) {
     if ((weights[mode] ?? 0) === 0) continue;
     if (mode === "or" && !orQuery) continue;
     if (mode === "vector" && !ctx.vecLiteral) continue;
+    if (mode === "trigram" && !ctx.trigramQuery) continue;
     active.push(mode);
   }
 
