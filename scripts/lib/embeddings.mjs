@@ -55,3 +55,75 @@ export async function embedDocument(text) {
 export async function embedQuery(text) {
   return (await embed("search_query", [text]))[0];
 }
+
+/** Normalise query text for cache-key comparison: trim, collapse whitespace, lowercase. */
+export function normalizeQueryText(text) {
+  return String(text).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Small bounded LRU cache backed by a Map. Map iteration order is insertion
+ * order, so re-inserting a touched key on every get/set keeps the least-
+ * recently-used entry first for O(1) eviction.
+ */
+export class LruCache {
+  #capacity;
+  #map = new Map();
+
+  constructor(capacity) {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new Error(`LruCache capacity must be a positive integer, got ${capacity}`);
+    }
+    this.#capacity = capacity;
+  }
+
+  get size() {
+    return this.#map.size;
+  }
+
+  get(key) {
+    if (!this.#map.has(key)) return undefined;
+    const value = this.#map.get(key);
+    this.#map.delete(key);
+    this.#map.set(key, value); // move to the most-recently-used position
+    return value;
+  }
+
+  set(key, value) {
+    this.#map.delete(key);
+    this.#map.set(key, value);
+    if (this.#map.size > this.#capacity) {
+      const oldestKey = this.#map.keys().next().value;
+      this.#map.delete(oldestKey);
+    }
+  }
+
+  clear() {
+    this.#map.clear();
+  }
+}
+
+// Recall re-asks near-duplicate questions often enough (retries, typos, the
+// same session revisiting a topic) that skipping a ~20ms model call on a
+// repeat is worth a small fixed-size cache.
+const DEFAULT_QUERY_CACHE_CAPACITY = 500;
+const queryEmbeddingCache = new LruCache(DEFAULT_QUERY_CACHE_CAPACITY);
+
+/**
+ * Embed a query through a bounded LRU cache keyed by normalised text.
+ * cache/embedFn are injectable so tests and benchmarks can drive this
+ * without touching the real model.
+ */
+export async function embedQueryCached(text, { cache = queryEmbeddingCache, embedFn = embedQuery } = {}) {
+  const key = normalizeQueryText(text);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const vector = await embedFn(text);
+  cache.set(key, vector);
+  return vector;
+}
+
+/** Drop every entry from the process-wide query embedding cache. */
+export function clearQueryEmbeddingCache() {
+  queryEmbeddingCache.clear();
+}
