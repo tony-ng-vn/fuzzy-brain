@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import pg from "pg";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -78,7 +79,11 @@ test("recall: hybrid find and epistemic answer states", async (t) => {
     // Fill fixture embeddings (newest-first sweep reaches them first).
     execFileSync("node", [join(root, "scripts", "embed-sweep.mjs"), "--limit", "12"], {
       encoding: "utf8",
-      env: { ...process.env, BRAIN_SCHEMA: "brain_dev" },
+      env: {
+        ...process.env,
+        BRAIN_SCHEMA: "brain_dev",
+        FUZZY_BRAIN_EMBED_LOCK: join(tmpdir(), `fuzzy-brain-recall-embed-${process.pid}.lock`),
+      },
     });
 
     // Inserted AFTER the sweep: stays null-embedding on purpose.

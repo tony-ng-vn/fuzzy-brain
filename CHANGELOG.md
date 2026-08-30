@@ -4,6 +4,63 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.17.1
+
+Aug 12, 2026
+
+**Tools**
+
+- Notes captured through the share sheet are now attributed the same way notes from every other source are, so recall treats them as Tony's own words and weighs them accordingly.
+  They were labelled with a capital T, which recall did not recognise, so those notes had been quietly missing the boost since the clippings sweep was written.
+  Notes already stored keep their old label, since evidence is never rewritten; anything captured from now on gets the boost.
+
+---
+
+## v0.17.0
+
+Aug 12, 2026
+
+**Tools**
+
+- Video transcripts pasted into the todo app now land in the brain's evidence store on their own, one episode per video, with the title, channel, link, and the date it was watched kept alongside them.
+- Each transcript is stored in pieces cut at its own timestamps, so every piece opens with the moment it was said and a quote can be traced straight back to that point in the video.
+- Notes written about a video are stored as Tony's own words, which is the attribution recall leans on when it decides what is worth bringing up.
+- The hourly sync now runs this sweep between session ingest and embeddings, so a transcript pasted on the phone is searchable by the next cycle.
+  If the todo app's backend cannot be reached, that step is skipped and the rest of the sync still finishes.
+- Re-running is always safe: a video already captured is never stored twice, and a run that landed a transcript but never got to tell the app about it finishes that half on its next pass.
+- `npm run watch:sweep` runs the sweep by hand, and `--dry-run` reports what would land without writing anything anywhere.
+
+---
+
+## v0.16.0
+
+Aug 6, 2026
+
+**Data**
+
+- Deadlines and completion status now live in an append-only temporal event ledger, so the brain can know what is overdue, upcoming, or finished without rewriting old nodes or their raw words.
+- Automatic deadlines now require explicit deadline language and a current or future date, can be cleared through another append-only event, and render with the correct Los Angeles calendar date.
+- The two completed August goals are recorded as finished, and the Stripe Atlas offer remains active through August 5, 2027.
+
+**API**
+
+- A local MCP server now gives Codex and other compatible agents five guarded tools for recall, reminders, node reads, explicit memory capture, and explicit completion.
+- MCP writes now require matching explicit user command language in addition to the trusted local-client boundary.
+- The in-app and command-line node paths now recognize clear deadline language and create temporal metadata in the same transaction as the node.
+
+**Tools**
+
+- A macOS LaunchAgent can now ingest settled Claude Code and Codex sessions every hour into the unratified evidence store, then fill a bounded number of local embeddings; absolute executable paths and a cross-process lock keep scheduled and manual runs reliable.
+- Resumed sessions now append only their unseen turns, and malformed allowlists or settlement windows fail closed before any cloud write.
+- Embedding sweeps now process one document at a time, release native tensors, and refuse overlapping runs so unattended sync cannot exhaust the Mac.
+
+**Docs**
+
+- The companion ritual now distinguishes an explicit remember or completion command from ordinary conversation, and documents the fusion bridge's truth, privacy, reminder, and operating boundaries.
+- The fusion guide now includes a reproducible Codex registration command for a stable checkout.
+
+---
+
 ## v0.15.0
 
 Jul 21, 2026

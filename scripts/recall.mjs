@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { schemaTables, makeClient } from "./brain.mjs";
-import { embedQuery } from "./lib/embeddings.mjs";
+import { disposeEmbeddingModel, embedQuery } from "./lib/embeddings.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -325,7 +325,11 @@ async function main() {
     };
     console.log(json ? JSON.stringify(result, null, 2) : formatHuman(result));
   } finally {
-    await client.end();
+    try {
+      await client.end();
+    } finally {
+      await disposeEmbeddingModel();
+    }
   }
 }
 

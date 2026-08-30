@@ -45,6 +45,25 @@ test("brain-cli: shell-outs to brain.mjs carry a timeout and the batch-sized buf
   assert.ok(CLI_EXEC_OPTS.maxBuffer >= 64 * 1024 * 1024);
 });
 
+test("brain-cli uses the absolute current Node executable for launchd", async () => {
+  const source = await import("node:fs").then(({ readFileSync }) =>
+    readFileSync(join(root, "scripts", "lib", "brain-cli.mjs"), "utf8"),
+  );
+  assert.match(source, /execFileSync\(process\.execPath/);
+  assert.doesNotMatch(source, /execFileSync\(["']node["']/);
+});
+
+test("the watch sweep resolves npx absolutely, and hands the child a Node to run", async () => {
+  const source = await import("node:fs").then(({ readFileSync }) =>
+    readFileSync(join(root, "scripts", "sweep-watch-items.mjs"), "utf8"),
+  );
+  // Same lesson as brain-cli above, one layer out: launchd's PATH has
+  // neither npx nor the node its shebang goes looking for.
+  assert.doesNotMatch(source, /execFileSync\(["']npx["']/);
+  assert.match(source, /execFileSync\(resolveNpxPath\(\)/);
+  assert.match(source, /PATH: `\$\{dirname\(process\.execPath\)\}/);
+});
+
 test("sweepTable: fills null rows and stops when the table is drained", async () => {
   const embedCalls = [];
   const updates = [];
@@ -72,8 +91,8 @@ test("sweepTable: fills null rows and stops when the table is drained", async ()
   });
   assert.equal(filled, 2);
   assert.equal(updates.length, 1);
-  // Length-sorted before embedding: the short quote leads its batch.
-  assert.deepEqual(embedCalls[0], ["hi", "long quote here"]);
+  // Length-sorted before embedding, with one document per inference call.
+  assert.deepEqual(embedCalls, [["hi"], ["long quote here"]]);
 });
 
 test("sweepTable: stops instead of spinning when pages make no progress", async () => {

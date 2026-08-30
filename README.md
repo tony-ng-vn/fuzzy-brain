@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Fuzzy Brain
 
-## Getting Started
+Fuzzy Brain is Tony's append-mostly personal memory: ratified nodes and human-approved why-edges beside a larger, explicitly unratified evidence store.
 
-First, run the development server:
+The local app renders the brain.
+The command-line tools and local MCP server let Codex and other agents recall it, save explicit memories, understand deadlines, and append completion events without rewriting history.
+
+## Local setup
 
 ```bash
+npm install
+cp .env.example .env.local
+npm run db:migrate
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3010](http://localhost:3010).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Brain tools
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+node scripts/brain.mjs index
+node scripts/brain.mjs show <node-id>
+node scripts/brain.mjs list-reminders
+node scripts/recall.mjs "<question>" --json
+```
 
-## Learn More
+Write commands accept JSON on stdin.
+There are deliberately no node-delete or set-raw commands.
 
-To learn more about Next.js, take a look at the following resources:
+## Fusion bridge
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The local MCP server exposes `recall`, `list_reminders`, `get_node`, `remember`, and `mark_complete`.
+Its instructions tell compatible agents to query Fuzzy Brain automatically for questions about Tony's past, people, preferences, goals, deadlines, and unfinished work.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The scheduled sync ingests settled Claude Code and Codex sessions into the unratified evidence store, then fills a bounded number of missing local embeddings.
+It does not promote session text into ratified nodes.
 
-## Deploy on Vercel
+Setup, privacy boundaries, operations, and verification are documented in [docs/fusion-bridge.md](docs/fusion-bridge.md).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+That guide also includes the durable `codex mcp add fuzzy-brain` registration command for a stable checkout.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Verification
+
+```bash
+npm test
+npm run lint
+npm run build
+```
