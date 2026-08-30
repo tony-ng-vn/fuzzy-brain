@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Benchmark scratch: gitignored, so CI never sees these and neither should
+    // a local lint run. They are throwaway readers the bench scripts write.
+    "experiments/recall-bench/.out/**",
+    "experiments/recall-bench/.data/**",
   ]),
 ]);
 
