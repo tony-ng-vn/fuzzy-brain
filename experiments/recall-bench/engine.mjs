@@ -804,7 +804,17 @@ export async function retrieve(client, query, ctx) {
   const kind = tierKind(tier);
 
   const qf = parseQueryFeatures(text, vocab, cfg);
-  const weights = laneWeights(qf, profile, cfg);
+  // A profile may carry its own weighting-block override (config.mjs's
+  // `learned` profile does, from fit-rerank.mjs --fit-lanes) rather than
+  // reading cfg.weighting as-is. Merged here, at the one call site that
+  // needs it, instead of inside laneWeights() itself -- that function now
+  // lives in scripts/lib/retrieval/features.mjs, shared with the product's
+  // own recall verb, and this override is a recall-bench-only concept with
+  // no reason to touch a module neither owns exclusively.
+  const weightingCfg = profile.weightingOverrides
+    ? { ...cfg, weighting: { ...cfg.weighting, ...profile.weightingOverrides } }
+    : cfg;
+  const weights = laneWeights(qf, profile, weightingCfg);
   // The trigram lane costs a word_similarity over every row the (unselective)
   // trigram index hands back -- measured ~1.4 s of the ~1.76 s a tuned query
   // took at 50K. Its base weight is 0, so on the ~85% of queries that are

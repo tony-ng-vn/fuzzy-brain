@@ -518,7 +518,11 @@ async function main() {
     console.log(`report written: ${outPath}`);
 
     if (args.split === 'test') {
-      const configHash = createHash('sha256').update(JSON.stringify({ profile: args.profile, weighting: config.weighting, rerank: config.rerank, lanes: config.lanes })).digest('hex');
+      // The resolved profile object, not just its name: a profile can carry
+      // its own weightingOverrides/rerankWeights (config.mjs's `learned`
+      // profile does), and a hash of only config.weighting/config.rerank
+      // would record the committed values for a run that used neither.
+      const configHash = createHash('sha256').update(JSON.stringify({ profile: args.profile, resolvedProfile: profile, weighting: config.weighting, rerank: config.rerank, lanes: config.lanes })).digest('hex');
       const logLine = JSON.stringify({
         timestamp: new Date().toISOString(),
         tier: args.tier,

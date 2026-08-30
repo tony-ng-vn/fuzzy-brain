@@ -376,6 +376,29 @@ export const config = {
                   weights: { and: 1, or: 1, vector: 1 }, filters: false, rerank: false },
     tuned:      { lanes: ["and", "or", "vector", "trigram"], weighting: "query-dependent",
                   filters: true, rerank: true },
+    // Fitted from the dev split by fit-rerank.mjs --fit-lanes (coordinate
+    // descent over the multipliers in `weighting` below; DESIGN.md 7.7).
+    // rerank.weights stayed at the committed values -- fit-rerank.mjs's
+    // logistic-regression fit for those scored WORSE than committed on dev
+    // (0.980 vs 0.989) and was not adopted. weightingOverrides replaces the
+    // named sub-object wholesale where present; base.trigram and the whole
+    // of rareTermBoost are absent on purpose (rareTermBoost never fires on
+    // this corpus -- measured dev maxIdf tops out at 8.87, under the 9.5
+    // floor -- and base.trigram has no affordable way to gather real data
+    // for the ~85% of dev queries the committed profile never runs the
+    // trigram lane on; see fit-rerank.mjs's file header). Measured dev
+    // recall@10: 0.989 -> 0.998, paired bootstrap delta vs `tuned` on dev
+    // [0.004, 0.015] (excludes 0). See .out/quality50k/learned-weights.json
+    // for the full comparison and the per-weight bootstrap CIs.
+    learned:    { lanes: ["and", "or", "vector", "trigram"], weighting: "query-dependent",
+                  filters: true, rerank: true,
+                  weightingOverrides: {
+                    base:            { and: 2.6, or: 0.2, vector: -1.4 },
+                    paraphraseBoost: { vector: 1.6, or: -1.3, and: -0.7 },
+                    typoBoost:       { trigram: 0.2, and: -0.8 },
+                    entityBoost:     { and: 2 },
+                    dateBoost:       { vector: 0.2 },
+                  } },
     // Claim B's wording is FTS/GIN + ANN + metadata filters + rerank; trigram is
     // not in it, and a trigram GIN over 10M x 200 chars would cost 5-8 GB and blow
     // the disk budget. The trigram lane is quality-tier only, and the scale tier
