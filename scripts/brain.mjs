@@ -1,8 +1,10 @@
 // The brain companion's read/write tool. One place so a talking session never
 // hand-rolls SQL or env loading. Reads: `index` (the whole brain, gist only,
 // plus the latest talk recap) and `show <id...>` (both layers of a node).
-// Writes: `add-node`, `add-edge`, `set-readable <id>`, `add-talk`, each reading
-// one JSON object from stdin so bodies and whys keep their newlines and quotes.
+// Writes: `add-node`, `add-edge`, `set-readable <id>`, `set-deadline <id>`,
+// `clear-deadline <id>`,
+// `mark-complete`, and `add-talk`, each reading one JSON object from stdin so
+// bodies, raw authorization, and whys keep their newlines and quotes.
 // `dump` prints the entire brain as JSON for a snapshot in Tony's own hands.
 // Deliberately absent, as protection by omission: no set-raw, no delete verbs.
 // The database CHECKs on raw, why, and recap are the final gates (AGENTS.md);
@@ -11,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
+import { formatLocalDate, formatReminderSummary, inferDeadline, normalizeTimestamp } from "./lib/temporal.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -50,6 +53,8 @@ export function schemaTables(schema) {
     nodes: `${prefix}nodes`,
     edges: `${prefix}edges`,
     talks: `${prefix}talks`,
+    temporalEvents: `${prefix}node_temporal_events`,
+    temporalState: `${prefix}node_temporal_state`,
     sources: `${prefix}sources`,
     episodes: `${prefix}episodes`,
     evidence: `${prefix}evidence`,
@@ -105,7 +110,9 @@ export function formatIndex(nodes, edges, latestTalk = null) {
   }
   lines.push("NODES");
   for (const n of nodes) {
-    lines.push(`  ${isoDate(n.created_at)}  ${n.type || "(untyped)"}  ${n.title}`);
+    const status = n.status && n.status !== "active" ? `  [${n.status}]` : "";
+    const due = n.due_at && n.status !== "completed" ? `  [due ${formatLocalDate(n.due_at)}]` : "";
+    lines.push(`  ${isoDate(n.created_at)}  ${n.type || "(untyped)"}${status}${due}  ${n.title}`);
     lines.push(`    ${n.id}`);
   }
   lines.push("");
@@ -123,7 +130,11 @@ export function formatShow(nodes) {
   return nodes
     .map((n) => {
       const head = `[${n.type || "(untyped)"}] ${n.title}  (${isoDate(n.created_at)})\n${n.id}`;
-      return `${head}\n\nREADABLE\n${n.body}\n\nRAW\n${n.raw}`;
+      const state = [
+        `status  ${n.status ?? "active"}`,
+        n.due_at ? `due     ${new Date(n.due_at).toISOString()}` : null,
+      ].filter(Boolean).join("\n");
+      return `${head}\n\nSTATE\n${state}\n\nREADABLE\n${n.body}\n\nRAW\n${n.raw}`;
     })
     .join("\n\n----\n\n");
 }
@@ -256,7 +267,12 @@ async function main() {
 
     if (!command || command === "index") {
       const nodes = (
-        await client.query(`select id, type, title, created_at from ${tables.nodes} order by created_at asc`)
+        await client.query(
+          `select n.id, n.type, n.title, n.created_at, ts.status, ts.due_at
+           from ${tables.nodes} n
+           join ${tables.temporalState} ts on ts.node_id = n.id
+           order by n.created_at asc`,
+        )
       ).rows;
       const edges = (
         await client.query(
@@ -274,21 +290,127 @@ async function main() {
     } else if (command === "show") {
       if (args.length === 0) throw new Error("show needs at least one node id");
       const { rows } = await client.query(
-        `select id, type, title, body, raw, created_at from ${tables.nodes} where id = any($1::uuid[])`,
+        `select n.id, n.type, n.title, n.body, n.raw, n.created_at,
+                ts.status, ts.status_changed_at, ts.due_at, ts.temporal_origin
+         from ${tables.nodes} n
+         join ${tables.temporalState} ts on ts.node_id = n.id
+         where n.id = any($1::uuid[])`,
         [args],
       );
       console.log(formatShow(rows));
+    } else if (command === "get-node") {
+      const [id] = args;
+      if (!id) throw new Error("get-node needs a node id");
+      const { rows, rowCount } = await client.query(
+        `select n.id, n.type, n.title, n.body, n.raw, n.created_at,
+                ts.status, ts.status_changed_at, ts.due_at, ts.temporal_origin
+         from ${tables.nodes} n
+         join ${tables.temporalState} ts on ts.node_id = n.id
+         where n.id = $1`,
+        [id],
+      );
+      if (rowCount === 0) throw new Error(`no node with id ${id}`);
+      console.log(JSON.stringify(rows[0], null, 2));
     } else if (command === "add-node") {
-      const { type, title, raw, body } = JSON.parse(await readStdin());
+      const { type, title, raw, body, deadline_at, deadline_origin } = JSON.parse(await readStdin());
       if (!title) throw new Error("a node needs a title");
       if (!raw || !raw.trim()) throw new Error("a node needs its raw: Tony's verbatim words");
       // A deliberately written thought is its own readable; body falls back to raw.
       const readable = body && body.trim() ? body : raw;
+      const inferredDeadline = deadline_at
+        ? { dueAt: normalizeTimestamp(deadline_at), origin: deadline_origin === "explicit" ? "explicit" : "derived" }
+        : inferDeadline({ type, title, text: raw });
+      const dueAt = inferredDeadline?.dueAt ?? null;
+      await client.query("begin");
+      try {
+        const { rows } = await client.query(
+          `insert into ${tables.nodes} (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, created_at`,
+          [type ?? "", title, readable, raw],
+        );
+        if (dueAt) {
+          await client.query(
+            `insert into ${tables.temporalEvents} (node_id, event_type, value_at, raw, origin)
+             values ($1, 'deadline_set', $2, $3, $4)`,
+            [rows[0].id, dueAt, raw, inferredDeadline.origin],
+          );
+        }
+        await client.query("commit");
+        console.log(JSON.stringify({ ...rows[0], due_at: dueAt }, null, 2));
+      } catch (err) {
+        await client.query("rollback");
+        throw err;
+      }
+    } else if (command === "set-deadline") {
+      const [id] = args;
+      if (!id) throw new Error("set-deadline needs a node id");
+      const { due_at, raw, origin } = JSON.parse(await readStdin());
+      if (!raw || !raw.trim()) throw new Error("set-deadline needs Tony's authorizing raw words");
+      const dueAt = normalizeTimestamp(due_at);
       const { rows } = await client.query(
-        `insert into ${tables.nodes} (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, created_at`,
-        [type ?? "", title, readable, raw],
+        `insert into ${tables.temporalEvents} (node_id, event_type, value_at, raw, origin)
+         values ($1, 'deadline_set', $2, $3, $4)
+         returning id, node_id, event_type, value_at, occurred_at, raw, origin, created_at`,
+        [id, dueAt, raw, origin === "explicit" ? "explicit" : "derived"],
       );
       console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "clear-deadline") {
+      const [id] = args;
+      if (!id) throw new Error("clear-deadline needs a node id");
+      const { raw } = JSON.parse(await readStdin());
+      if (!raw || !raw.trim()) throw new Error("clear-deadline needs Tony's authorizing raw words");
+      const { rows } = await client.query(
+        `insert into ${tables.temporalEvents} (node_id, event_type, raw, origin)
+         values ($1, 'deadline_cleared', $2, 'explicit')
+         returning id, node_id, event_type, occurred_at, raw, origin, created_at`,
+        [id, raw],
+      );
+      console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "mark-complete") {
+      const { node_ids, raw, occurred_at } = JSON.parse(await readStdin());
+      if (!Array.isArray(node_ids) || node_ids.length === 0) throw new Error("mark-complete needs node_ids");
+      if (!raw || !raw.trim()) throw new Error("mark-complete needs Tony's verbatim authorization");
+      const occurredAt = occurred_at ? normalizeTimestamp(occurred_at) : new Date().toISOString();
+      await client.query("begin");
+      try {
+        const existing = await client.query(
+          `select n.id, n.title, ts.status
+           from ${tables.nodes} n
+           join ${tables.temporalState} ts on ts.node_id = n.id
+           where n.id = any($1::uuid[])`,
+          [node_ids],
+        );
+        if (existing.rowCount !== new Set(node_ids).size) throw new Error("one or more completion targets do not exist");
+        const pending = existing.rows.filter((row) => row.status !== "completed");
+        const inserted = [];
+        for (const row of pending) {
+          const event = await client.query(
+            `insert into ${tables.temporalEvents} (node_id, event_type, occurred_at, raw, origin)
+             values ($1, 'completed', $2, $3, 'explicit')
+             returning id, node_id, event_type, occurred_at, raw, origin, created_at`,
+            [row.id, occurredAt, raw],
+          );
+          inserted.push(event.rows[0]);
+        }
+        await client.query("commit");
+        console.log(JSON.stringify({ completed: pending.map((row) => ({ id: row.id, title: row.title })), already_completed: existing.rows.filter((row) => row.status === "completed").map((row) => ({ id: row.id, title: row.title })), events: inserted }, null, 2));
+      } catch (err) {
+        await client.query("rollback");
+        throw err;
+      }
+    } else if (command === "list-reminders") {
+      const atArg = args.find((arg) => arg.startsWith("--at="));
+      const at = atArg ? new Date(normalizeTimestamp(atArg.slice(5))) : new Date();
+      const { rows } = await client.query(
+        `select n.id as node_id, n.type, n.title, ts.status, ts.status_changed_at,
+                ts.due_at, ts.temporal_origin
+         from ${tables.nodes} n
+         join ${tables.temporalState} ts on ts.node_id = n.id
+         where ts.status = 'active' and ts.due_at is not null
+         order by ts.due_at asc, n.created_at asc`,
+      );
+      const overdue = rows.filter((row) => row.due_at && new Date(row.due_at) < at);
+      const upcoming = rows.filter((row) => new Date(row.due_at) >= at);
+      console.log(JSON.stringify({ at: at.toISOString(), overdue, upcoming, summary: formatReminderSummary(rows, at) }, null, 2));
     } else if (command === "add-edge") {
       const { source, target, why } = JSON.parse(await readStdin());
       // No client-side why check: the CHECK constraint is the one true gate.
@@ -443,7 +565,8 @@ async function main() {
       const nodes = (await client.query(`select * from ${tables.nodes} order by created_at asc`)).rows;
       const edges = (await client.query(`select * from ${tables.edges} order by created_at asc`)).rows;
       const talks = (await client.query(`select * from ${tables.talks} order by created_at asc`)).rows;
-      console.log(JSON.stringify({ dumped_at: new Date().toISOString(), nodes, edges, talks }, null, 2));
+      const temporal_events = (await client.query(`select * from ${tables.temporalEvents} order by created_at asc`)).rows;
+      console.log(JSON.stringify({ dumped_at: new Date().toISOString(), nodes, edges, talks, temporal_events }, null, 2));
     } else {
       throw new Error(`unknown command: ${command}`);
     }

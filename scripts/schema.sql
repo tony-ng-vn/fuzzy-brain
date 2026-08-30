@@ -46,6 +46,92 @@ create table if not exists talks (
   created_at timestamptz not null default now()
 );
 
+-- === Append-only temporal state ===
+-- Deadlines and completion state evolve without rewriting a
+-- node or its immutable raw layer. Each event keeps Tony's authorizing words
+-- (or the ratified node text from which a deadline was mechanically derived).
+create table if not exists node_temporal_events (
+  id uuid primary key default gen_random_uuid(),
+  node_id uuid not null references nodes(id) on delete restrict,
+  event_type text not null,
+  value_at timestamptz,
+  occurred_at timestamptz not null default now(),
+  raw text not null check (length(trim(raw)) > 0),
+  origin text not null check (origin in ('explicit', 'derived')),
+  created_at timestamptz not null default now(),
+  constraint node_temporal_event_type check (event_type in (
+    'deadline_set', 'deadline_cleared', 'completed'
+  )),
+  constraint node_temporal_event_value_shape check (
+    (event_type = 'deadline_set' and value_at is not null)
+    or
+    (event_type <> 'deadline_set' and value_at is null)
+  )
+);
+
+-- Replace the original wider event vocabulary on databases that already
+-- received the first additive migration. Only events with controlled writers
+-- remain in scope.
+alter table node_temporal_events drop constraint if exists node_temporal_events_event_type_check;
+alter table node_temporal_events drop constraint if exists node_temporal_event_type;
+alter table node_temporal_events add constraint node_temporal_event_type check (
+  event_type in ('deadline_set', 'deadline_cleared', 'completed')
+);
+alter table node_temporal_events drop constraint if exists node_temporal_event_value_shape;
+alter table node_temporal_events add constraint node_temporal_event_value_shape check (
+  (event_type = 'deadline_set' and value_at is not null)
+  or
+  (event_type <> 'deadline_set' and value_at is null)
+);
+
+create or replace function reject_public_temporal_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_table_schema = 'public' then
+    raise exception 'public temporal history is append-only';
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists node_temporal_events_append_only on node_temporal_events;
+create trigger node_temporal_events_append_only
+before update or delete on node_temporal_events
+for each row execute function reject_public_temporal_mutation();
+
+create index if not exists node_temporal_events_node_idx
+  on node_temporal_events (node_id, created_at desc, id desc);
+
+-- This view is derived and carries no data. Recreate it transactionally so
+-- migrations can remove obsolete projection columns such as remind_at.
+drop view if exists node_temporal_state;
+create view node_temporal_state as
+select
+  n.id as node_id,
+  coalesce(status_event.status, 'active') as status,
+  status_event.occurred_at as status_changed_at,
+  case when deadline_event.event_type = 'deadline_set' then deadline_event.value_at end as due_at,
+  deadline_event.origin as temporal_origin
+from nodes n
+left join lateral (
+  select
+    'completed' as status,
+    occurred_at
+  from node_temporal_events
+  where node_id = n.id and event_type = 'completed'
+  order by created_at desc, id desc
+  limit 1
+) status_event on true
+left join lateral (
+  select event_type, value_at, origin
+  from node_temporal_events
+  where node_id = n.id and event_type in ('deadline_set', 'deadline_cleared')
+  order by created_at desc, id desc
+  limit 1
+) deadline_event on true;
+
 -- === Evidence store (Phase 1) ===
 -- A second, separate layer alongside nodes/edges/talks above: ingested life
 -- data that is mechanical, high-volume, and NEVER treated as true. Zero
@@ -162,3 +248,34 @@ create index if not exists nodes_fts_idx on nodes using gin (fts);
 -- enter the index, which is how unswept rows stay invisible to it.
 create index if not exists evidence_embedding_idx on evidence using hnsw (embedding vector_cosine_ops);
 create index if not exists nodes_embedding_idx on nodes using hnsw (embedding vector_cosine_ops);
+
+-- === Ratified-why search and the trigram lane (Phase 3, recall v2) ===
+-- Additive only, same discipline as the retrieval columns above: no existing
+-- column, row, or constraint changes.
+
+-- An edge's why sentence is ratified meaning, decided in conversation with
+-- Tony, and until now it was only ever readable by following an edge to a node
+-- that had already been found some other way. Projecting it into a tsvector
+-- makes the reason itself a way in.
+alter table edges add column if not exists fts tsvector
+  generated always as (to_tsvector('english', left(why, 100000))) stored;
+
+create index if not exists edges_fts_idx on edges using gin (fts);
+
+-- pg_trgm powers recall's trigram lane, which is how a mistyped question still
+-- finds its answer. WITH SCHEMA public so the operators resolve from both
+-- public and brain_dev through the migration's search_path, exactly like
+-- vector above.
+create extension if not exists pg_trgm with schema public;
+
+-- Trigram indexes for that lane. The `left(...)` caps are not cosmetic: a
+-- trigram index is far denser than a tsvector one, real spans reach 365k
+-- characters, and the evidence store already holds tens of thousands of rows.
+-- Capping the indexed prefix bounds the index instead of the corpus. Recall's
+-- trigram predicate reads the SAME capped expression, so the index is usable;
+-- text past the cap is reachable through full text and vectors, just not
+-- through trigrams.
+create index if not exists evidence_quote_trgm_idx
+  on evidence using gin (left(quote, 2000) gin_trgm_ops);
+create index if not exists nodes_text_trgm_idx
+  on nodes using gin (left(title || ' ' || body, 4000) gin_trgm_ops);

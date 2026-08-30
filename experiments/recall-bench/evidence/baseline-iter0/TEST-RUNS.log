@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-24T01:32:01.234Z","tier":"quality50k","profile":"naive","configHash":"9ae57dfba374e69ce951fd769856770cf9c11843fd3b5b127efe0a52b5d40f3a","recallAt10":0.53,"recallAt10CI":{"point":0.53,"lower":0.499,"upper":0.561,"resamples":10000,"level":0.95}}
+{"timestamp":"2026-08-24T01:34:12.605Z","tier":"quality50k","profile":"fixedRrf","configHash":"52e244b9534675d958f18fc91e4487f264bf80d50403066b237a1c35b8e7da52","recallAt10":0.82,"recallAt10CI":{"point":0.82,"lower":0.797,"upper":0.843,"resamples":10000,"level":0.95}}

@@ -20,7 +20,7 @@ export const CLI_EXEC_OPTS = Object.freeze({
 });
 
 export function cli(verb, extraArgs = [], input) {
-  const out = execFileSync("node", [brainCli, verb, ...extraArgs], {
+  const out = execFileSync(process.execPath, [brainCli, verb, ...extraArgs], {
     encoding: "utf8",
     input: input === undefined ? undefined : JSON.stringify(input),
     env: process.env,
@@ -37,5 +37,9 @@ export function ensureSource(kind, label) {
 }
 
 export function listExistingLocators(sourceId) {
-  return cli("list-episodes", [sourceId]).map((e) => e.source_locator).filter(Boolean);
+  return listExistingEpisodes(sourceId).map((e) => e.source_locator).filter(Boolean);
+}
+
+export function listExistingEpisodes(sourceId) {
+  return cli("list-episodes", [sourceId]).filter((e) => e.source_locator);
 }

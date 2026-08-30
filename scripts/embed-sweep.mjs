@@ -9,15 +9,22 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import os from "node:os";
+import os, { tmpdir } from "node:os";
 import { schemaTables, makeClient } from "./brain.mjs";
-import { embedDocuments } from "./lib/embeddings.mjs";
+import { disposeEmbeddingModel, embedDocuments } from "./lib/embeddings.mjs";
+import { acquireProcessLock } from "./lib/process-lock.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-// One extractor pass per BATCH texts; a page is one DB fetch of null rows.
-const BATCH = 16;
-const PAGE = 256;
+// Inference stays single-row to bound native memory. Database reads and writes
+// stay paged so the remote connection still costs one round trip per page.
+export const EMBED_BATCH_SIZE = 1;
+export const EMBED_PAGE_SIZE = 64;
+const DEFAULT_SWEEP_LOCK_PATH = join(tmpdir(), "fuzzy-brain-embed-sweep.lock");
+
+export function acquireSweepLock(lockPath = process.env.FUZZY_BRAIN_EMBED_LOCK || DEFAULT_SWEEP_LOCK_PATH) {
+  return acquireProcessLock(lockPath, "an embedding sweep");
+}
 
 function vectorLiteral(vec) {
   return `[${vec.join(",")}]`;
@@ -31,11 +38,15 @@ function nodeText(row) {
   return [row.title, row.raw, body].filter(Boolean).join("\n");
 }
 
+export function remainingLimit(limit, filled) {
+  return limit === null ? null : Math.max(0, limit - filled);
+}
+
 export async function sweepTable(client, { label, selectSql, updateSql, toText, limit, embed = embedDocuments }) {
   let filled = 0;
   let stalledPages = 0;
   for (;;) {
-    const remaining = limit === null ? PAGE : Math.min(PAGE, limit - filled);
+    const remaining = limit === null ? EMBED_PAGE_SIZE : Math.min(EMBED_PAGE_SIZE, limit - filled);
     if (remaining <= 0) break;
     const { rows } = await client.query(selectSql, [remaining]);
     if (rows.length === 0) break;
@@ -43,20 +54,19 @@ export async function sweepTable(client, { label, selectSql, updateSql, toText, 
 
     // Length-sorted batches waste less padding inside the model.
     rows.sort((a, b) => toText(a).length - toText(b).length);
-    for (let i = 0; i < rows.length; i += BATCH) {
-      const batch = rows.slice(i, i + BATCH);
+    const pageVectors = [];
+    for (let i = 0; i < rows.length; i += EMBED_BATCH_SIZE) {
+      const batch = rows.slice(i, i + EMBED_BATCH_SIZE);
       const vectors = await embed(batch.map(toText));
-      // One statement per batch: per-row updates cost a network round trip
-      // each, and a degraded link turned the first real sweep into hours
-      // (2026-07-16). Single statement = atomic, no transaction needed; the
-      // null guard still makes concurrent sweeps safe -- whoever lands
-      // second is a no-op instead of an overwrite.
-      const res = await client.query(updateSql, [
-        batch.map((r) => r.id),
-        vectors.map(vectorLiteral),
-      ]);
-      filled += res.rowCount;
+      pageVectors.push(...vectors);
     }
+    // One statement per page keeps the remote database cost bounded while
+    // single-row model calls keep native inference memory bounded.
+    const res = await client.query(updateSql, [
+      rows.map((r) => r.id),
+      pageVectors.map(vectorLiteral),
+    ]);
+    filled += res.rowCount;
     // A page that selects rows but fills none means the null guard is
     // no-oping every update -- e.g. a concurrent sweep owns these rows.
     // Selecting the same page forever would spin without progress, so two
@@ -96,10 +106,11 @@ async function main() {
 
   const schema = process.env.BRAIN_SCHEMA || "public";
   const tables = schemaTables(schema);
+  const releaseSweepLock = acquireSweepLock();
   const client = makeClient();
-  await client.connect();
   const started = Date.now();
   try {
+    await client.connect();
     // Newest first: fresh evidence becomes findable soonest while a long
     // backfill sweep catches up on history behind it.
     const evidenceFilled = await sweepTable(client, {
@@ -114,7 +125,7 @@ async function main() {
       selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc limit $1`,
       updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
       toText: nodeText,
-      limit,
+      limit: remainingLimit(limit, evidenceFilled),
     });
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     console.log(
@@ -126,7 +137,15 @@ async function main() {
       ].join("\n"),
     );
   } finally {
-    await client.end();
+    try {
+      await client.end();
+    } finally {
+      try {
+        await disposeEmbeddingModel();
+      } finally {
+        releaseSweepLock();
+      }
+    }
   }
 }
 

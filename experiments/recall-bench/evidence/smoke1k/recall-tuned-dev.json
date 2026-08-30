@@ -1,0 +1,288 @@
+{
+  "tier": "smoke1k",
+  "split": "dev",
+  "generatedAt": "2026-08-30T16:40:02.266Z",
+  "profile": "tuned",
+  "metrics": {
+    "n": 100,
+    "recallAt1": 0.86,
+    "recallAt5": 0.98,
+    "recallAt10": 1,
+    "recallAt20": 1,
+    "mrrAt10": 0.9135119047619048,
+    "recallAt10CI": {
+      "point": 1,
+      "lower": 1,
+      "upper": 1,
+      "resamples": 10000,
+      "level": 0.95
+    },
+    "perFamily": {
+      "paraphrase_nolex": {
+        "n": 23,
+        "recallAt10": 1
+      },
+      "rare_token": {
+        "n": 22,
+        "recallAt10": 1
+      },
+      "entity_swap": {
+        "n": 11,
+        "recallAt10": 1
+      },
+      "near_dup": {
+        "n": 15,
+        "recallAt10": 1
+      },
+      "date_filter": {
+        "n": 15,
+        "recallAt10": 1
+      },
+      "partial_ref": {
+        "n": 7,
+        "recallAt10": 1
+      },
+      "typo_noisy": {
+        "n": 7,
+        "recallAt10": 1
+      }
+    }
+  },
+  "oracle": {
+    "tier": "smoke1k",
+    "generatedAt": "2026-08-30T16:39:28.368Z",
+    "vector": {
+      "verified": true,
+      "method": "exact cosine rank in SQL over the loaded corpus",
+      "embedder": "nomic-embed-text-v1.5"
+    },
+    "overall": {
+      "n": 200,
+      "bestLaneRankAt10": 1,
+      "depth100ReachabilityAt": 1
+    },
+    "perFamily": {
+      "paraphrase_nolex": {
+        "n": 46,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "vector": 46
+        }
+      },
+      "rare_token": {
+        "n": 44,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 44,
+          "or": 44,
+          "trigram": 44,
+          "vector": 44
+        }
+      },
+      "entity_swap": {
+        "n": 22,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 22,
+          "or": 21,
+          "trigram": 21,
+          "vector": 21
+        }
+      },
+      "near_dup": {
+        "n": 30,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 30,
+          "or": 30,
+          "trigram": 30,
+          "vector": 28
+        }
+      },
+      "date_filter": {
+        "n": 30,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "and": 20,
+          "or": 30,
+          "trigram": 30,
+          "vector": 29
+        }
+      },
+      "partial_ref": {
+        "n": 14,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "or": 14,
+          "trigram": 14,
+          "vector": 10
+        }
+      },
+      "typo_noisy": {
+        "n": 14,
+        "bestLaneRankAt10": 1,
+        "depth100Reachability": 1,
+        "solvedByLane": {
+          "trigram": 14,
+          "vector": 13
+        }
+      }
+    },
+    "gate": {
+      "threshold": 0.97,
+      "passed": true,
+      "provisional": false
+    },
+    "repair": {
+      "rounds": [
+        {
+          "round": 1,
+          "attempted": 2,
+          "rewritten": 2,
+          "stillFailing": 0
+        }
+      ],
+      "repaired": 2,
+      "retargeted": 0,
+      "nonConverging": []
+    },
+    "unfiltered": {
+      "overall": {
+        "n": 200,
+        "bestLaneRankAt10": 1,
+        "depth100ReachabilityAt": 1
+      },
+      "perFamily": {
+        "paraphrase_nolex": {
+          "n": 46,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "vector": 46
+          }
+        },
+        "rare_token": {
+          "n": 44,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 44,
+            "or": 44,
+            "trigram": 44,
+            "vector": 44
+          }
+        },
+        "entity_swap": {
+          "n": 22,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 22,
+            "or": 21,
+            "trigram": 21,
+            "vector": 21
+          }
+        },
+        "near_dup": {
+          "n": 30,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 30,
+            "or": 30,
+            "trigram": 30,
+            "vector": 28
+          }
+        },
+        "date_filter": {
+          "n": 30,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "and": 20,
+            "or": 30,
+            "trigram": 30,
+            "vector": 26
+          }
+        },
+        "partial_ref": {
+          "n": 14,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "or": 14,
+            "trigram": 14,
+            "vector": 10
+          }
+        },
+        "typo_noisy": {
+          "n": 14,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "solvedByLane": {
+            "trigram": 14,
+            "vector": 13
+          }
+        }
+      }
+    },
+    "provisionalOffline": {
+      "overall": {
+        "n": 200,
+        "bestLaneRankAt10": 1,
+        "depth100ReachabilityAt": 0.77,
+        "pendingVectorVerification": 46
+      },
+      "perFamily": {
+        "paraphrase_nolex": {
+          "n": 46,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 0,
+          "pendingVectorVerification": 46
+        },
+        "rare_token": {
+          "n": 44,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "pendingVectorVerification": 0
+        },
+        "entity_swap": {
+          "n": 22,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "pendingVectorVerification": 0
+        },
+        "near_dup": {
+          "n": 30,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "pendingVectorVerification": 0
+        },
+        "date_filter": {
+          "n": 30,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "pendingVectorVerification": 0
+        },
+        "partial_ref": {
+          "n": 14,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "pendingVectorVerification": 0
+        },
+        "typo_noisy": {
+          "n": 14,
+          "bestLaneRankAt10": 1,
+          "depth100Reachability": 1,
+          "pendingVectorVerification": 0
+        }
+      }
+    }
+  }
+}

@@ -77,7 +77,7 @@ export function renderClipping(payload) {
     raw += "\n";
   };
   if (selection && selection.trim()) appendSpan("selection", selection, null);
-  if (note && note.trim()) appendSpan("note", note, "Tony");
+  if (note && note.trim()) appendSpan("note", note, "tony");
   return { raw, occurred_at: captured_at ?? null, evidence };
 }
 

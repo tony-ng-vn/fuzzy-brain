@@ -1,0 +1,21 @@
+{
+  "tier": "quality50k",
+  "generatedAt": "2026-08-24T05:12:05.768Z",
+  "seedMemories": "fuzzy-brain-recall-bench-v1/memories",
+  "familyMix": {
+    "paraphrase_nolex": 0.23,
+    "rare_token": 0.22,
+    "entity_swap": 0.11,
+    "near_dup": 0.15,
+    "date_filter": 0.15,
+    "partial_ref": 0.07,
+    "typo_noisy": 0.07
+  },
+  "configHash": "95183c190ae3738c8d266267f0ae1e57cdf5f03e547b0d5797d8627f4912cf9d",
+  "memoriesSha256": "a04c3ef350e3cfabc28d9648cdc83d6d8b4243c321570e44d1bb01a778d48226",
+  "queriesDevSha256": "afa2515c3f81af48b0246234a545003b0be91a32c4b8d5501055ed4bbf3b8d7c",
+  "queriesTestSha256": "ec8cd069edaab677b80e207b7ea1dc8467c17f7a91ede28339781f31a4d481c9",
+  "verifiedAt": "2026-08-24T04:45:18.344Z",
+  "repairedQueries": 149,
+  "retargetedQueries": 63
+}

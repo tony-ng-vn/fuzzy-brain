@@ -1,0 +1,122 @@
+{
+  "tier": "rehearsal1m",
+  "schema": "bench_bs_bulkspill1m",
+  "mode": "closed",
+  "profile": "tunedScale",
+  "connections": 96,
+  "generatedAt": "2026-08-25T20:28:03.559Z",
+  "queryPoolSize": 4000,
+  "queryPoolTarget": 200000,
+  "queryVectorSource": "synth-vectors drifted query vector (rebuilt from cluster_id)",
+  "vocab": {
+    "totalDocs": 1000000,
+    "lexemes": 2205,
+    "terms": 1682,
+    "sampled": false,
+    "samplePct": 100
+  },
+  "closedSweep": [
+    {
+      "concurrency": 1,
+      "dispatched": 9015,
+      "completed": 9015,
+      "window": {
+        "valid": true,
+        "reason": null,
+        "wallSec": 49.998,
+        "perfSec": 50.00429054199999,
+        "clockSkewSec": -0.006290541999995014,
+        "overranBy": -0.00004000000000004889,
+        "maxStallSec": 0.014928541999994195
+      },
+      "count": 7187,
+      "errors": 1066,
+      "qpsCompleted": 179.675,
+      "latencyMs": {
+        "p50": 5.086042000002635,
+        "p90": 11.26641699999891,
+        "p95": 12.832541000003403,
+        "p99": 17.92840799999831,
+        "p999": 25.289528880000834,
+        "max": 38.63775000000169,
+        "mean": 6.415839312694029
+      },
+      "sqlMs": {
+        "mean": 6.204600487011986,
+        "p95": 12.608250000001135
+      },
+      "rerankMs": {
+        "mean": 0.08001013919290181,
+        "p95": 0.1774169999989681
+      },
+      "laneRowsExamined": {
+        "and": 4.86857432261332,
+        "vector": 17.81361644759016,
+        "or": 10.165842525675162
+      },
+      "recall": {
+        "sampleRate": 1,
+        "probes": 7688,
+        "families": {
+          "date_filter": {
+            "n": 1321,
+            "recallAt1": 0.8917486752460257,
+            "recallAt10": 0.9114307342922029
+          },
+          "entity_swap": {
+            "n": 1327,
+            "recallAt1": 0.8327053504144687,
+            "recallAt10": 0.8553127354935945
+          },
+          "near_dup": {
+            "n": 1324,
+            "recallAt1": 0.9939577039274925,
+            "recallAt10": 0.9969788519637462
+          },
+          "paraphrase_nolex": {
+            "n": 1750,
+            "recallAt1": 0.788,
+            "recallAt10": 0.788
+          },
+          "partial_ref": {
+            "n": 858,
+            "recallAt1": 0.9125874125874126,
+            "recallAt10": 0.9953379953379954
+          },
+          "rare_token": {
+            "n": 230,
+            "recallAt1": 1,
+            "recallAt10": 1
+          },
+          "typo_noisy": {
+            "n": 878,
+            "recallAt1": 0.9886104783599089,
+            "recallAt10": 0.9908883826879271
+          }
+        },
+        "unweighted": {
+          "recallAt1": 0.9153728029336154,
+          "recallAt10": 0.9339926713964951
+        },
+        "mixWeighted": {
+          "recallAt1": 0.8921696149843912,
+          "recallAt10": 0.9094693028095733
+        },
+        "topKPressure": {
+          "survivorsPastFusedRank25": 0,
+          "deepestSurvivingFusedRank": 21
+        }
+      }
+    }
+  ],
+  "bufferHitRatio": {
+    "before": {
+      "heap": 1,
+      "index": 0.9999999997853573
+    },
+    "after": {
+      "heap": 1,
+      "index": 0.999999770404052
+    }
+  }
+}

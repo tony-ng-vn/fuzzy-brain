@@ -1,0 +1,168 @@
+{
+  "tier": "quality50k",
+  "generatedAt": "2026-08-30T17:11:59.448Z",
+  "devQueries": 1000,
+  "rerank": {
+    "method": "logistic-regression",
+    "usedForLaneSearch": false,
+    "committed": {
+      "fused": 6,
+      "lexical": 0,
+      "cosine": 0.3,
+      "entity": 0,
+      "recency": 0,
+      "dateFit": 0.5,
+      "rareHit": 0.5,
+      "titleHit": 0.2,
+      "dupPenalty": -0.5
+    },
+    "learned": null,
+    "committedDevRecallAt10": null,
+    "learnedDevRecallAt10": null,
+    "weightCIs": null
+  },
+  "lanes": {
+    "method": "coordinate-descent",
+    "dialsSearched": [
+      "base.and",
+      "base.or",
+      "base.vector",
+      "paraphraseBoost.vector",
+      "paraphraseBoost.or",
+      "paraphraseBoost.and",
+      "typoBoost.trigram",
+      "typoBoost.and",
+      "entityBoost.and",
+      "dateBoost.vector"
+    ],
+    "dialsExcluded": [
+      "rareTermBoost.and",
+      "rareTermBoost.trigram",
+      "base.trigram"
+    ],
+    "committedDevRecallAt10": 0.989,
+    "learnedDevRecallAt10": 0.998,
+    "fitted": {
+      "base": {
+        "and": 2.6,
+        "or": 0.2,
+        "vector": -1.4
+      },
+      "paraphraseBoost": {
+        "vector": 1.6,
+        "or": -1.3,
+        "and": -0.7
+      },
+      "typoBoost": {
+        "trigram": 0.2,
+        "and": -0.8
+      },
+      "entityBoost": {
+        "and": 2
+      },
+      "dateBoost": {
+        "vector": 0.2
+      }
+    },
+    "weightCIs": [
+      {
+        "name": "base.and",
+        "point": 2.6,
+        "lower": 2.6,
+        "upper": 2.6
+      },
+      {
+        "name": "base.or",
+        "point": 0.2,
+        "lower": 0.2,
+        "upper": 0.2
+      },
+      {
+        "name": "base.vector",
+        "point": -1.4,
+        "lower": -1.4,
+        "upper": -1.4
+      },
+      {
+        "name": "paraphraseBoost.vector",
+        "point": 1.6,
+        "lower": 1.6,
+        "upper": 1.6
+      },
+      {
+        "name": "paraphraseBoost.or",
+        "point": -1.3,
+        "lower": -1.3,
+        "upper": -1.3
+      },
+      {
+        "name": "paraphraseBoost.and",
+        "point": -0.7,
+        "lower": -0.7,
+        "upper": -0.7
+      },
+      {
+        "name": "typoBoost.trigram",
+        "point": 0.2,
+        "lower": 0.2,
+        "upper": 0.2
+      },
+      {
+        "name": "typoBoost.and",
+        "point": -0.8,
+        "lower": -0.8,
+        "upper": -0.8
+      },
+      {
+        "name": "entityBoost.and",
+        "point": 2,
+        "lower": 2,
+        "upper": 2
+      },
+      {
+        "name": "dateBoost.vector",
+        "point": 0.2,
+        "lower": 0.2,
+        "upper": 0.2
+      }
+    ]
+  },
+  "combined": {
+    "learnedDevRecallAt10": 0.998,
+    "handTunedDevRecallAt10": 0.989,
+    "pairedDeltaCI": {
+      "point": 0.009,
+      "lower": 0.004,
+      "upper": 0.015,
+      "resamples": 10000,
+      "level": 0.95
+    },
+    "beatsHandTunedOnDev": true
+  },
+  "test": {
+    "evaluatedViaBenchRecallOnce": true,
+    "commands": [
+      "node fit-rerank.mjs --tier quality50k --dump",
+      "node fit-rerank.mjs --tier quality50k --fit-logistic --fit-lanes --bootstrap --resamples 100",
+      "node bench-recall.mjs --tier quality50k --profile learned --split test"
+    ],
+    "handTunedRecallAt10": 0.977,
+    "handTunedRecallAt10CI": {
+      "point": 0.977,
+      "lower": 0.968,
+      "upper": 0.986,
+      "resamples": 10000,
+      "level": 0.95
+    },
+    "learnedRecallAt10": 0.998,
+    "learnedRecallAt10CI": {
+      "point": 0.998,
+      "lower": 0.995,
+      "upper": 1,
+      "resamples": 10000,
+      "level": 0.95
+    },
+    "beatsHandTunedOnTest": true,
+    "source": "experiments/recall-bench/.out/quality50k/TEST-RUNS.log"
+  }
+}
