@@ -1,0 +1,159 @@
+name: recall-bench
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/recall-bench/**'
+      - 'tests/recall-bench-*'
+      - '.github/workflows/recall-bench.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/recall-bench/**'
+      - 'tests/recall-bench-*'
+      - '.github/workflows/recall-bench.yml'
+  workflow_dispatch:
+
+# The Recall@10 floor bench-recall.mjs must clear on the smoke1k dev split,
+# tuned profile. Measured 2026-08-30 against a fresh smoke1k build: 1.000,
+# reproduced twice. 0.05 of margin below that measured number, not a
+# hand-picked target, because the corpus's repair loop (--verify-oracle) is
+# embedding-dependent: a runner with different float behavior can repair a
+# different number of queries than this machine did, and the margin is what
+# absorbs that, not query-sampling noise (recall@10 itself is deterministic
+# SQL over a fixed corpus).
+env:
+  RECALL_FLOOR: '0.95'
+
+jobs:
+  unit:
+    name: recall-bench unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # No database, on purpose (DESIGN.md section 0): every recall-bench
+      # unit test operates on in-memory fixtures, not a live cluster. The
+      # only two skips in this suite are the RECALL_BENCH_HEAVY-gated
+      # quality50k corpus tests (commit 9f18a7f), which build a 50,000-memory
+      # corpus and are heavy on purpose -- not a DB-absence skip.
+      - run: npm run test:bench
+
+  smoke:
+    name: recall-bench smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: recallbench
+          POSTGRES_USER: bench
+          POSTGRES_PASSWORD: bench
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U bench -d recallbench"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # load.mjs shells out to psql for the COPY step (lib resolvePsqlBin
+      # falls back to bare "psql" on PATH when the homebrew path this repo
+      # uses locally does not exist). Install it explicitly and pin nothing
+      # more than that: a v16 client speaks COPY FROM STDIN fine against a
+      # v17 server, so the exact client version does not matter here.
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+          psql --version
+
+      # The nomic-embed-text-v1.5 weights (~650 MB) download from the
+      # Hugging Face hub on first use (scripts/lib/embeddings.mjs) into
+      # ~/.fuzzy-brain/models. Keyed on the model id so a model bump gets a
+      # fresh cache entry instead of silently reusing stale weights.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.fuzzy-brain/models
+          key: ${{ runner.os }}-hf-model-nomic-ai-nomic-embed-text-v1.5
+
+      # The pgvector/pgvector:pg17 image plus POSTGRES_DB/USER/PASSWORD is
+      # everything correctness needs: load.mjs's own createSchema() issues
+      # `create extension if not exists vector/pg_trgm` itself before it
+      # creates the tier's table. infra/schema.sql's extension lines and
+      # infra/postgresql.bench.conf are both redundant with that at smoke
+      # scale -- postgresql.bench.conf is tuning only (shared_buffers,
+      # parallel workers, jit) for the 10M-row tiers, not correctness.
+
+      - name: Generate the smoke1k corpus
+        run: node experiments/recall-bench/gen-corpus.mjs --tier smoke1k --split both --verify
+
+      - name: Load smoke1k with real embeddings
+        run: node experiments/recall-bench/load.mjs --tier smoke1k
+
+      - name: Verify the oracle
+        run: node experiments/recall-bench/load.mjs --tier smoke1k --verify-oracle
+
+      - name: bench-recall (naive, dev) -- informational
+        run: node experiments/recall-bench/bench-recall.mjs --tier smoke1k --profile naive --split dev
+
+      # Runs the bench and checks its own report in one step, so the file
+      # jq reads can only be the one this run just wrote: bench-recall.mjs
+      # sets a non-zero exit code only for the --taxonomy gate, so a plain
+      # profile run can in principle throw after a partial write, and
+      # keeping the read in the same `set -e` step is what guarantees the
+      # number below came from a run that actually finished.
+      - name: bench-recall (tuned, dev) -- gated on the Recall@10 floor
+        run: |
+          set -euo pipefail
+          REPORT="experiments/recall-bench/.out/smoke1k/recall-tuned-dev.json"
+          rm -f "$REPORT"
+          node experiments/recall-bench/bench-recall.mjs --tier smoke1k --profile tuned --split dev
+
+          RECALL="$(jq -r '.metrics.recallAt10' "$REPORT")"
+          case "$RECALL" in
+            ''|null)
+              echo "GATE FAILED: no metrics.recallAt10 in $REPORT"
+              exit 1
+              ;;
+          esac
+          echo "tuned dev recall@10 = ${RECALL} (floor ${RECALL_FLOOR})"
+          awk -v r="$RECALL" -v f="$RECALL_FLOOR" 'BEGIN { exit !(r >= f) }' \
+            || { echo "GATE FAILED: recall@10 ${RECALL} is below the floor ${RECALL_FLOOR}"; exit 1; }
+
+  heavy:
+    name: recall-bench heavy corpus
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # The two quality50k corpus tests build a 50,000-memory corpus (one of
+      # them twice more, in child processes) and are minutes of single-core
+      # work each -- gated behind RECALL_BENCH_HEAVY=1 (commit 9f18a7f) so
+      # they never run on every PR, only on a manual dispatch.
+      - run: npm run test:heavy
