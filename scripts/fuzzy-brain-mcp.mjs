@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -100,12 +101,22 @@ function register(server, name, config, handler, logError) {
   });
 }
 
+// Read from package.json rather than a literal: a hand-typed version drifts
+// silently, and a client that reports a stale one is worse than no version.
+function serverVersion() {
+  try {
+    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  } catch {
+    return "0.0.0";
+  }
+}
+
 export function createFuzzyBrainServer(
   services = productionServices(),
   { logError = (error) => console.error("[fuzzy-brain] tool failed:", error) } = {},
 ) {
   const server = new McpServer(
-    { name: "fuzzy-brain", version: "0.16.0" },
+    { name: "fuzzy-brain", version: serverVersion() },
     {
       instructions: [
         "This is Tony's canonical personal memory, separate from the host application's saved context.",
