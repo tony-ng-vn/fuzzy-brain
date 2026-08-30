@@ -27,7 +27,15 @@ const { rerank } = await import(`${BENCH}/rerank.mjs`);
 // default reproduces the 1M numbers with no environment set.
 const TIER_NAME = process.env.TIER ?? 'rehearsal1m';
 const tier = resolveTier(TIER_NAME);
-const profile = config.profiles.tunedScale;
+// PROFILE is overridable so the same plan-node profile can be taken of the
+// binary-quantized vector lane, whose whole claim is that its candidate stage
+// uses a different index -- and a claim about which index a statement uses is
+// exactly the kind that has to be read off a plan rather than assumed.
+const PROFILE_NAME = process.env.PROFILE ?? 'tunedScale';
+const profile = config.profiles[PROFILE_NAME];
+if (!profile) {
+  throw new Error(`unknown PROFILE "${PROFILE_NAME}" (config.profiles: ${Object.keys(config.profiles).join(', ')})`);
+}
 const N = Number(process.env.N ?? 6);
 const ONLY = process.env.FAMILY ?? null;
 const DUMP = process.env.NODES === '1';
@@ -36,7 +44,9 @@ const client = benchClient();
 await client.connect();
 await client.query(engine.vectorSessionSettings(tier, config, false));
 
-const all = readFileSync(`${BENCH}/.out/${TIER_NAME}/queries-test.jsonl`, 'utf8')
+// SPLIT so a tuning pass can profile plans on the dev half.
+const SPLIT = process.env.SPLIT ?? 'test';
+const all = readFileSync(`${BENCH}/.out/${TIER_NAME}/queries-${SPLIT}.jsonl`, 'utf8')
   .split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const families = [...new Set(all.map((q) => q.family))].filter((f) => !ONLY || f === ONLY);
 
