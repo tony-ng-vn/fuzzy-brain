@@ -4,6 +4,23 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.21.0
+
+Aug 30, 2026
+
+**Tools**
+
+- Coding agents now run a pinned copy of the repo at `~/.fuzzy-brain/runtime` instead of whatever branch your working checkout happens to be sitting on. Before this, an afternoon spent on a feature branch quietly made that half-finished branch every agent's brain, and moving or deleting the checkout broke all of them at once. The runtime is a local clone parked on `main`, so the git objects are hardlinks and cost almost nothing; its `node_modules` is a real second copy at roughly 1 GB.
+- `npm run agents:install` refuses to build the runtime from a checkout with uncommitted changes to tracked files, or from a `main` that is behind `origin/main`, and prints the exact command that fixes it. Untracked files are only a warning, since they cannot reach a clone. Every install ends by printing the runtime's commit and subject, so which version the agents are on is never a guess.
+- New `--runtime-only` flag refreshes the runtime after you land something on `main` without touching a single agent config, and only reinstalls dependencies when the lockfile actually changed. New `--dev` flag points the agents back at your working checkout for debugging, with a warning at the top and bottom of the output saying what that costs. `--dry-run` still writes nothing at all, the runtime directory included.
+- `npm run fusion:install` follows the pinned runtime too. Installing the scheduled sync from a feature branch used to drag every agent onto that branch through the same launcher.
+
+**Docs**
+
+- The README's "Connect a coding agent" section explains the runtime: why the agents no longer follow your checkout, what it costs in disk, how to refresh it after a merge, and what `--dev` does.
+
+---
+
 ## v0.20.0
 
 Aug 30, 2026
