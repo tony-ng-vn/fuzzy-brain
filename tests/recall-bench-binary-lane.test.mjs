@@ -78,3 +78,14 @@ test('tunedScale keeps the halfvec lane it has always had', () => {
   assert.equal(/binary_quantize/.test(text), false);
   assert.equal(/vec_cand/.test(text), false);
 });
+
+// A rare-token query skips the ANN search entirely when the conjunction already
+// has the answer. That gate is a One-Time Filter over the scan, so it has to sit
+// on the stage that does the scanning; on the rerank stage it would filter rows
+// the scan had already paid for.
+test('the vector-skip gate stays on the candidate stage', () => {
+  const gate = '\n    and (select count(*) from and_lane) < 1';
+  const [cand, lane] = binaryVectorLaneCtes({ ...BASE, vectorGate: gate });
+  assert.match(cand, /and_lane\) < 1/);
+  assert.equal(/and_lane/.test(lane), false);
+});
