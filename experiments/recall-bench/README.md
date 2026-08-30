@@ -17,10 +17,27 @@ Full reasoning and every supporting table are in `DESIGN.md`; this is the headli
 | --- | --- | --- | --- |
 | `quality50k` (claim A) | tuned Recall@10 **0.977**, 95% bootstrap CI [0.968, 0.986]; naive baseline 0.697 | -- | **PASS** (gate is Recall@10 >= 0.91) |
 | `rehearsal1m` | R@10 0.917 | 1,200 QPS sustained open-loop, p50 12 ms; ~1,786 QPS closed-loop ceiling | gate is 2,400 QPS; not reached at 1M, but recall and cost profile are real measurements of a working system |
-| `full10m` (claim B) | R@10 0.938 at `ef_search` 400 | ~40 QPS sustained open-loop, p50 ~95 ms, on this laptop | **FAIL on rate, by ~60x** -- recall passes; the shortfall is memory-bound on this machine, not a defect in the retrieval design (`DESIGN.md` section 7.6) |
+| `full10m` (claim B) | R@10 **0.967** with the binary-quantized lane (0.938 with halfvec at `ef_search` 400) | **60 QPS** sustained open-loop, p50 73 ms, on this laptop (40 QPS at p50 95 ms before binary quantization) | **FAIL on rate, by ~40x** -- recall passes; the shortfall is memory-bound on this machine, not a defect in the retrieval design (`DESIGN.md` sections 7.6 and 7.8) |
 
-The 10M run is the honest one to read carefully: the corpus builds, the index builds, the recall floor is cleared, and the throughput gate still fails, because the working set (17.82 GB) does not fit in this machine's memory.
-`DESIGN.md` 7.6 has the full build, the recall frontier, the throughput tables, the root-cause evidence, and the arithmetic for what a bigger machine would need.
+Two entries have been added since the first pass.
+The `learned` profile, whose lane and rerank weights were fit from the dev split rather than tuned by hand, scores Recall@10 **0.998** on the `quality50k` test split, 95% CI [0.995, 1.000]; `tuned` is left byte-identical so every earlier number still reproduces (`DESIGN.md` 7.7).
+And a binary-quantized vector lane (`tunedScaleBinary`, a 256-bit Hamming index reranked by halfvec cosine) raised the 10M tier from 40 to 60 sustained QPS and from R@10 0.938 to 0.967 at the same time, because a 32-byte-per-row graph stays resident where a 512-byte one does not (`DESIGN.md` 7.8).
+
+The 10M run is still the honest one to read carefully: the corpus builds, the index builds, the recall floor is cleared, and the throughput gate still fails, because the working set does not fit in this machine's memory.
+`DESIGN.md` 7.6 and 7.8 have the full build, the recall frontier, the throughput tables, the root-cause evidence, and the arithmetic for what a bigger machine would need.
+
+## The machine guard
+
+A load run refuses to start when it would overwhelm the machine it runs on.
+`lib/resource-guard.mjs` checks four things before the first query: the working set against 70 percent of RAM, the connection count against four per core, swap already in use, and the current load average against the core count.
+It also samples swap while a run is in flight and stops the run if the run itself starts swapping.
+`scripts/full-validation.sh` breaks out of its rate climb at the first saturated window, because no offered rate above a saturated one can produce a better number.
+
+This exists because a 10M run at 150 to 200 offered QPS drove about 100 backends against a 20.93 GB working set on a 24 GB laptop, took swap to 15.6 GB of 16 GB and load average to 72 on 12 cores, and made the desktop unusable until it was killed by hand.
+Every input to that outcome was knowable before the run started.
+
+Pass `--force` to `bench-load.mjs` to override the guard on a machine that can take it.
+It prints what it is overriding.
 
 ## The safety rule, first
 

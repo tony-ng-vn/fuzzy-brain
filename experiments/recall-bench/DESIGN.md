@@ -2443,6 +2443,76 @@ The paired-delta CI above (which resamples the OUTCOME, not the search) is the n
 
 `.out/quality50k/learned-weights.json` carries the full comparison: both rerank-weight arms with their scores, the ten fitted lane dials with their (degenerate) bootstrap CIs, the combined dev/test recall, and the paired-delta CI.
 
+### 7.8 RESULT (2026-08-30): three ways to shrink the 10M working set, measured until the machine gave out
+
+Section 7.6 ended with the 10M rung retrieving well and sustaining about 40 QPS, and named the cause as memory rather than design: a 17.8 GB working set on a 24 GB laptop drove the heap buffer hit ratio to 0.38.
+This section tests the three ways to make that working set smaller.
+It stops short of a conclusion on the last one, because the experiment made the machine unusable and was killed by hand.
+Everything below is in `.out/full10m/s78/`.
+
+**1. Lexical index bloat.** The 10M load was incremental, and section 7.6 noted that leaves avoidable bloat in the GIN index.
+`REINDEX` plus `VACUUM ANALYZE` took the single-connection pipeline from p50 172.8 ms to 140.2 ms, about 19 percent.
+Real, cheap, and nowhere near enough on its own.
+
+**2. Iterative HNSW scans.** pgvector 0.8's `hnsw.iterative_scan` lets a filtered query keep pulling from the graph instead of demanding a beam wide enough to survive the filter, which is why section 7.6 needed `ef_search` 400.
+
+| setting | p50 (c=1) |
+| --- | --- |
+| baseline, `ef_search` 400, iterative off | 172.8 ms |
+| `relaxed_order`, `max_scan_tuples` 2000, `ef_search` 200 | 96.5 ms |
+| `relaxed_order`, `max_scan_tuples` 2000, `ef_search` 300 | 108.4 ms |
+| `relaxed_order`, `max_scan_tuples` 2000, `ef_search` 400 | 168.4 ms |
+| `strict_order`, `ef_search` 400 | 111.2 ms |
+
+Relaxed order at a narrow beam is the win, and the shape makes sense: iterative scanning substitutes for beam width, so paying for both is worse than paying for either.
+
+**3. Binary quantization with a cosine rerank.** An expression HNSW index over `binary_quantize(embedding)::bit(256)` with `bit_hamming_ops` is 32 bytes per row against 512 for the halfvec.
+The `tunedScaleBinary` profile orders candidates by Hamming distance, takes an oversample of them, and reranks by halfvec cosine before fusion.
+Oversample 20 measured p50 65.2 ms at c=1, against 102.9 ms at 10 and 119.7 ms at 40: too few candidates and the cosine rerank has nothing good to promote, too many and the rerank costs more than the recall it buys.
+
+The residency numbers are the point of the whole exercise.
+Over the same runs, the halfvec index took 335,410,780 physical reads against 42,508,734,133 buffer hits, while the binary index took 617,236 reads against 30,315,087,484 hits.
+The binary graph stays in memory; the halfvec graph is read off disk roughly 543 times more often.
+Heap hit ratio rose from 7.6's 0.38 to about 0.50, and index hit ratio held at 0.995.
+
+**Recall did not suffer, it improved.** Sampled whole-pipeline recall over 2,700 probes: R@10 0.967 mix-weighted and 0.972 as an unweighted family mean, against section 7.6's 0.938 for halfvec at `ef_search` 400.
+Per family: `rare_token` 1.000, `near_dup` 0.995, `typo_noisy` 0.989, `date_filter` 0.980, `partial_ref` 0.973, `entity_swap` 0.954, `paraphrase_nolex` 0.911.
+A 256-bit sketch reranked by full-precision cosine is a better instrument than a wide beam over a graph that will not stay resident.
+
+**What it sustains, and where it stopped.**
+
+| offered | completed | p50 | p95 | window |
+| --- | --- | --- | --- | --- |
+| 60 | 60.0 | 73.2 ms | 677.5 ms | valid |
+| 100 | 103.2 | 1032.9 ms | 10147.8 ms | saturated |
+| 150 | 172.4 | 68623.8 ms | 131618.1 ms | INVALID, in-flight growing |
+
+Closed-loop over the same profile peaked at 100.2 QPS at concurrency 32 (p50 197.2 ms) and fell back to 95.8 at 64.
+
+So the honest 10M number on this laptop is **60 QPS at p50 73 ms with R@10 0.967**, up from 7.6's 40 QPS at p50 95 ms with R@10 0.938.
+Binary quantization improved throughput by half and recall by three points at the same time.
+It did not change the fact that the working set does not fit in RAM, and the schema in fact grew to 20.93 GB because the binary index was added alongside the halfvec index rather than replacing it.
+
+**Why this section has no fourth experiment.** After the 150 QPS window came back INVALID with in-flight growing, the sweep script climbed to 200 QPS anyway.
+That run drove roughly 100 backends against a 20.93 GB working set: swap reached 15.6 GB of 16 GB, load average reached 72 on 12 cores, and the desktop stopped responding until the run and the cluster were killed by hand.
+Nothing was measured by it.
+Two guards now exist so this cannot recur.
+`lib/resource-guard.mjs` refuses a run whose working set exceeds 70 percent of RAM, whose connection count exceeds four per core, or whose machine is already swapping or already loaded, and it samples swap during a run and aborts on growth past 2 GB; `--force` overrides with a warning.
+`scripts/full-validation.sh` now breaks out of the rate climb at the first saturated window, because no rate above a saturated one can produce a better number.
+
+**Never tested, and worth testing on a machine that can take it:**
+
+- Dropping the halfvec index entirely and reranking from the heap, which is the version of experiment 3 that actually shrinks the working set instead of adding to it.
+- Any sustained rate between 60 and 100 QPS, where the real ceiling on this hardware sits.
+- Experiments 1, 2 and 3 combined; each was measured against the same baseline, not stacked.
+
+**Gap arithmetic, in the style of 7.6.** Claim B asks for 2,400 QPS at p50 41 ms.
+Measured here: 60 QPS at p50 73 ms.
+Taking the single-stream pipeline cost at the best setting, 65.2 ms, and this machine's 7.86 single-stream equivalents, the compute ceiling is `7.86 x 1000 / 65.2`, about 121 QPS, and the sustained 60 is half of that because the machine spends the rest of its time paging.
+Reaching 2,400 QPS at 65.2 ms per query needs about `2400 x 0.0652 = 157` cores of retrieval capacity, or fewer cores and a cheaper query.
+The assumptions behind that number are the ones 7.6 states: linear scaling in cores, which holds only while the working set is resident, and a working set that stays resident, which needs roughly 24 to 32 GB for this tier once the binary index replaces rather than joins the halfvec one.
+A machine with 64 cores and 128 GB satisfies both with room to spare, and is still the only way to test the claim as written.
+
 ---
 
 ## 8. Measuring claim B honestly
