@@ -1,0 +1,31 @@
+name: app
+
+# The type checker is the gate that was missing. A type error in lib/validation.ts
+# sat on main undetected because `npm test` runs node:test over .mjs files and
+# never type checks the TypeScript half of the repo, and the only workflow here
+# covered the recall benchmark. `next build` runs tsc, so building is the check.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      # No database and no secrets: `next build` type checks and prerenders,
+      # and every route that needs the brain reads it at request time.
+      - run: npm run build
