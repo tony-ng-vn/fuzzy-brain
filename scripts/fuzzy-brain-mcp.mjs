@@ -37,6 +37,14 @@ const EXEC_OPTIONS = Object.freeze({
 // waiting rather than open its own.
 const POOL_OPTIONS = Object.freeze({ max: 3, idleTimeoutMillis: 30_000 });
 
+// The heartbeat that keeps one connection warm between questions. It beats
+// inside the pool's 30-second idle timeout so the connection never lapses
+// mid-conversation, and it stands down half an hour after the last real call
+// so a server nobody is talking to holds nothing open. The first question
+// after a cold stretch pays one reconnect, exactly as before.
+const KEEPALIVE_INTERVAL_MS = 25_000;
+const KEEPALIVE_WARM_WINDOW_MS = 30 * 60_000;
+
 async function runJson(script, args, input) {
   const { stdout } = await execFileAsync(process.execPath, [script, ...args], {
     ...EXEC_OPTIONS,
@@ -53,6 +61,21 @@ async function runJson(script, args, input) {
  */
 export function residentPool({ open = () => makePool(POOL_OPTIONS), logError = () => {} } = {}) {
   let pool = null;
+  let lastUse = 0;
+  let heartbeat = null;
+
+  const startHeartbeat = () => {
+    if (heartbeat) return;
+    heartbeat = setInterval(() => {
+      if (!pool || Date.now() - lastUse > KEEPALIVE_WARM_WINDOW_MS) return;
+      // A ping that fails is a dead link, and pg already discards those;
+      // the next real call reconnects, so there is nothing to handle here.
+      pool.query("select 1").catch(() => {});
+    }, KEEPALIVE_INTERVAL_MS);
+    // The heartbeat must never be the thing keeping the process alive.
+    heartbeat.unref?.();
+  };
+
   return {
     async withClient(fn) {
       if (!pool) {
@@ -61,6 +84,8 @@ export function residentPool({ open = () => makePool(POOL_OPTIONS), logError = (
         // takes the whole server down between questions.
         pool.on("error", logError);
       }
+      lastUse = Date.now();
+      startHeartbeat();
       const client = await pool.connect();
       try {
         return await fn(client);
@@ -69,6 +94,10 @@ export function residentPool({ open = () => makePool(POOL_OPTIONS), logError = (
       }
     },
     async close() {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
       const pending = pool;
       pool = null;
       if (pending) await pending.end();

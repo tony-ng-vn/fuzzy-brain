@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.24.0
+
+Aug 31, 2026
+
+**Tools**
+
+- The first question after a quiet stretch no longer pays a fresh database handshake. The MCP server used to drop its connection after 30 seconds idle, so coming back to an agent after a coffee meant the next answer spent half a second to a second and a half just reconnecting. The server now pings the connection every 25 seconds to keep it warm, but only for half an hour after the last real call: a server nobody is talking to stands its heartbeat down and holds nothing open, and the first question after that pays the one reconnect it always did.
+
+---
+
 ## v0.23.1
 
 Aug 31, 2026

@@ -211,3 +211,46 @@ test("the read services answer on the pooled connection instead of spawning", as
   await services.close();
   assert.equal(pool.state.ends, 1);
 });
+
+// The pool used to drop its one connection after 30 seconds idle, so the
+// first question after any quiet stretch paid a full reconnect -- roughly
+// half a second to a second and a half against the managed database. A
+// heartbeat now keeps the connection warm, but only for a bounded window
+// after the last real call: a server nobody is talking to must not hold a
+// connection open forever.
+test("the pool stays warm after a call and goes cold once nobody asks", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 0 });
+  const pings = [];
+  const fakePool = {
+    on() {},
+    async connect() {
+      return { release() {} };
+    },
+    async query(sql) {
+      pings.push(sql);
+      return { rows: [] };
+    },
+    async end() {},
+  };
+  const pool = residentPool({ open: () => fakePool });
+  await pool.withClient(async () => {});
+
+  t.mock.timers.tick(25_000);
+  assert.equal(pings.length, 1, "one heartbeat inside the pool's 30s idle timeout");
+  t.mock.timers.tick(25_000);
+  assert.equal(pings.length, 2);
+
+  // Half an hour with no real call: the heartbeat stands down and the pool
+  // is allowed to go cold.
+  t.mock.timers.tick(31 * 60_000);
+  const warmPings = pings.length;
+  t.mock.timers.tick(60_000);
+  assert.equal(pings.length, warmPings, "no heartbeats past the warm window");
+
+  // A new question rewarms it.
+  await pool.withClient(async () => {});
+  t.mock.timers.tick(25_000);
+  assert.equal(pings.length, warmPings + 1);
+
+  await pool.close();
+});
