@@ -1,6 +1,6 @@
 {
   "name": "fuzzy-brain",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,7 +26,7 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "chrono-node": "^2.10.1",
-    "next": "16.2.10",
+    "next": "^16.3.3",
     "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",

@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.23.1
+
+Aug 31, 2026
+
+**Tools**
+
+- Security update: Next.js moves from 16.2.10 to 16.3.3, which closes a middleware authorization bypass and the postcss and nanoid advisories that came in through it, and `npm audit fix` takes the brace-expansion and js-yaml patches. That clears five of the nine high-severity advisories the audit reported.
+- The four that remain all live under the local embedding stack (`@huggingface/transformers` pulling old `sharp`, `onnxruntime-node` pulling old `adm-zip`) and have no released fix. They only process Tony's own local model files, never untrusted input, so the practical risk is low; they will clear when the upstream packages update.
+
+---
+
 ## v0.23.0
 
 Aug 31, 2026
