@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.25.0
+
+Aug 31, 2026
+
+**Tools**
+
+- A question whose words the brain was asked about in the last ten minutes skips the vocabulary round trip, so a warm question costs two round trips instead of three. Word frequencies move at the speed of the brain, not the question, and questions inside one session share words, so this lands on most follow-ups. Measured against the real brain: re-asking a question fell from about 230 milliseconds to 145. The honest caveat: for up to ten minutes a just-saved word can still be weighted as rare or unknown, which only nudges ranking; the search lanes always read live data, so the memory itself is found either way.
+
+---
+
 ## v0.24.0
 
 Aug 31, 2026

@@ -75,7 +75,12 @@ const hopRows = [
   },
 ];
 
-function stubClient({ failFused = false } = {}) {
+const kindsOf = (client) =>
+  client.calls.map(({ sql }) =>
+    /unnest\(\$1::text\[\]\)/.test(sql) ? "vocab" : / as lane\b/.test(sql) ? "fused" : / as kind\b/.test(sql) ? "hop" : "other",
+  );
+
+function stubClient({ failFused = false, vocab = vocabRows } = {}) {
   const calls = [];
   let fusedFailed = false;
   return {
@@ -83,7 +88,7 @@ function stubClient({ failFused = false } = {}) {
     async query(sql, values) {
       calls.push({ sql, values });
       if (/set_config/.test(sql)) return { rows: [{ set_config: "0.4" }] };
-      if (/unnest\(\$1::text\[\]\)/.test(sql)) return { rows: vocabRows };
+      if (/unnest\(\$1::text\[\]\)/.test(sql)) return { rows: vocab };
       if (/ as lane\b/.test(sql)) {
         if (failFused && !fusedFailed) {
           fusedFailed = true;
@@ -101,9 +106,7 @@ test("an ordinary question costs exactly three round trips", async () => {
   const client = stubClient();
   const result = await recall(QUESTION, { client, schema: "brain_dev", embedQuery });
 
-  const kinds = client.calls.map(({ sql }) =>
-    /unnest\(\$1::text\[\]\)/.test(sql) ? "vocab" : / as lane\b/.test(sql) ? "fused" : / as kind\b/.test(sql) ? "hop" : "other",
-  );
+  const kinds = kindsOf(client);
   assert.deepEqual(kinds, ["vocab", "fused", "hop"], `statements issued: ${kinds.join(", ")}`);
 
   // The fused rows must land exactly where the per-lane rows used to: the
@@ -130,4 +133,29 @@ test("a failing fused statement falls back to per-lane queries and still answers
   // layers plus two edge lanes, the fallback issues more statements than the
   // fused path ever does.
   assert.ok(client.calls.length > 3, `fallback issued only ${client.calls.length} statements`);
+});
+
+// Word frequencies move at the speed of the brain, not the question, and the
+// questions inside one session share words. A term probed in the last ten
+// minutes is remembered, so a warm question skips the vocabulary round trip
+// and costs two statements instead of three. Staleness only skews rarity
+// weighting; the lanes always search live data.
+test("question words probed once stay known for ten minutes", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 60 * 60_000 });
+  const vocab = ["repaired", "cedar", "hinge", "box"].map((term) => ({ term, total: 100, df: 5 }));
+  const question = "who repaired the cedar hinge box";
+
+  const first = stubClient({ vocab });
+  await recall(question, { client: first, schema: "brain_dev", embedQuery });
+  assert.deepEqual(kindsOf(first), ["vocab", "fused", "hop"]);
+
+  t.mock.timers.tick(60_000);
+  const second = stubClient({ vocab });
+  await recall(question, { client: second, schema: "brain_dev", embedQuery });
+  assert.deepEqual(kindsOf(second), ["fused", "hop"], "warm words skip the probe");
+
+  t.mock.timers.tick(10 * 60_000);
+  const third = stubClient({ vocab });
+  await recall(question, { client: third, schema: "brain_dev", embedQuery });
+  assert.deepEqual(kindsOf(third), ["vocab", "fused", "hop"], "the memory expires");
 });

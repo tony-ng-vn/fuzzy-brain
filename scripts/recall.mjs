@@ -140,35 +140,65 @@ function paramBag() {
 // itself. Without it every question looks entirely out-of-vocabulary, which
 // makes every short question look mistyped and hands the trigram lane a job it
 // was not asked to do. One round trip, bounded by MAX_QUERY_TERMS probes.
+//
+// Frequencies move at the speed of the brain, not the question, and questions
+// inside one session share words, so a term probed in the last ten minutes is
+// remembered and a warm question skips this round trip entirely. Staleness
+// only skews rarity weighting for that window; the lanes always search live
+// data, so a just-saved memory is still found either way.
+const VOCAB_TTL_MS = 10 * 60_000;
+const VOCAB_CACHE_MAX = 512;
+const vocabCache = new Map(); // "<evidence table>|<term>" -> { df, total, at }
+
 async function loadQueryVocab(client, tables, question) {
   const { terms } = tokenize(question);
   const content = [...new Set(terms.filter((t) => !STOPWORDS.has(t) && !/^\d+$/.test(t)))]
     .slice(0, MAX_QUERY_TERMS);
   if (content.length === 0) return { totalDocs: 1, df: new Map(), stem };
 
-  const { rows } = await client.query(
-    `with totals as (
-       select (select count(*) from ${tables.evidence}) + (select count(*) from ${tables.nodes}) as n
-     )
-     select t as term, totals.n as total,
-            (select count(*) from (
-               select 1 from ${tables.evidence} v where v.fts @@ plainto_tsquery('english', t) limit ${DF_PROBE_CAP}
-             ) ev)
-          + (select count(*) from (
-               select 1 from ${tables.nodes} nd where nd.fts @@ plainto_tsquery('english', t) limit ${DF_PROBE_CAP}
-             ) nx) as df
-     from unnest($1::text[]) as t, totals`,
-    [content],
-  );
+  const now = Date.now();
+  const entries = [];
+  const missing = [];
+  for (const term of content) {
+    const hit = vocabCache.get(`${tables.evidence}|${term}`);
+    if (hit && now - hit.at <= VOCAB_TTL_MS) entries.push({ term, df: hit.df, total: hit.total });
+    else missing.push(term);
+  }
+
+  if (missing.length > 0) {
+    const { rows } = await client.query(
+      `with totals as (
+         select (select count(*) from ${tables.evidence}) + (select count(*) from ${tables.nodes}) as n
+       )
+       select t as term, totals.n as total,
+              (select count(*) from (
+                 select 1 from ${tables.evidence} v where v.fts @@ plainto_tsquery('english', t) limit ${DF_PROBE_CAP}
+               ) ev)
+            + (select count(*) from (
+                 select 1 from ${tables.nodes} nd where nd.fts @@ plainto_tsquery('english', t) limit ${DF_PROBE_CAP}
+               ) nx) as df
+       from unnest($1::text[]) as t, totals`,
+      [missing],
+    );
+    for (const row of rows) {
+      const entry = { term: row.term, df: Number(row.df), total: Number(row.total) };
+      entries.push(entry);
+      // A zero is worth remembering too: an out-of-vocabulary word re-probed
+      // every question would defeat the whole point.
+      vocabCache.set(`${tables.evidence}|${row.term}`, { df: entry.df, total: entry.total, at: now });
+    }
+    while (vocabCache.size > VOCAB_CACHE_MAX) vocabCache.delete(vocabCache.keys().next().value);
+  }
 
   const df = new Map();
-  for (const row of rows) {
-    const count = Number(row.df);
-    if (count <= 0) continue;
-    const key = stem(row.term);
-    df.set(key, Math.max(df.get(key) ?? 0, count));
+  let totalDocs = 1;
+  for (const entry of entries) {
+    totalDocs = Math.max(totalDocs, entry.total);
+    if (entry.df <= 0) continue;
+    const key = stem(entry.term);
+    df.set(key, Math.max(df.get(key) ?? 0, entry.df));
   }
-  return { totalDocs: Math.max(1, Number(rows[0]?.total ?? 1)), df, stem };
+  return { totalDocs, df, stem };
 }
 
 // One lane, one layer, one statement. Every lane returns the same envelope --
