@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.23.0
+
+Aug 31, 2026
+
+**Tools**
+
+- Asking the brain a question is about twice as fast, and re-asking one is about four times as fast. A recall used to send ten to fifteen small queries to the database one after another, and with the brain living behind a managed Postgres, each of them paid the network's round trip before doing any work. All the search lanes, the matching edges, and the node rows behind them now travel in one statement, so an ordinary question costs three round trips: one to weigh the question's words against the brain's vocabulary, one to search, one to walk the ratified edges out of the hits. Measured back to back on the same network against the real brain: first asks fell from about 1.4 seconds to 0.7, repeated asks from about 0.9 to 0.23, with identical answers.
+- If the combined statement ever fails, recall falls back to the old one-query-per-lane path and says so in the answer's note, so a broken extension still costs one lane instead of the whole answer.
+
+---
+
 ## v0.22.0
 
 Aug 30, 2026

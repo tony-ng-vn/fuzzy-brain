@@ -19,9 +19,11 @@ const root = join(here, "..");
 
 const NODE_ID = "11111111-1111-4111-8111-111111111111";
 
-// One node row, answered to every node lane. The vocab probe and the edge
-// lanes are told apart by text unique to their statements, which is enough to
-// drive recall end to end without a database.
+// One node row, answered to every node lane. The statements are told apart
+// by text unique to each -- the vocab probe, the fused lane statement (rows
+// come back tagged with a `lane` column), the hop statement, and the
+// per-lane fallback shapes -- which is enough to drive recall end to end
+// without a database.
 function fakeBrain({ nodeRows = [], evidenceRows = [] } = {}) {
   const seen = [];
   return {
@@ -29,6 +31,15 @@ function fakeBrain({ nodeRows = [], evidenceRows = [] } = {}) {
     async query(sql) {
       seen.push(sql);
       if (sql.includes("as total")) return { rows: [{ term: "walnut", total: 20, df: 1 }] };
+      if (sql.includes(" as lane")) {
+        return {
+          rows: [
+            ...nodeRows.map((row) => ({ lane: "and:node", ...row })),
+            ...evidenceRows.map((row) => ({ lane: "and:evidence", ...row })),
+          ],
+        };
+      }
+      if (sql.includes(" as kind")) return { rows: [] };
       if (sql.includes(".edges")) return { rows: [] };
       if (sql.includes(".nodes n")) return { rows: nodeRows };
       return { rows: evidenceRows };

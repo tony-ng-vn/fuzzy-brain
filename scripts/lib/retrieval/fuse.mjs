@@ -5,10 +5,11 @@
 // The bench harness computes this same sum inside one prepared SQL statement
 // (its whole design rests on a single round trip), and
 // tests/recall-bench-rrf.test.mjs pins that SQL against an independent oracle.
-// The product fuses in JavaScript instead, because it queries two layers and
-// then walks ratified edges between them, which is not one statement. This
-// file is the product's side of that formula, and the shared test asserts it
-// agrees with the bench oracle number for number.
+// The product fuses in JavaScript instead: its lanes ride one batched
+// statement to spare the network round trips, but which rows get admitted
+// and which nodes the one-hop edge walk starts from are decided here,
+// between statements. This file is the product's side of that formula, and
+// the shared test asserts it agrees with the bench oracle number for number.
 
 export const DEFAULT_RRF_K = 60;
 

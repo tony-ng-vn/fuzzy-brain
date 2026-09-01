@@ -174,8 +174,7 @@ async function loadQueryVocab(client, tables, question) {
 // One lane, one layer, one statement. Every lane returns the same envelope --
 // the row's own payload, its lane score, its cosine, and whether it carries a
 // rare word -- so fusion and reranking never care which lane a row came from.
-function buildLaneSql(mode, layer, tables, ctx) {
-  const p = paramBag();
+function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const isEvidence = layer === "evidence";
   const a = isEvidence ? "v" : "n";
   const occurredAt = isEvidence ? "coalesce(v.occurred_at, e.occurred_at)" : "n.created_at";
@@ -194,8 +193,9 @@ function buildLaneSql(mode, layer, tables, ctx) {
 
   // Bound once and reused: the lane's own ordering and the cosine every lane
   // reports are the same 768-float literal, and binding it twice doubles the
-  // bytes on the wire for nothing.
-  const vecParam = ctx.vecLiteral ? p.bind(ctx.vecLiteral) : null;
+  // bytes on the wire for nothing. When the lanes ride one fused statement,
+  // ctx.vecParam is that statement's single shared binding of it.
+  const vecParam = ctx.vecParam ?? (ctx.vecLiteral ? p.bind(ctx.vecLiteral) : null);
 
   let laneScore;
   let where;
@@ -252,8 +252,7 @@ function buildLaneSql(mode, layer, tables, ctx) {
 // The edge lane: a ratified why, searched as text. Both nodes it joins come
 // back with it, because a why explains a connection and the connection has two
 // ends. Never invents an edge -- only rows in the edges table can match.
-function buildEdgeSql(mode, tables, question, orQuery) {
-  const p = paramBag();
+function buildEdgeSql(mode, tables, question, orQuery, p = paramBag()) {
   const q = p.bind(mode === "and" ? question : orQuery);
   const match = mode === "and"
     ? `websearch_to_tsquery('english', ${q})`
@@ -293,6 +292,83 @@ function buildNodeFetchSql(tables, ids, ctx) {
 
 function candidateKey(layer, id) {
   return `${layer}:${id}`;
+}
+
+// Every lane, every matching edge, and every node row an edge drags in, as
+// one statement. The brain sits behind a network whose round trip costs more
+// than any of these queries costs to execute, so the per-lane loop that used
+// to issue ten to fifteen statements per question was paying almost all of
+// its latency to the wire. Each lane keeps its own SQL (the builders above),
+// runs as its own limited CTE, and comes back tagged with a `lane` column;
+// the union normalizes every arm onto one superset of columns, and the JS
+// side splits the rows back into the per-lane buckets fusion always read.
+function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
+  const p = paramBag();
+  const fctx = { ...ctx, vecParam: ctx.vecLiteral ? p.bind(ctx.vecLiteral) : null };
+
+  // A union matches its arms by POSITION, so every arm lays its columns out
+  // in this exact order: lane, id, the evidence payload, the node payload,
+  // the edge payload, then the three scores. Absent fields are typed nulls.
+  const quoteNulls = `null::text as quote, null::text as speaker`;
+  const provNulls = `null::uuid as episode_id, null::text as source_locator,
+       null::text as source_kind, null::text as source_label`;
+  const nodeNulls = `null::text as type, null::text as title, null::text as body, null::timestamptz as created_at`;
+  const edgeNulls = `null::uuid as source, null::uuid as target, null::text as why,
+       null::text as source_title, null::text as target_title`;
+
+  const ctes = [];
+  const arms = [];
+  laneJobs.forEach(({ mode, layer }, i) => {
+    const { sql } = buildLaneSql(mode, layer, tables, fctx, p);
+    const cte = `lane_${i}`;
+    ctes.push(`${cte} as (${sql})`);
+    if (layer === "evidence") {
+      arms.push(`select '${mode}:evidence' as lane, c.id,
+       c.quote, c.speaker, c.occurred_at, c.episode_id, c.source_locator, c.source_kind, c.source_label,
+       ${nodeNulls},
+       ${edgeNulls},
+       c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit
+     from ${cte} c`);
+    } else {
+      arms.push(`select '${mode}:node' as lane, c.id,
+       ${quoteNulls}, c.occurred_at, ${provNulls},
+       c.type, c.title, c.body, c.created_at,
+       ${edgeNulls},
+       c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit
+     from ${cte} c`);
+    }
+  });
+
+  for (const mode of edgeModes) {
+    const { sql } = buildEdgeSql(mode, tables, fctx.question, fctx.orQuery, p);
+    const cte = `edge_${mode}`;
+    ctes.push(`${cte} as (${sql})`);
+    arms.push(`select 'edge-${mode}' as lane, c.id,
+       ${quoteNulls}, null::timestamptz as occurred_at, ${provNulls},
+       ${nodeNulls},
+       c.source, c.target, c.why, c.source_title, c.target_title,
+       c.lane_score::float8 as lane_score, null::float8 as sim, false as rare_hit
+     from ${cte} c`);
+  }
+
+  if (edgeModes.length > 0) {
+    // The node rows behind every matched edge come back in the same trip, so
+    // hydrating endpoints never needs a statement of its own.
+    const endpoints = edgeModes
+      .map((mode) => `select source as id from edge_${mode} union select target from edge_${mode}`)
+      .join(" union ");
+    const simExpr = fctx.vecParam ? `1 - (n.embedding <=> ${fctx.vecParam}::vector)` : "null::float8";
+    const rareExpr = fctx.rareQuery ? `(n.fts @@ to_tsquery('english', ${p.bind(fctx.rareQuery)}))` : "false";
+    arms.push(`select 'edge-node' as lane, n.id,
+       ${quoteNulls}, n.created_at as occurred_at, ${provNulls},
+       n.type, n.title, n.body, n.created_at,
+       ${edgeNulls},
+       0::float8 as lane_score, ${simExpr}::float8 as sim, ${rareExpr} as rare_hit
+     from ${tables.nodes} n
+     where n.id in (${endpoints})`);
+  }
+
+  return { sql: `with ${ctes.join(",\n")}\n${arms.join("\nunion all\n")}`, values: p.values };
 }
 
 async function findCandidates(client, tables, question, queryVec, notes) {
@@ -358,6 +434,8 @@ async function findCandidates(client, tables, question, queryVec, notes) {
   const laneWeightsByName = {};
   const rowByKey = new Map();
   const flags = new Map();
+  const whyByNode = new Map();
+  const edgeEndpointIds = new Set();
 
   const flagsFor = (key) => {
     let f = flags.get(key);
@@ -368,52 +446,42 @@ async function findCandidates(client, tables, question, queryVec, notes) {
     return f;
   };
 
-  for (const mode of active) {
-    for (const layer of ["evidence", "node"]) {
-      const { sql, values } = buildLaneSql(mode, layer, tables, ctx);
-      let rows;
-      try {
-        ({ rows } = await client.query(sql, values));
-      } catch (err) {
-        notes.push(`${mode} lane over ${layer} failed (${err.message}); skipped`);
-        continue;
-      }
-      // The vector lane is the one lane that returns something for every
-      // question, so it needs its own floor before anything else sees it.
-      if (mode === "vector") rows = rows.filter((r) => r.lane_score >= SIM_FLOOR);
-      const laneName = `${mode}:${layer}`;
-      laneWeightsByName[laneName] = weights[mode];
-      laneResults[laneName] = denseRanks(rows, (r) => r.lane_score).map(({ row, rank }) => {
-        const key = candidateKey(layer, row.id);
-        rowByKey.set(key, row);
-        const f = flagsFor(key);
-        if (mode === "and") f.strongLex = true;
-        if (mode === "or") f.weakLex = true;
-        if (mode === "trigram") f.trigramLex = true;
-        if (mode === "vector") f.sim = Math.max(f.sim ?? 0, row.lane_score);
-        if (row.sim !== null && row.sim !== undefined) f.cosine = Math.max(f.cosine ?? 0, Number(row.sim));
-        if (mode === "and" || mode === "or") f.lexical = Math.max(f.lexical, Number(row.lane_score));
-        if (row.rare_hit) f.rareHit = true;
-        return { key, rank };
-      });
-    }
-  }
+  const laneJobs = [];
+  for (const mode of active) for (const layer of ["evidence", "node"]) laneJobs.push({ mode, layer });
 
-  // The edge lane runs on the same lexical weights the node lanes got, scaled
-  // down because a why explains the connection rather than either end of it.
-  const whyByNode = new Map();
-  const edgeEndpointIds = new Set();
+  const edgeModes = [];
   for (const mode of ["and", "or"]) {
     if ((weights[mode] ?? 0) === 0) continue;
     if (mode === "or" && !orQuery) continue;
-    const { sql, values } = buildEdgeSql(mode, tables, question, orQuery);
-    let rows;
-    try {
-      ({ rows } = await client.query(sql, values));
-    } catch (err) {
-      notes.push(`edge lane unavailable (${err.message}); skipped`);
-      break;
-    }
+    edgeModes.push(mode);
+  }
+
+  // Rows land in the same accumulators whichever transport brought them: the
+  // fused single statement, or the per-lane fallback below it.
+  const ingestLane = (mode, layer, laneRows) => {
+    // The vector lane is the one lane that returns something for every
+    // question, so it needs its own floor before anything else sees it.
+    const rows = mode === "vector" ? laneRows.filter((r) => r.lane_score >= SIM_FLOOR) : laneRows;
+    const laneName = `${mode}:${layer}`;
+    laneWeightsByName[laneName] = weights[mode];
+    laneResults[laneName] = denseRanks(rows, (r) => r.lane_score).map(({ row, rank }) => {
+      const key = candidateKey(layer, row.id);
+      rowByKey.set(key, row);
+      const f = flagsFor(key);
+      if (mode === "and") f.strongLex = true;
+      if (mode === "or") f.weakLex = true;
+      if (mode === "trigram") f.trigramLex = true;
+      if (mode === "vector") f.sim = Math.max(f.sim ?? 0, row.lane_score);
+      if (row.sim !== null && row.sim !== undefined) f.cosine = Math.max(f.cosine ?? 0, Number(row.sim));
+      if (mode === "and" || mode === "or") f.lexical = Math.max(f.lexical, Number(row.lane_score));
+      if (row.rare_hit) f.rareHit = true;
+      return { key, rank };
+    });
+  };
+
+  // The edge lane runs on the same lexical weights the node lanes got, scaled
+  // down because a why explains the connection rather than either end of it.
+  const ingestEdges = (mode, rows) => {
     const laneName = `edge-${mode}`;
     laneWeightsByName[laneName] = weights[mode] * EDGE_WHY_SCALE;
     const entries = [];
@@ -427,9 +495,65 @@ async function findCandidates(client, tables, question, queryVec, notes) {
       }
     }
     laneResults[laneName] = entries;
+  };
+
+  let buckets = null;
+  if (laneJobs.length > 0 || edgeModes.length > 0) {
+    const { sql, values } = buildFusedSql(tables, ctx, laneJobs, edgeModes);
+    try {
+      const { rows } = await client.query(sql, values);
+      buckets = new Map();
+      for (const row of rows) {
+        const list = buckets.get(row.lane);
+        if (list) list.push(row);
+        else buckets.set(row.lane, [row]);
+      }
+    } catch (err) {
+      notes.push(`fused retrieval failed (${err.message}); per-lane fallback`);
+    }
   }
 
-  await hydrateNodes(client, tables, ctx, [...edgeEndpointIds], rowByKey);
+  if (buckets) {
+    // A union does not preserve per-arm order, so each bucket is re-sorted
+    // the way its own statement used to return it. denseRanks gives tied
+    // scores the same rank either way; the id tie-break only makes the order
+    // deterministic.
+    const laneOrder = (a, b) => b.lane_score - a.lane_score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    for (const { mode, layer } of laneJobs) {
+      ingestLane(mode, layer, (buckets.get(`${mode}:${layer}`) ?? []).sort(laneOrder));
+    }
+    for (const mode of edgeModes) {
+      ingestEdges(mode, (buckets.get(`edge-${mode}`) ?? []).sort(laneOrder));
+    }
+    for (const row of buckets.get("edge-node") ?? []) {
+      const key = candidateKey("node", row.id);
+      if (!rowByKey.has(key)) rowByKey.set(key, row);
+    }
+  } else {
+    for (const { mode, layer } of laneJobs) {
+      const { sql, values } = buildLaneSql(mode, layer, tables, ctx);
+      let rows;
+      try {
+        ({ rows } = await client.query(sql, values));
+      } catch (err) {
+        notes.push(`${mode} lane over ${layer} failed (${err.message}); skipped`);
+        continue;
+      }
+      ingestLane(mode, layer, rows);
+    }
+    for (const mode of edgeModes) {
+      const { sql, values } = buildEdgeSql(mode, tables, question, orQuery);
+      let rows;
+      try {
+        ({ rows } = await client.query(sql, values));
+      } catch (err) {
+        notes.push(`edge lane unavailable (${err.message}); skipped`);
+        break;
+      }
+      ingestEdges(mode, rows);
+    }
+    await hydrateNodes(client, tables, ctx, [...edgeEndpointIds], rowByKey);
+  }
 
   const fused = fuseRrf(laneResults, laneWeightsByName, cfg.rrfK);
 
@@ -517,25 +641,54 @@ async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode
   const nodeIds = candidates.filter((c) => c.layer === "node").map((c) => c.row.id);
   if (nodeIds.length === 0) return [];
 
+  // One trip: the edges out of the hits, and the node rows behind every
+  // neighbour those edges reach, so arrivals never need a fetch of their own.
+  const p = paramBag();
+  const ids = p.bind(nodeIds);
+  const vecParam = ctx.vecLiteral ? p.bind(ctx.vecLiteral) : null;
+  const simExpr = vecParam ? `1 - (n.embedding <=> ${vecParam}::vector)` : "null::float8";
+  const rareExpr = ctx.rareQuery ? `(n.fts @@ to_tsquery('english', ${p.bind(ctx.rareQuery)}))` : "false";
+
   let rows;
   try {
     ({ rows } = await client.query(
-      `select ed.id, ed.source, ed.target, ed.why,
-              ns.title as source_title, nt.title as target_title
-       from ${tables.edges} ed
-       join ${tables.nodes} ns on ns.id = ed.source
-       join ${tables.nodes} nt on nt.id = ed.target
-       where ed.source = any($1::uuid[]) or ed.target = any($1::uuid[])`,
-      [nodeIds],
+      `with hop as (
+         select ed.id, ed.source, ed.target, ed.why,
+                ns.title as source_title, nt.title as target_title
+         from ${tables.edges} ed
+         join ${tables.nodes} ns on ns.id = ed.source
+         join ${tables.nodes} nt on nt.id = ed.target
+         where ed.source = any(${ids}::uuid[]) or ed.target = any(${ids}::uuid[])
+       )
+       select 'edge' as kind, h.id, h.source, h.target, h.why, h.source_title, h.target_title,
+              null::text as type, null::text as title, null::text as body,
+              null::timestamptz as created_at, null::timestamptz as occurred_at,
+              null::float8 as sim, false as rare_hit
+       from hop h
+       union all
+       select 'node' as kind, n.id, null::uuid as source, null::uuid as target, null::text as why,
+              null::text as source_title, null::text as target_title,
+              n.type, n.title, n.body, n.created_at, n.created_at as occurred_at,
+              ${simExpr}::float8 as sim, ${rareExpr} as rare_hit
+       from ${tables.nodes} n
+       where n.id in (select source from hop union select target from hop)
+         and not (n.id = any(${ids}::uuid[]))`,
+      p.values,
     ));
   } catch {
     return [];
   }
-  if (rows.length === 0) return rows;
+  const edges = rows.filter((r) => r.kind === "edge");
+  if (edges.length === 0) return edges;
+  for (const row of rows) {
+    if (row.kind !== "node") continue;
+    const key = candidateKey("node", row.id);
+    if (!rowByKey.has(key)) rowByKey.set(key, row);
+  }
 
   const byNodeId = new Map(candidates.filter((c) => c.layer === "node").map((c) => [c.row.id, c]));
   const arrivals = new Map(); // neighbour node id -> { rrf, via }
-  for (const edge of rows) {
+  for (const edge of edges) {
     for (const [from, to, otherTitle] of [
       [edge.source, edge.target, edge.source_title],
       [edge.target, edge.source, edge.target_title],
@@ -549,9 +702,8 @@ async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode
       }
     }
   }
-  if (arrivals.size === 0) return rows;
+  if (arrivals.size === 0) return edges;
 
-  await hydrateNodes(client, tables, ctx, [...arrivals.keys()], rowByKey);
   for (const [id, arrival] of arrivals) {
     const key = candidateKey("node", id);
     const row = rowByKey.get(key);
@@ -576,7 +728,7 @@ async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode
       via: whyByNode.get(key),
     });
   }
-  return rows;
+  return edges;
 }
 
 export function classifyState(candidates) {
