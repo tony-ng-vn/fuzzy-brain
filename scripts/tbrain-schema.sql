@@ -1,4 +1,5 @@
 -- Additive capture metadata. Existing sources, episodes and evidence stay canonical.
+select pg_advisory_xact_lock(hashtextextended(current_schema() || ':tbrain-migration', 0));
 create table if not exists archive_records (
   id uuid primary key,
   source_id uuid not null references sources(id) on delete restrict,

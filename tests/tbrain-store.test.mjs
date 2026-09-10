@@ -83,7 +83,7 @@ test("portable archive transactions on isolated development schema", async t => 
       assert.ok(old.related.some(x => x.id === r.id));
     });
     await t.test("new revision requires explicit structural lineage", async () => {
-      const { receipt: _receipt, ...p } = structuredClone(first); p.revision = "3";
+      const p = structuredClone(first); delete p.receipt; p.revision = "3";
       await assert.rejects(importTransfer(client, schema, p, opts), { code: "conflict" });
     });
     await t.test("unknown relation rolls back all inserts", async () => {

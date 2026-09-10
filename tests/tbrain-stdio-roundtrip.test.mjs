@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -55,6 +56,10 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   const database = makeClient({ connectionString: databaseUrl });
   await database.connect();
   t.after(() => database.end());
+  await database.query("begin");
+  await database.query("set local search_path to brain_dev, public");
+  await database.query(readFileSync(new URL("../scripts/tbrain-schema.sql",import.meta.url),"utf8"));
+  await database.query("commit");
   const sourceId = randomUUID();
   const deniedSourceId = randomUUID();
   await database.query("insert into brain_dev.sources(id,kind,label) values ($1,'tbrain_stdio_test',$3),($2,'tbrain_stdio_test',$4)", [sourceId, deniedSourceId, sourceId, deniedSourceId]);

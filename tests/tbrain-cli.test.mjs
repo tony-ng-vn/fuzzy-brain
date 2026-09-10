@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -18,6 +18,10 @@ test("portable transfer crosses real CLI and fresh process boundaries", async t 
   const run=(args,e=env)=>JSON.parse(execFileSync(process.execPath,["scripts/tbrain.mjs",...args],{env:e,encoding:"utf8",timeout:10000,stdio:["ignore","pipe","pipe"]}));
   const client=makeClient({connectionString:process.env.DATABASE_URL_DEV}); await client.connect();
   try {
+    await client.query("begin");
+    await client.query("set local search_path to brain_dev, public");
+    await client.query(readFileSync(new URL("../scripts/tbrain-schema.sql",import.meta.url),"utf8"));
+    await client.query("commit");
     await client.query("insert into brain_dev.sources(id,kind,label) values($1,'tbrain_cli_test',$2)",[sourceId,sourceId]);
     await t.test("validate prepares without needing database",()=>{
       const result=run(["validate",path],{...env,DATABASE_URL:"postgresql://invalid:1/no"});
