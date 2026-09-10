@@ -55,10 +55,11 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
   return {
     recall: async question => ({
       ...await reads.recall(question),
-      archive_coverage: { searched: false, note: "Use search_archive for Tbrain archive evidence. Recall alone does not cover those records." },
+      archive_coverage: { exhaustive: false, note: "Ranked retrieval includes retained evidence. Use search_archive and source reads to inspect passages and revisions." },
     }),
     readReceipt: id => stored("readReceipt", id),
     readArchive: input => stored("readArchive", input),
+    readSource: input => stored("readSource", input),
     searchArchive: input => stored("searchArchive", input),
     archiveStatus: () => stored("archiveStatus"),
     async archiveDay(transfer) {
@@ -85,7 +86,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       "Tony initiates reviews. Do not create reminder automations. A night review authorizes available conversation evidence and a provisional assistant reflection only, subject to configured source permissions and exclusions.",
       "Preserve genuinely available source text. Do not invent missing messages, identifiers, timestamps, or approval. Disclose partial coverage and model-assembled material.",
       "Report persistence only after a successful archive_day result. Verify its returned receipt with read_receipt when possible. A prepared transfer is not saved.",
-      "Use search_archive for archive evidence; recall searches the existing brain and does not establish complete archive coverage.",
+      "Recall ranks existing nodes and source evidence. Use search_archive for explicit lexical and date searches; neither is exhaustive proof of absence.",
       "Repeated summaries are not independent evidence. Silence does not prove absence. Keep uncertainty and corrections visible, and report unavailable retrieval plainly.",
     ].join(" "),
   });
@@ -102,13 +103,14 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       }
     });
   };
-  const offset = z.number().int().min(0).max(1_000_000).default(0);
+  const offset = z.number().int().min(0).max(100_000).default(0);
   const limit = z.number().int().min(1).max(20).default(10);
   const instant = z.iso.datetime({ offset: true }).nullable().optional().default(null);
   register("status", "Report archive availability, coverage, and whether capture is enabled in this server.", {}, async () => ({
     ...await services.archiveStatus(), capture_enabled: allowCapture === true,
+    authorized_source_ids: [...allowed],
   }));
-  register("recall", "Search existing brain records and evidence. Search Tbrain archives separately with search_archive.", {
+  register("recall", "Rank relevant brain records and evidence across history. Inspect source passages before drawing conclusions.", {
     question: z.string().trim().min(1).max(2000),
   }, ({ question }) => services.recall(question));
   register("read_receipt", "Verify one saved archive receipt, its provenance, coverage, and persistence identifiers.", {
@@ -116,7 +118,17 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   }, ({ id }) => services.readReceipt(id));
   register("read_archive", "Read a bounded page of original archive passages with source and authorship metadata.", {
     id: z.uuid(), offset, limit,
+    text_offset:z.number().int().min(0).max(200000).default(0),
+    text_limit:z.number().int().min(1).max(8000).default(4000),
   }, input => services.readArchive(input));
+  register("read_source", "Inspect provided source export text or an episode rendering in bounded chunks. Works with archive receipt or legacy episode identifiers.", {
+    id:z.uuid(),offset:z.number().int().min(0).max(5000000).default(0),limit:z.number().int().min(1).max(12000).default(8000),
+  },input=>services.readSource(input));
+  register("transfer_format", "Read the portable transfer JSON schema and configured source identities, including when direct capture is disabled. A file is prepared, not saved.", {}, async()=>({
+    format:"tbrain.transfer.v1",schema:z.toJSONSchema(transferSchema),authorized_source_ids:[...allowed],
+    saved:false,import_command:"node scripts/tbrain.mjs import /absolute/path/day.json --authorize",
+    identity_rule:"Reuse one source_key and revision when retrying. Unknown platform IDs and timestamps stay null. A later correction or export uses a new revision and relation to the returned receipt.",
+  }));
   register("search_archive", "Search archive passages across all recorded periods unless the question needs an explicit date range.", {
     query: z.string().trim().min(1).max(2000), from: instant, until: instant, offset, limit,
   }, input => {

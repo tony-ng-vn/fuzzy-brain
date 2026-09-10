@@ -8,7 +8,7 @@ import { createTbrainServer, productionTbrainServices, tbrainRuntimeConfig } fro
 
 const SOURCE_ID = "11111111-1111-4111-8111-111111111111";
 const RECEIPT_ID = "22222222-2222-4222-8222-222222222222";
-const READ_TOOLS = ["read_archive", "read_receipt", "recall", "search_archive", "status"];
+const READ_TOOLS = ["read_archive", "read_receipt", "read_source", "recall", "search_archive", "status", "transfer_format"];
 
 function transfer() {
   return {
@@ -26,6 +26,7 @@ async function connected(t, overrides = {}, config = {}) {
     recall: async (question) => ({ question, hits: [] }),
     readReceipt: async (id) => ({ id }),
     readArchive: async (input) => input,
+    readSource: async (input) => input,
     searchArchive: async (input) => input,
     archiveStatus: async () => ({ archives: 0 }),
     archiveDay: async () => ({ receipt_id: RECEIPT_ID }),
@@ -49,6 +50,12 @@ test("Tbrain defaults to read-only tools with evidence instructions", async (t) 
   assert.match(client.getInstructions(), /reminder automations/i);
   const denied = await client.callTool({ name: "archive_day", arguments: { transfer: transfer() } });
   assert.equal(denied.isError, true);
+  const format=parsed(await client.callTool({name:"transfer_format",arguments:{}}));
+  assert.equal(format.format,"tbrain.transfer.v1");
+  assert.equal(format.saved,false);
+  assert.ok(format.schema.properties.messages);
+  const source=parsed(await client.callTool({name:"read_source",arguments:{id:RECEIPT_ID,offset:12,limit:50}}));
+  assert.deepEqual(source,{id:RECEIPT_ID,offset:12,limit:50});
 });
 
 test("Tbrain archive authorization comes from runtime source consent", async (t) => {
@@ -83,7 +90,7 @@ test("Tbrain archive search preserves undated scope and bounds page sizes", asyn
   assert.equal(search.limit, 10);
   assert.equal(search.offset, 0);
   const page = parsed(await client.callTool({ name: "read_archive", arguments: { id: RECEIPT_ID, offset: 10, limit: 5 } }));
-  assert.deepEqual(page, { id: RECEIPT_ID, offset: 10, limit: 5 });
+  assert.deepEqual(page, { id: RECEIPT_ID, offset: 10, limit: 5, text_offset:0, text_limit:4000 });
   for (const args of [{ query: "x", limit: 21 }, { query: "x", offset: -1 }, { query: "x", from: "last week" }]) {
     assert.equal((await client.callTool({ name: "search_archive", arguments: args })).isError, true);
   }
