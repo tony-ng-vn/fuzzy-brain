@@ -3,9 +3,9 @@ import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { prepareTransfer, MAX_TRANSFER_BYTES, digest } from "./lib/tbrain-transfer.mjs";
 import { runJson } from "./lib/run-json.mjs";
-import { makeClient } from "./brain.mjs";
+import { makeClient, schemaTables } from "./brain.mjs";
 import { loadEnvLocal } from "./recall.mjs";
-import { archiveError, errorCode, readArchive, readReceipt, searchArchive, archiveStatus } from "./lib/tbrain-store.mjs";
+import { archiveError, errorCode, readArchive, readReceipt, readSource, searchArchive, archiveStatus } from "./lib/tbrain-store.mjs";
 
 async function main() {
   const [command, value, ...flags]=process.argv.slice(2);
@@ -26,12 +26,14 @@ async function main() {
     return result;
   }
   const schema=process.env.BRAIN_SCHEMA||"public";
+  schemaTables(schema);
   const client=makeClient();
   await client.connect();
   try {
     if(command==="status") return await archiveStatus(client,schema);
     if(command==="read") return await readArchive(client,schema,{id:value,offset:Number(flags[0]??0),limit:Number(flags[1]??10)});
     if(command==="receipt") return await readReceipt(client,schema,value);
+    if(command==="source") return await readSource(client,schema,{id:value,offset:Number(flags[0]??0),limit:Number(flags[1]??8000)});
     if(command==="search") return await searchArchive(client,schema,{query:value});
     if(command==="export" || command==="verify") {
       const receipt=await readReceipt(client,schema,value);
