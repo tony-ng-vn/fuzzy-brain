@@ -1,18 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { makeClient } from "../scripts/brain.mjs";
 import { loadEnvLocal } from "../scripts/recall.mjs";
+import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
 import { importTransfer, readReceipt, readArchive, readSource, searchArchive } from "../scripts/lib/tbrain-store.mjs";
 
 loadEnvLocal();
 
 test("portable archive transactions on isolated development schema", async t => {
-  const client = makeClient({ connectionString: process.env.DATABASE_URL_DEV });
-  await client.connect();
+  const database = await createTbrainTestDatabase();
+  const client = database.client;
   const schema = "brain_dev";
   const sourceId = randomUUID();
   const opts = { authorized: true, allowedSourceIds: [sourceId] };
@@ -20,10 +20,6 @@ test("portable archive transactions on isolated development schema", async t => 
   let first;
   const timings = [];
   try {
-    await client.query("begin");
-    await client.query("set local search_path to brain_dev, public");
-    await client.query(readFileSync(new URL("../scripts/tbrain-schema.sql", import.meta.url), "utf8"));
-    await client.query("commit");
     await client.query("insert into brain_dev.sources(id,kind,label) values ($1,'tbrain_test',$2)", [sourceId, sourceId]);
     await t.test("unauthorized imports leave no record", async () => {
       await assert.rejects(importTransfer(client, schema, packet()), { code: "unauthorized" });
@@ -58,7 +54,7 @@ test("portable archive transactions on isolated development schema", async t => 
       assert.equal((await readArchive(client, schema, { id: receipt.id })).messages[0].text, first.messages[0].text);
     });
     await t.test("fresh connection reads the durable receipt", async () => {
-      const fresh = makeClient({ connectionString: process.env.DATABASE_URL_DEV }); await fresh.connect();
+      const fresh = makeClient({ connectionString: database.url }); await fresh.connect();
       try { assert.equal((await readReceipt(fresh, schema, first.receipt.id)).digest, first.receipt.digest); }
       finally { await fresh.end(); }
     });
@@ -142,7 +138,6 @@ test("portable archive transactions on isolated development schema", async t => 
     });
     t.diagnostic(`Local PostgreSQL capture and lexical search ms: ${timings.map(x=>x.toFixed(2)).join(", ")}`);
   } finally {
-    // Synthetic rows live only in brain_dev; retained for restart and backup checks.
-    await client.end();
+    await database.close();
   }
 });

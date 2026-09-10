@@ -2,11 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { makeClient } from "../scripts/brain.mjs";
+import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { loadEnvLocal } from "../scripts/recall.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
 
@@ -49,17 +48,19 @@ async function successfulCall(server, name, args) {
 }
 
 test("synthetic Tbrain records survive real stdio delivery, restart, and retries", async t => {
-  const databaseUrl = process.env.DATABASE_URL_DEV;
-  assert.ok(databaseUrl, "DATABASE_URL_DEV must name the isolated test database");
-  const target = new URL(databaseUrl);
-  assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(target.hostname), "stdio roundtrip requires local PostgreSQL");
-  const database = makeClient({ connectionString: databaseUrl });
-  await database.connect();
-  t.after(() => database.end());
-  await database.query("begin");
-  await database.query("set local search_path to brain_dev, public");
-  await database.query(readFileSync(new URL("../scripts/tbrain-schema.sql",import.meta.url),"utf8"));
-  await database.query("commit");
+  const isolated = await createTbrainTestDatabase();
+  const databaseUrl = isolated.url;
+  const database = isolated.client;
+  const servers = [];
+  t.after(async () => {
+    for (const server of servers) await server.close();
+    await isolated.close();
+  });
+  const start = async options => {
+    const server = await startServer(t, options);
+    servers.push(server);
+    return server;
+  };
   const sourceId = randomUUID();
   const deniedSourceId = randomUUID();
   await database.query("insert into brain_dev.sources(id,kind,label) values ($1,'tbrain_stdio_test',$3),($2,'tbrain_stdio_test',$4)", [sourceId, deniedSourceId, sourceId, deniedSourceId]);
@@ -69,7 +70,7 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   packet.messages[0].at = "1998-05-02T01:00:00Z";
   const callTimings = [];
   let firstReceipt;
-  let server = await startServer(t, { databaseUrl, sourceId });
+  let server = await start({ databaseUrl, sourceId });
   const firstPid = server.pid;
 
   await t.test("a real archive tool call returns committed persistence identifiers", async () => {
@@ -86,7 +87,7 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   await t.test("a fresh server process verifies the receipt and verbatim passages", async () => {
     await server.close();
     assert.throws(() => process.kill(firstPid, 0), { code: "ESRCH" });
-    server = await startServer(t, { databaseUrl, sourceId });
+    server = await start({ databaseUrl, sourceId });
     assert.notEqual(server.pid, firstPid);
     const receipt = await successfulCall(server, "read_receipt", { id: firstReceipt.id });
     assert.equal(receipt.digest, firstReceipt.digest);
@@ -157,7 +158,7 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
     const rejection = await server.client.callTool({ name: "archive_day", arguments: { transfer: denied } });
     assert.equal(rejection.isError, true);
     assert.equal(parsed(rejection).error.code, "unauthorized");
-    const readOnly = await startServer(t, { databaseUrl, sourceId: deniedSourceId, capture: false });
+    const readOnly = await start({ databaseUrl, sourceId: deniedSourceId, capture: false });
     const listed = await readOnly.client.listTools();
     assert.equal(listed.tools.some(tool => tool.name === "archive_day"), false);
     const absent = await readOnly.client.callTool({ name: "archive_day", arguments: { transfer: denied } });
@@ -168,7 +169,7 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   });
 
   await t.test("unavailable storage is distinct from an empty search result", async () => {
-    const unavailable = await startServer(t, {
+    const unavailable = await start({
       databaseUrl: "postgresql://invalid:invalid@127.0.0.1:1/invalid", sourceId, capture: false,
     });
     const response = await unavailable.client.callTool({ name: "search_archive", arguments: { query: marker } });
@@ -183,5 +184,4 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   await server.close();
   const retries = callTimings.slice(1).sort((a, b) => a - b);
   t.diagnostic(`Real stdio first capture: ${callTimings[0].toFixed(2)} ms; 100 retries median: ${retries[50].toFixed(2)} ms; maximum: ${retries.at(-1).toFixed(2)} ms`);
-  // Keep synthetic brain_dev records available for restart and backup verification.
 });

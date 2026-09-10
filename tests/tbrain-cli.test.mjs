@@ -1,27 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { makeClient } from "../scripts/brain.mjs";
+import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { loadEnvLocal } from "../scripts/recall.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
 
 loadEnvLocal();
 test("portable transfer crosses real CLI and fresh process boundaries", async t => {
+  const database=await createTbrainTestDatabase();
   const dir=mkdtempSync(join(tmpdir(),"tbrain-cli-")); const path=join(dir,"day.json");
   const sourceId=randomUUID(); const input=fixture({source_id:sourceId,source_key:randomUUID()});
   writeFileSync(path,JSON.stringify(input),{mode:0o600});
-  const env={...process.env,DATABASE_URL:process.env.DATABASE_URL_DEV,BRAIN_SCHEMA:"brain_dev",TBRAIN_ALLOWED_SOURCE_IDS:sourceId};
+  const env={...process.env,DATABASE_URL:database.url,DATABASE_URL_DEV:database.url,BRAIN_SCHEMA:"brain_dev",TBRAIN_ALLOWED_SOURCE_IDS:sourceId};
   const run=(args,e=env)=>JSON.parse(execFileSync(process.execPath,["scripts/tbrain.mjs",...args],{env:e,encoding:"utf8",timeout:10000,stdio:["ignore","pipe","pipe"]}));
-  const client=makeClient({connectionString:process.env.DATABASE_URL_DEV}); await client.connect();
+  const client=database.client;
   try {
-    await client.query("begin");
-    await client.query("set local search_path to brain_dev, public");
-    await client.query(readFileSync(new URL("../scripts/tbrain-schema.sql",import.meta.url),"utf8"));
-    await client.query("commit");
     await client.query("insert into brain_dev.sources(id,kind,label) values($1,'tbrain_cli_test',$2)",[sourceId,sourceId]);
     await t.test("validate prepares without needing database",()=>{
       const result=run(["validate",path],{...env,DATABASE_URL:"postgresql://invalid:1/no"});
@@ -49,5 +46,5 @@ test("portable transfer crosses real CLI and fresh process boundaries", async t 
     await t.test("database outage is not reported as no matches",()=>{
       assert.throws(()=>run(["search","pottery"],{...env,DATABASE_URL:"postgresql://127.0.0.1:1/no"}),e=>e.status!==0 && /unavailable/.test(e.stderr.toString()));
     });
-  } finally {await client.end();rmSync(dir,{recursive:true,force:true});}
+  } finally {await database.close();rmSync(dir,{recursive:true,force:true});}
 });
