@@ -220,11 +220,14 @@ test("runInstall registers Codex and the JSON agents idempotently, and skips age
 
     const codexOut = readFileSync(join(homeDir, ".codex", "config.toml"), "utf8");
     assert.match(codexOut, /command = "[^"]*\.fuzzy-brain\/bin\/brain-run"/);
+    assert.match(codexOut, /\[mcp_servers\.tbrain\]/);
+    assert.match(codexOut, /args = \["tbrain-mcp\.mjs"\]/);
     assert.match(codexOut, /Bearer napi_FAKETOKEN12345/, "unrelated Codex table must survive untouched");
 
     const cursorOut = JSON.parse(readFileSync(join(homeDir, ".cursor", "mcp.json"), "utf8"));
     assert.deepEqual(cursorOut.mcpServers.nia.env, { NIA_API_KEY: "nk_FAKESECRET" });
     assert.ok(cursorOut.mcpServers["fuzzy-brain"].command.endsWith("brain-run"));
+    assert.deepEqual(cursorOut.mcpServers.tbrain.args, ["tbrain-mcp.mjs"]);
 
     // A codex backup was made of the pre-existing file; cursor's file also
     // pre-existed, so it gets one too.
@@ -297,7 +300,7 @@ test("runInstall --only limits which agents are touched", async () => {
   }
 });
 
-test("runInstall registers Claude Code via the CLI when present, and is a no-op to run twice", async () => {
+test("runInstall registers both MCP servers with Claude Code via the CLI", async () => {
   const homeDir = tempHome();
   try {
     const calls = [];
@@ -308,6 +311,9 @@ test("runInstall registers Claude Code via the CLI when present, and is a no-op 
     assert.deepEqual(calls[1].slice(0, 4), ["mcp", "add", "fuzzy-brain", "-s"]);
     assert.ok(calls[1].includes("--"));
     assert.ok(calls[1][calls[1].length - 1] === "fuzzy-brain-mcp.mjs");
+    assert.deepEqual(calls[2], ["mcp", "remove", "tbrain", "-s", "user"]);
+    assert.deepEqual(calls[3].slice(0, 4), ["mcp", "add", "tbrain", "-s"]);
+    assert.ok(calls[3][calls[3].length - 1] === "tbrain-mcp.mjs");
     // Registering via the CLI never touches ~/.claude.json directly.
     assert.equal(existsSync(join(homeDir, ".claude.json")), false);
   } finally {
@@ -349,6 +355,9 @@ test("runInstall falls back to editing ~/.claude.json, in the same shape `claude
     assert.equal(written.mcpServers["fuzzy-brain"].type, "stdio");
     assert.deepEqual(written.mcpServers["fuzzy-brain"].args, ["fuzzy-brain-mcp.mjs"]);
     assert.deepEqual(written.mcpServers["fuzzy-brain"].env, {});
+    assert.equal(written.mcpServers.tbrain.type, "stdio");
+    assert.deepEqual(written.mcpServers.tbrain.args, ["tbrain-mcp.mjs"]);
+    assert.deepEqual(written.mcpServers.tbrain.env, {});
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
@@ -392,6 +401,7 @@ test("runInstall only rewrites VS Code's mcp.json when it already exists", async
     const written = JSON.parse(readFileSync(join(vscodeDir, "mcp.json"), "utf8"));
     assert.deepEqual(written.mcpServers.other, { command: "x", args: [] });
     assert.ok(written.mcpServers["fuzzy-brain"].command.endsWith("brain-run"));
+    assert.deepEqual(written.mcpServers.tbrain.args, ["tbrain-mcp.mjs"]);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
