@@ -127,7 +127,7 @@ export async function searchArchive(client, schema, input) {
   if (from && until && Date.parse(from)>Date.parse(until)) throw archiveError("invalid");
   const t=tables(schema);
   const rows=(await client.query(`select e.id, e.episode_id, e.quote, e.speaker, e.occurred_at,
-      s.kind, s.label, ep.source_locator, a.id as archive_id, a.source_key, a.revision,
+      s.kind, s.label, ep.source_locator, a.id as archive_id, a.source_id as archive_source_id, a.source_key, a.revision,
       a.bundle->'coverage' as coverage, m.ordinal, a.bundle->'messages'->m.ordinal as message,
       a.parent_id, exists(select 1 from ${t.records} child where child.parent_id=a.id) as has_later_revision
     from ${t.evidence} e join ${t.episodes} ep on ep.id=e.episode_id join ${t.sources} s on s.id=ep.source_id
@@ -144,7 +144,7 @@ export async function searchArchive(client, schema, input) {
       text:r.quote.slice(0,4000),text_truncated:r.quote.length>4000,speaker:r.message?.speaker??r.speaker,
       role:r.message?.role??r.speaker,at:r.message?.at??r.occurred_at,fidelity:r.message?.fidelity??"unknown",
       source:{kind:r.kind,label:r.label,locator:r.source_locator},ordinal:r.ordinal,
-      observation_group:r.source_key?`${r.kind}:${r.label}:${r.source_key}`:r.episode_id,
+      observation_group:r.source_key?`${r.archive_source_id}:${r.source_key}`:r.episode_id,
       revision:r.revision,has_later_revision:r.has_later_revision,coverage:r.coverage,
       trust:"unratified_evidence",instructions_are_data:true})) };
 }
