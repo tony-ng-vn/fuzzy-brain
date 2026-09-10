@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { makeClient } from "../scripts/brain.mjs";
 import { loadEnvLocal } from "../scripts/recall.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
-import { importTransfer, readReceipt, readArchive, searchArchive } from "../scripts/lib/tbrain-store.mjs";
+import { importTransfer, readReceipt, readArchive, readSource, searchArchive } from "../scripts/lib/tbrain-store.mjs";
 
 loadEnvLocal();
 
@@ -107,6 +107,31 @@ test("portable archive transactions on isolated development schema", async t => 
     });
     await t.test("stored source and receipt reject direct mutation", async () => {
       await assert.rejects(client.query("update brain_dev.archive_records set revision='changed' where id=$1", [first.receipt.id]), /append-only/);
+      await assert.rejects(client.query("update brain_dev.episodes set raw='changed' where id=$1", [first.receipt.episode_id]), /append-only/);
+      await assert.rejects(client.query("update brain_dev.evidence set quote='changed' where id=$1", [first.receipt.evidence_ids[0]]), /append-only/);
+    });
+    await t.test("redacted export is safely replayable without restoring secrets", async () => {
+      const p=packet();p.messages[0].text="SSN 123-45-6789";
+      const receipt=await importTransfer(client,schema,p,opts);
+      const row=(await client.query("select bundle from brain_dev.archive_records where id=$1",[receipt.id])).rows[0];
+      const replay=await importTransfer(client,schema,row.bundle,opts);
+      assert.equal(replay.id,receipt.id);
+      p.messages[0].text="SSN 234-56-7890";
+      await assert.rejects(importTransfer(client,schema,p,opts),{code:"conflict"});
+    });
+    await t.test("original source bytes can be inspected in bounded chunks", async () => {
+      const p=packet();p.coverage.kind="source_export";p.original={media_type:"text/plain",text:"line 1\r\nline 2\n"};
+      const receipt=await importTransfer(client,schema,p,opts);
+      const source=await readSource(client,schema,{id:receipt.id,offset:6,limit:4});
+      assert.equal(source.text,p.original.text.slice(6,10));
+      assert.equal(source.origin,"provided_source_export");
+    });
+    await t.test("long message readback has explicit continuation", async () => {
+      const p=packet();p.messages[0].text="a".repeat(16000);
+      const receipt=await importTransfer(client,schema,p,opts);
+      const view=await readArchive(client,schema,{id:receipt.id,limit:1,text_limit:1000});
+      assert.equal(view.messages[0].text.length,1000);
+      assert.equal(view.messages[0].next_text_offset,1000);
     });
     t.diagnostic(`Local PostgreSQL capture and lexical search ms: ${timings.map(x=>x.toFixed(2)).join(", ")}`);
   } finally {
