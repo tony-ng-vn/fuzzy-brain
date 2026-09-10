@@ -97,6 +97,13 @@ test("portable archive transactions on isolated development schema", async t => 
       await assert.rejects(importTransfer(client, schema, p, opts), { code: "excluded" });
       await client.query("update brain_dev.sources set exclusions='[]' where id=$1", [sourceId]);
     });
+    await t.test("exclusions match decoded quotes and line breaks", async () => {
+      const value='private "quoted"\nmaterial';
+      await client.query("update brain_dev.sources set exclusions=$2 where id=$1",[sourceId,JSON.stringify([{kind:"topic",value}])]);
+      const p=packet();p.messages[0].text=value;
+      await assert.rejects(importTransfer(client,schema,p,opts),{code:"excluded"});
+      await client.query("update brain_dev.sources set exclusions='[]' where id=$1",[sourceId]);
+    });
     await t.test("paging source context is bounded and preserves order", async () => {
       const view = await readArchive(client, schema, { id: first.receipt.id, offset: 1, limit: 1 });
       assert.equal(view.messages.length, 1); assert.equal(view.messages[0].role, "assistant");
