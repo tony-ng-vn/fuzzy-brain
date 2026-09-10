@@ -1,0 +1,38 @@
+name: tbrain round trip
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg17
+        env:
+          POSTGRES_USER: tbrain_test
+          POSTGRES_PASSWORD: isolated_test_only
+          POSTGRES_DB: tbrain_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tbrain_test -d tbrain_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://tbrain_test:isolated_test_only@127.0.0.1:5432/tbrain_test
+      DATABASE_URL_DEV: postgresql://tbrain_test:isolated_test_only@127.0.0.1:5432/tbrain_test
+      BRAIN_SCHEMA: brain_dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Initialize disposable database
+        run: |
+          node scripts/migrate.mjs
+          node scripts/tbrain-migrate.mjs
+      - name: Verify transport, source fidelity, retries and recovery
+        run: node --test --test-concurrency=1 tests/tbrain-*.test.mjs tests/recall-archive-provenance.test.mjs tests/run-json.test.mjs
