@@ -40,6 +40,9 @@ test("portable transfer crosses real CLI and fresh process boundaries", async t 
     await t.test("timeout-equivalent retry returns the existing receipt",()=>{
       assert.equal(run(["import",path,"--authorize"]).id,receipt.id);
     });
+    await t.test("CLI source consent matches whitespace-tolerant server configuration",()=>{
+      assert.equal(run(["import",path,"--authorize"],{...env,TBRAIN_ALLOWED_SOURCE_IDS:` ${sourceId}, `}).id,receipt.id);
+    });
     await t.test("conflicting content causes nonzero safe error",()=>{
       input.messages[0].text="Private test conflict payload";writeFileSync(path,JSON.stringify(input));
       assert.throws(()=>run(["import",path,"--authorize"]),e=>e.status!==0 && /conflict/.test(e.stderr.toString()) && !e.stderr.toString().includes(input.messages[0].text));
