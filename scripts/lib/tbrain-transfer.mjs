@@ -63,6 +63,8 @@ export function prepareTransfer(input) {
   // Filter metadata too: an excluded secret in a title is still a secret.
   function scrub(value, path = "") {
     if (typeof value === "string") {
+      // Typed UUIDs are identifiers, not card numbers hidden in prose.
+      if (path === "source_id" || path === "relation.receipt_id") return value;
       const filtered = scrubSensitivePatterns(value);
       for (const r of filtered.redactions) redactions.push({ path, reason: r.reason });
       return filtered.text;
