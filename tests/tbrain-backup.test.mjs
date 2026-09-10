@@ -57,3 +57,34 @@ test("failed backup removes partial output and hides tool diagnostics", async ()
   await assert.rejects(backupDatabase({ databaseUrl: local, output, run: async () => { await writeFile(output, "partial secret source"); throw new Error("tool failed"); } }), /tool failed/);
   await assert.rejects(readFile(output), /ENOENT/);
 });
+
+test("private custom backup restores exact text and extension types into an empty local database", {
+  skip: !process.env.TBRAIN_BACKUP_TEST_SOURCE_URL || !process.env.TBRAIN_BACKUP_TEST_TARGET_URL,
+}, async () => {
+  const sourceUrl = process.env.TBRAIN_BACKUP_TEST_SOURCE_URL;
+  const targetUrl = process.env.TBRAIN_BACKUP_TEST_TARGET_URL;
+  validateRestoreTarget(sourceUrl);
+  validateRestoreTarget(targetUrl);
+  assert.notEqual(sourceUrl, targetUrl);
+  const { default: pg } = await import("pg");
+  const { restoreDatabase } = await import("../scripts/tbrain-backup.mjs");
+  const source = new pg.Client({ connectionString: sourceUrl });
+  const target = new pg.Client({ connectionString: targetUrl });
+  const raw = "  exact first line\nsecond line with 'quotes'\n";
+  const dir = await mkdtemp(join(tmpdir(), "tbrain-backup-roundtrip-"));
+  await source.connect();
+  await target.connect();
+  try {
+    await source.query("create extension vector; create extension pg_trgm; create table public.backup_future_table (raw text, embedding vector(3))");
+    await source.query("insert into public.backup_future_table values ($1, '[1,2,3]')", [raw]);
+    const output = join(dir, "full.dump");
+    await backupDatabase({ databaseUrl: sourceUrl, output });
+    await restoreDatabase({ databaseUrl: targetUrl, input: output });
+    const { rows } = await target.query("select raw, embedding::text from public.backup_future_table");
+    assert.deepEqual(rows, [{ raw, embedding: "[1,2,3]" }]);
+    await assert.rejects(restoreDatabase({ databaseUrl: targetUrl, input: output }), /empty database/);
+  } finally {
+    await source.end();
+    await target.end();
+  }
+});
