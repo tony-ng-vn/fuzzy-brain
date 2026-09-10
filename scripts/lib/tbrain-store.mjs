@@ -22,7 +22,8 @@ export async function importTransfer(client, schema, input, { authorized = false
     await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [JSON.stringify([schema, bundle.source_id, bundle.source_key])]);
     const source = (await client.query(`select exclusions from ${t.sources} where id=$1 for share`, [bundle.source_id])).rows[0];
     if (!source) throw archiveError("not_found");
-    const allText = JSON.stringify(input).toLowerCase();
+    const strings = value => typeof value === "string" ? [value] : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
+    const allText = strings(input).join("\n").toLowerCase();
     // Match the whole packet so source text, reflection and metadata obey exclusions.
     if (source.exclusions.some(x => allText.includes(String(x.value).toLowerCase()))) throw archiveError("excluded");
     const existing = (await client.query(`select digest, stored_digest, receipt from ${t.records} where source_id=$1 and source_key=$2 and revision=$3`, [bundle.source_id, bundle.source_key, bundle.revision])).rows[0];
