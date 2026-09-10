@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath } from "node:url";
-import { createTbrainServer, tbrainRuntimeConfig } from "../scripts/tbrain-mcp.mjs";
+import { createTbrainServer, productionTbrainServices, tbrainRuntimeConfig } from "../scripts/tbrain-mcp.mjs";
 
 const SOURCE_ID = "11111111-1111-4111-8111-111111111111";
 const RECEIPT_ID = "22222222-2222-4222-8222-222222222222";
@@ -129,4 +129,24 @@ test("Tbrain stdio refuses unapproved source before touching a database", async 
   assert.equal(result.isError, true);
   assert.equal(parsed(result).error.code, "unauthorized");
   assert.equal(stderr, "");
+});
+
+
+test("Tbrain production capture uses the authorized CLI and preserves safe error classes", async () => {
+  const calls = [];
+  let response = { receipt_id: RECEIPT_ID };
+  const run = async (...args) => { calls.push(args); return response; };
+  const services = productionTbrainServices({ allowCapture: true, allowedSourceIds: [SOURCE_ID] }, { run });
+  assert.deepEqual(await services.archiveDay(transfer()), { receipt_id: RECEIPT_ID });
+  assert.match(calls[0][0], /scripts\/brain\.mjs$/);
+  assert.deepEqual(calls[0].slice(1), [["import-transfer", "--authorize", "--json-errors"], transfer()]);
+  response = { state: "failed", error: { code: "excluded", message: "private reason" } };
+  await assert.rejects(services.archiveDay(transfer()), error => {
+    assert.equal(error.code, "excluded");
+    assert.doesNotMatch(error.message, /private/);
+    return true;
+  });
+  const disabled = productionTbrainServices({ allowCapture: false, allowedSourceIds: [SOURCE_ID] }, { run });
+  await assert.rejects(disabled.archiveDay(transfer()), { code: "unauthorized" });
+  assert.equal(calls.length, 2);
 });
