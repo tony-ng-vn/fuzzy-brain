@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { recall } from "../scripts/recall.mjs";
+import { randomUUID } from "node:crypto";
+import { makeClient } from "../scripts/brain.mjs";
+import { loadEnvLocal } from "../scripts/recall.mjs";
+import { importTransfer } from "../scripts/lib/tbrain-store.mjs";
+import { fixture } from "./helpers/tbrain-fixture.mjs";
 
 const EVIDENCE = "11111111-1111-4111-8111-111111111111";
 const ARCHIVE = "22222222-2222-4222-8222-222222222222";
@@ -70,4 +75,36 @@ test("metadata failure never presents an archive paraphrase as an attributed quo
   assert.equal(result.hits[0].provenance.occurred_at, null);
   assert.match(result.note, /archive provenance unavailable/i);
   assert.doesNotMatch(JSON.stringify(result), /private database detail/);
+});
+
+test("real development storage returns archive metadata through shared recall", async t => {
+  loadEnvLocal();
+  if (!process.env.DATABASE_URL_DEV) return t.skip("DATABASE_URL_DEV is required; never use production for this test");
+  const client = makeClient({ connectionString: process.env.DATABASE_URL_DEV });
+  await client.connect();
+  try {
+    const sourceId = randomUUID();
+    const sourceKey = randomUUID();
+    const token = `pottery${randomUUID().replaceAll("-", "")}`;
+    await client.query("insert into brain_dev.sources(id,kind,label) values($1,'tbrain_recall_test',$2)", [sourceId, sourceId]);
+    const packet = fixture({ source_id: sourceId, source_key: sourceKey });
+    packet.messages = [{ id: null, role: "other", speaker: "A friend", at: null, fidelity: "paraphrase", text: `A friend considered ${token}.` }];
+    packet.coverage.from = "2026-09-09T00:00:00Z";
+    const opts = { authorized: true, allowedSourceIds: [sourceId] };
+    const first = await importTransfer(client, "brain_dev", packet, opts);
+    packet.revision = "2";
+    packet.relation = { receipt_id: first.id, kind: "correction", note: "Synthetic correction of the activity." };
+    await importTransfer(client, "brain_dev", packet, opts);
+    const result = await recall(token, { client, schema: "brain_dev", embedQuery: async () => { throw new Error("disabled in test"); } });
+    const old = result.hits.find(hit => hit.provenance?.archive_id === first.id);
+    assert.ok(old, "the imported passage must survive the actual recall query and metadata join");
+    assert.equal(old.role, "other");
+    assert.equal(old.speaker, "A friend");
+    assert.equal(old.fidelity, "paraphrase");
+    assert.equal(old.provenance.occurred_at, null);
+    assert.equal(old.has_later_revision, true);
+    assert.equal(old.observation_group, `${sourceId}:${sourceKey}`);
+  } finally {
+    await client.end();
+  }
 });
