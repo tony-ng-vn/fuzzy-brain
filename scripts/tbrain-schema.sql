@@ -38,3 +38,29 @@ do $$ begin
       for each row execute function reject_archive_mutation();
   end if;
 end $$;
+
+create or replace function protect_archived_source() returns trigger language plpgsql as $$
+declare protected boolean;
+begin
+  if tg_table_name = 'episodes' then
+    execute format('select exists(select 1 from %I.archive_records where episode_id=$1)',tg_table_schema) into protected using old.id;
+    if protected then raise exception 'archived source is append-only'; end if;
+  else
+    execute format('select exists(select 1 from %I.archive_messages where evidence_id=$1)',tg_table_schema) into protected using old.id;
+    if protected and (tg_op='DELETE' or
+      (to_jsonb(new)-'embedding'-'fts'-'sender_deleted_at') is distinct from (to_jsonb(old)-'embedding'-'fts'-'sender_deleted_at')) then
+      raise exception 'archived source is append-only';
+    end if;
+  end if;
+  if tg_op='DELETE' then return old; end if;
+  return new;
+end;
+$$;
+do $$ begin
+  if not exists(select 1 from pg_trigger where tgrelid='episodes'::regclass and tgname='archived_episode_immutable') then
+    create trigger archived_episode_immutable before update or delete on episodes for each row execute function protect_archived_source();
+  end if;
+  if not exists(select 1 from pg_trigger where tgrelid='evidence'::regclass and tgname='archived_evidence_immutable') then
+    create trigger archived_evidence_immutable before update or delete on evidence for each row execute function protect_archived_source();
+  end if;
+end $$;

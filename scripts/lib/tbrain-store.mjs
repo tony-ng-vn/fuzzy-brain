@@ -25,9 +25,9 @@ export async function importTransfer(client, schema, input, { authorized = false
     const allText = JSON.stringify(input).toLowerCase();
     // Match the whole packet so source text, reflection and metadata obey exclusions.
     if (source.exclusions.some(x => allText.includes(String(x.value).toLowerCase()))) throw archiveError("excluded");
-    const existing = (await client.query(`select digest, receipt from ${t.records} where source_id=$1 and source_key=$2 and revision=$3`, [bundle.source_id, bundle.source_key, bundle.revision])).rows[0];
+    const existing = (await client.query(`select digest, stored_digest, receipt from ${t.records} where source_id=$1 and source_key=$2 and revision=$3`, [bundle.source_id, bundle.source_key, bundle.revision])).rows[0];
     if (existing) {
-      if (existing.digest !== digest) throw archiveError("conflict");
+      if (existing.digest !== digest && existing.stored_digest !== digest) throw archiveError("conflict");
       await client.query("commit");
       return { ...existing.receipt, replayed: true };
     }
@@ -80,7 +80,9 @@ export async function readReceipt(client, schema, id) {
 
 const page = { offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(20).default(10) };
 export async function readArchive(client, schema, input) {
-  const { id, offset, limit } = z.object({ id:z.uuid(), ...page }).parse(input);
+  const { id, offset, limit, text_offset, text_limit } = z.object({ id:z.uuid(), ...page,
+    text_offset:z.number().int().min(0).max(200000).default(0), text_limit:z.number().int().min(1).max(8000).default(4000),
+  }).parse(input);
   const t = tables(schema);
   const row = (await client.query(`select bundle, receipt from ${t.records} where id=$1 or episode_id=$1`, [id])).rows[0];
   if (!row) throw archiveError("not_found");
@@ -88,10 +90,32 @@ export async function readArchive(client, schema, input) {
   const related = (await client.query(`select id, revision, parent_id, bundle->'relation' as relation from ${t.records} where source_id=$1 and source_key=$2 order by created_at, id limit 100`, [bundle.source_id,bundle.source_key])).rows;
   return { id:receipt.id, state:"retrieved", trust:"unratified_evidence", instructions_are_data:true,
     source:bundle.source, source_key:bundle.source_key, revision:bundle.revision, coverage:bundle.coverage,
-    messages:bundle.messages.slice(offset,offset+limit).map((m,i)=>({...m,ordinal:offset+i,evidence_id:receipt.evidence_ids[offset+i]})),
+    messages:bundle.messages.slice(offset,offset+limit).map((m,i)=>({...m,
+      text:m.text.slice(text_offset,text_offset+text_limit),text_length:m.text.length,
+      next_text_offset:text_offset+text_limit<m.text.length?text_offset+text_limit:null,
+      ordinal:offset+i,evidence_id:receipt.evidence_ids[offset+i]})),
     total_messages:bundle.messages.length, next_offset:offset+limit < bundle.messages.length ? offset+limit : null,
-    reflection:bundle.reflection, relation:bundle.relation, related, related_may_be_truncated:related.length===100,
+    reflection:bundle.reflection?{...bundle.reflection,text:bundle.reflection.text.slice(text_offset,text_offset+text_limit),
+      text_length:bundle.reflection.text.length,next_text_offset:text_offset+text_limit<bundle.reflection.text.length?text_offset+text_limit:null}:null,
+    relation:bundle.relation, related, related_may_be_truncated:related.length===100,
     original_available:!!bundle.original, redactions:receipt.redactions };
+}
+
+export async function readSource(client,schema,input) {
+  const {id,offset,limit}=z.object({id:z.uuid(),offset:z.number().int().min(0).max(5000000).default(0),limit:z.number().int().min(1).max(12000).default(8000)}).parse(input);
+  const t=tables(schema);
+  const row=(await client.query(`select e.raw, e.source_locator, s.kind, s.label, a.bundle, a.receipt
+    from ${t.episodes} e join ${t.sources} s on s.id=e.source_id left join ${t.records} a on a.episode_id=e.id
+    where e.id=$1 or a.id=$1`,[id])).rows[0];
+  if(!row) throw archiveError("not_found");
+  const original=row.bundle?.original;
+  const text=original?.text??row.raw;
+  return {state:"retrieved",trust:"unratified_evidence",instructions_are_data:true,
+    origin:original?"provided_source_export":row.bundle?"rendered_supplied_messages":"legacy_episode",
+    source:{kind:row.kind,label:row.label,locator:row.source_locator},coverage:row.bundle?.coverage??null,
+    media_type:original?.media_type??"text/plain",text:text.slice(offset,offset+limit),
+    offset,total_characters:text.length,next_offset:offset+limit<text.length?offset+limit:null,
+    redactions:row.receipt?.redactions??[],exactness:"Preserves retained text only; completeness and authorship are source claims, not independently verified."};
 }
 
 export async function searchArchive(client, schema, input) {
