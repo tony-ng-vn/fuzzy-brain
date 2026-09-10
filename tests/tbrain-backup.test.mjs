@@ -18,6 +18,15 @@ test("backup connection settings reject URL overrides and keep credentials in en
   assert.throws(() => connectionEnvironment("not a URL"), /PostgreSQL URL/);
 });
 
+test("backup accepts validated JavaScript driver hints without forwarding them to libpq", () => {
+  const env = connectionEnvironment(`${local}?pgbouncer=true&uselibpqcompat=true&sslmode=require`);
+  assert.equal(env.PGSSLMODE, "require");
+  assert.equal(env.PGBOUNCER, undefined);
+  assert.equal(env.PGUSELIBPQCOMPAT, undefined);
+  assert.throws(() => connectionEnvironment(`${local}?pgbouncer=maybe`), /invalid driver hint/);
+  assert.throws(() => connectionEnvironment(`${local}?uselibpqcompat=1`), /invalid driver hint/);
+});
+
 test("restore accepts only explicit loopback test databases", () => {
   validateRestoreTarget(local);
   for (const url of [undefined, "postgresql://u@remote.example/tbrain_restore_example", "postgresql://u@localhost/brain", `${local}?host=remote.example`]) {

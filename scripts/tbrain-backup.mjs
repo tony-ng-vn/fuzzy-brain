@@ -13,6 +13,7 @@ const connectionParameters = new Map([
   ["sslcert", "PGSSLCERT"], ["sslkey", "PGSSLKEY"],
   ["connect_timeout", "PGCONNECT_TIMEOUT"],
 ]);
+const driverHints = new Set(["pgbouncer", "uselibpqcompat"]);
 
 export function connectionEnvironment(databaseUrl, inherited = process.env) {
   let url;
@@ -28,6 +29,10 @@ export function connectionEnvironment(databaseUrl, inherited = process.env) {
     PGDATABASE: decodeURIComponent(url.pathname.slice(1)), PGCONNECT_TIMEOUT: "15",
   });
   for (const [key, value] of url.searchParams) {
+    if (driverHints.has(key)) {
+      if (value !== "true" && value !== "false") throw new Error(`invalid driver hint: ${key}`);
+      continue;
+    }
     const target = connectionParameters.get(key);
     if (!target) throw new Error(`unsupported connection parameter: ${key}`);
     env[target] = value;
