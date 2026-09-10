@@ -1,6 +1,6 @@
 {
   "name": "fuzzy-brain",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,7 +18,11 @@
     "mcp": "node scripts/fuzzy-brain-mcp.mjs",
     "agents:install": "node scripts/install-agents.mjs",
     "test:bench": "node --test --test-concurrency=1 tests/recall-bench-*.test.mjs",
-    "test:heavy": "RECALL_BENCH_HEAVY=1 node --test --test-concurrency=1 tests/recall-bench-corpus.test.mjs"
+    "test:heavy": "RECALL_BENCH_HEAVY=1 node --test --test-concurrency=1 tests/recall-bench-corpus.test.mjs",
+    "tbrain": "node scripts/tbrain.mjs",
+    "tbrain:mcp": "node scripts/tbrain-mcp.mjs",
+    "tbrain:migrate": "node scripts/tbrain-migrate.mjs",
+    "test:tbrain": "node --test --test-concurrency=1 tests/tbrain-*.test.mjs tests/recall-archive-provenance.test.mjs tests/run-json.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Fuzzy Brain",
+  title: "Tbrain",
   description: "A living map of Tony's brain",
 };
 
