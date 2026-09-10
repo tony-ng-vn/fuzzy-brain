@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { formatLocalDate, formatReminderSummary, inferDeadline, normalizeTimestamp } from "./lib/temporal.mjs";
+import { importTransfer, errorCode } from "./lib/tbrain-store.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -314,7 +315,14 @@ async function main() {
     const s = await client.query("select to_regnamespace($1) is not null as exists", [schema]);
     if (!s.rows[0].exists) throw new Error(`schema ${schema} is missing; run npm run db:migrate`);
 
-    if (!command || command === "index") {
+    if (command === "import-transfer") {
+      const input = JSON.parse(await readStdin());
+      const receipt = await importTransfer(client, schema, input, {
+        authorized: args.includes("--authorize"),
+        allowedSourceIds: (process.env.TBRAIN_ALLOWED_SOURCE_IDS || "").split(",").filter(Boolean),
+      });
+      console.log(JSON.stringify(receipt, null, 2));
+    } else if (!command || command === "index") {
       const nodes = (
         await client.query(
           `select n.id, n.type, n.title, n.created_at, ts.status, ts.due_at
@@ -605,6 +613,12 @@ async function main() {
 // Only touch the database when run directly; importing for tests must not.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
+    if (process.argv[2] === "import-transfer") {
+      const failed = { state: "failed", error: { code: errorCode(err) } };
+      if (process.argv.includes("--json-errors")) console.log(JSON.stringify(failed));
+      else { console.error(JSON.stringify(failed)); process.exitCode = 1; }
+      return;
+    }
     console.error(err.message);
     process.exit(1);
   });
