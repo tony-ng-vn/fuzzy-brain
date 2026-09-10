@@ -10,8 +10,14 @@ import { importTransfer, readReceipt, readArchive, readSource, searchArchive } f
 
 loadEnvLocal();
 
+test("archive test setup rejects remote and redirected database URLs before connecting", async () => {
+  await assert.rejects(createTbrainTestDatabase("postgresql://user@remote.example/brain"), /loopback/);
+  await assert.rejects(createTbrainTestDatabase("postgresql://user@127.0.0.1/brain?host=remote.example"), /unsupported connection parameter/);
+});
+
 test("portable archive transactions on isolated development schema", async t => {
   const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
   const client = database.client;
   const schema = "brain_dev";
   const sourceId = randomUUID();

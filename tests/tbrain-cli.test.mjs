@@ -12,6 +12,7 @@ import { fixture } from "./helpers/tbrain-fixture.mjs";
 loadEnvLocal();
 test("portable transfer crosses real CLI and fresh process boundaries", async t => {
   const database=await createTbrainTestDatabase();
+  t.after(() => database.close());
   const dir=mkdtempSync(join(tmpdir(),"tbrain-cli-")); const path=join(dir,"day.json");
   const sourceId=randomUUID(); const input=fixture({source_id:sourceId,source_key:randomUUID()});
   writeFileSync(path,JSON.stringify(input),{mode:0o600});

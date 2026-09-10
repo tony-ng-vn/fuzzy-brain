@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { recall } from "../scripts/recall.mjs";
 import { randomUUID } from "node:crypto";
-import { makeClient } from "../scripts/brain.mjs";
+import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { loadEnvLocal } from "../scripts/recall.mjs";
 import { importTransfer } from "../scripts/lib/tbrain-store.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
@@ -80,8 +80,9 @@ test("metadata failure never presents an archive paraphrase as an attributed quo
 test("real development storage returns archive metadata through shared recall", async t => {
   loadEnvLocal();
   if (!process.env.DATABASE_URL_DEV) return t.skip("DATABASE_URL_DEV is required; never use production for this test");
-  const client = makeClient({ connectionString: process.env.DATABASE_URL_DEV });
-  await client.connect();
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const client = database.client;
   try {
     const sourceId = randomUUID();
     const sourceKey = randomUUID();
@@ -105,6 +106,6 @@ test("real development storage returns archive metadata through shared recall", 
     assert.equal(old.has_later_revision, true);
     assert.equal(old.observation_group, `${sourceId}:${sourceKey}`);
   } finally {
-    await client.end();
+    await database.close();
   }
 });

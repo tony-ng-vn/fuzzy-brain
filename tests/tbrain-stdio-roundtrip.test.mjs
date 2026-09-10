@@ -13,7 +13,7 @@ loadEnvLocal();
 const serverPath = fileURLToPath(new URL("../scripts/tbrain-mcp.mjs", import.meta.url));
 const parsed = response => JSON.parse(response.content[0].text);
 
-async function startServer(t, { databaseUrl, sourceId, capture = true }) {
+async function startServer(t, { databaseUrl, sourceId, capture = true }, servers) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -30,7 +30,6 @@ async function startServer(t, { databaseUrl, sourceId, capture = true }) {
   const client = new Client({ name: "tbrain-synthetic-roundtrip", version: "1.0.0" });
   let diagnostics = "";
   transport.stderr?.on("data", chunk => { diagnostics += chunk; });
-  await client.connect(transport);
   let closed = false;
   const close = async () => {
     if (closed) return;
@@ -38,7 +37,10 @@ async function startServer(t, { databaseUrl, sourceId, capture = true }) {
     await client.close();
   };
   t.after(close);
-  return { client, pid: transport.pid, close, diagnostics: () => diagnostics };
+  const server = { client, get pid() { return transport.pid; }, close, diagnostics: () => diagnostics };
+  servers.push(server);
+  await client.connect(transport);
+  return server;
 }
 
 async function successfulCall(server, name, args) {
@@ -56,11 +58,7 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
     for (const server of servers) await server.close();
     await isolated.close();
   });
-  const start = async options => {
-    const server = await startServer(t, options);
-    servers.push(server);
-    return server;
-  };
+  const start = options => startServer(t, options, servers);
   const sourceId = randomUUID();
   const deniedSourceId = randomUUID();
   await database.query("insert into brain_dev.sources(id,kind,label) values ($1,'tbrain_stdio_test',$3),($2,'tbrain_stdio_test',$4)", [sourceId, deniedSourceId, sourceId, deniedSourceId]);
