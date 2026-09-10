@@ -58,3 +58,8 @@ test("exact provided source bytes survive preparation when no redaction applies"
   a.original = { media_type: "text/plain", text: "line one\r\nline two\n" };
   assert.equal(prepareTransfer(a).bundle.original.text, a.original.text);
 });
+
+test("redaction cannot silently change or collapse known source message identifiers",()=>{
+  const a=fixture();a.messages[0].id="123-45-6789";a.messages[1].id="987-65-4321";
+  assert.throws(()=>prepareTransfer(a),/identifier rejected/);
+});

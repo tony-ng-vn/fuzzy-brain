@@ -71,6 +71,31 @@ test("portable archive transactions on isolated development schema", async t => 
       assert.ok(found.hits.some(h => h.text.includes("astrolabe")));
       assert.equal(found.exhaustive, false);
     });
+    await t.test("one query retrieves independently recorded days with their own dates", async () => {
+      const marker=`crossday${randomUUID().replaceAll("-","")}`;
+      for(const at of ["2020-02-01T10:00:00Z","2026-08-01T10:00:00Z"]) {
+        const p=packet();p.messages[0].text=`I discussed ${marker}.`;p.messages[0].at=at;
+        await importTransfer(client,schema,p,opts);
+      }
+      const result=await searchArchive(client,schema,{query:marker});
+      assert.equal(result.hits.length,2);
+      assert.equal(new Set(result.hits.map(h=>h.at)).size,2);
+      assert.equal(new Set(result.hits.map(h=>h.observation_group)).size,2);
+    });
+    await t.test("failure after episode insertion rolls back the entire capture and can be retried", async () => {
+      const p=packet();p.messages[0].text="synthetic_storage_failure";
+      await client.query(`create function brain_dev.fail_synthetic_evidence() returns trigger language plpgsql as $$
+        begin if new.quote='synthetic_storage_failure' then raise exception 'synthetic failure'; end if; return new; end; $$;
+        create trigger fail_synthetic_evidence before insert on brain_dev.evidence for each row execute function brain_dev.fail_synthetic_evidence()`);
+      try {
+        await assert.rejects(importTransfer(client,schema,p,opts),/synthetic failure/);
+        const rows=await client.query("select count(*)::int n from brain_dev.archive_records where source_id=$1 and source_key=$2",[sourceId,p.source_key]);
+        assert.equal(rows.rows[0].n,0);
+        const orphan=await client.query("select count(*)::int n from brain_dev.episodes where raw like 'synthetic_storage_failure%'");
+        assert.equal(orphan.rows[0].n,0);
+      } finally { await client.query("drop trigger fail_synthetic_evidence on brain_dev.evidence; drop function brain_dev.fail_synthetic_evidence()"); }
+      assert.equal((await importTransfer(client,schema,p,opts)).state,"committed");
+    });
     await t.test("explicit dates restrict results without inventing dates", async () => {
       const result = await searchArchive(client, schema, { query: "astrolabe", from: "2026-01-01T00:00:00Z" });
       assert.equal(result.hits.length, 0); assert.equal(result.state, "no_matches");
