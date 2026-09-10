@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.26.1
+
+Sep 10, 2026
+
+**Tools**
+
+- Full backups now accept the validated `pgbouncer` and `uselibpqcompat` hints used by the managed database URL, while unknown connection overrides remain blocked.
+
+---
+
 ## v0.26.0
 
 Sep 9, 2026
