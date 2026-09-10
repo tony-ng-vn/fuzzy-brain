@@ -7,19 +7,21 @@ It does not start a public web listener, and the existing local web app is not a
 
 ## Current capability status
 
-Implemented and locally tested: file validation, authorized import, source exclusions, atomic receipts, replay/conflict handling, source revision history, bounded source reads, lexical search before embeddings, shared recall provenance, private stdio capture and backup/restore.
-The tests use synthetic records in isolated local PostgreSQL databases.
-They do not prove a production deployment or a ChatGPT call.
+Implemented and verified: file validation, authorized import, source exclusions, atomic receipts, replay/conflict handling, source revision history, bounded source reads, lexical search before embeddings, shared recall provenance, private stdio capture and backup/restore.
+The automated tests use synthetic records in isolated local PostgreSQL databases.
+The September 10, 2026 release also applied the additive migration to production after a private backup, configured one authorized ChatGPT source, installed the pinned runtime for detected local clients, and connected a private ChatGPT developer-mode app through an OpenAI Secure MCP Tunnel.
+The tunnel runtime key is restricted to Tunnels Read and Use.
+The managed local daemon is healthy and starts Tbrain through the pinned runtime.
 
-Live account inspection on September 9, 2026 found developer mode enabled in ChatGPT.
-The create-connection form offered Server URL and Tunnel.
-The installed list had no Tbrain connection, and both the form and the Platform tunnel page showed no existing tunnels.
-No resource or registration was created during that inspection.
-Actual archive tool permissions still require a harmless staging call through the registered connection.
+The ChatGPT connection discovered all eight tools.
+A synthetic source-export transfer committed to `brain_dev`, and a fresh ChatGPT conversation retrieved the exact passage, receipt ID, source platform, speaker, fidelity and coverage kind.
+An invalid model-assembled transfer that claimed complete original bytes failed before commit.
+After the test, the daemon switched to production and ChatGPT reported storage ready, private stdio transport, one authorized source and no automations.
+Production still contained zero archive records after the synthetic test.
 
 The [current developer-mode guide](https://developers.openai.com/api/docs/guides/developer-mode) describes read/write access.
 The [tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) requires a registered tunnel, runtime credentials and the correct workspace association.
-Documentation establishes a supported path, not this account's successful round trip.
+This account completed that setup and round trip on September 10, 2026.
 
 ## One-time local setup
 
@@ -46,7 +48,8 @@ BRAIN_SCHEMA=public node scripts/tbrain-migrate.mjs --authorize-production
 
 The production command rehearses in brain_dev first.
 It does not copy development records into production.
-This release has not run that command against the real brain.
+This installation ran that command against the real brain on September 10, 2026, after creating a private backup.
+Other installations still require explicit approval before running it.
 A schema-scoped runtime role must have SELECT on the existing source/evidence and brain tables, INSERT on episodes, evidence, archive_records and archive_messages, and no routine UPDATE or DELETE access to source content.
 Capture does not need to insert approved nodes, edges or temporal events.
 Use the existing trusted database administration process to grant access; a database owner credential is not a public-client credential.
@@ -119,11 +122,12 @@ It cannot create approved memories, semantic edges or commitments.
 The old `scripts/fuzzy-brain-mcp.mjs`, package name, installed identities and `~/.fuzzy-brain` launchers remain compatible.
 Those launchers use a pinned runtime; a new checkout alone does not update an already installed client.
 Do not point an existing production launcher at an unfinished development branch.
-After this release reaches `main`, run `npm run agents:install` once.
+After a release reaches `main`, run `npm run agents:install` once.
 The installer refreshes the pinned runtime and registers both `fuzzy-brain` and `tbrain` with each detected local MCP client.
 The stable stdio command for a tunnel or another private client is `~/.fuzzy-brain/bin/brain-run tbrain-mcp.mjs`.
+This installation completed that step for Codex, Claude Code, Cursor, Gemini and Claude Desktop.
 
-For ChatGPT, create an authorized Secure MCP Tunnel and associate it with the actual ChatGPT workspace.
+For a new ChatGPT installation, create an authorized Secure MCP Tunnel and associate it with the actual ChatGPT workspace.
 Use the official tunnel-client setup command for the installed version, with the private stdio command above as the target.
 Keep its control-plane credential outside prompts and source control.
 Then create the private ChatGPT connection and inspect the discovered tools.
@@ -132,7 +136,8 @@ If the account exposes reads only, preserve that boundary and use the daily file
 Do not rename writes as reads.
 
 A tunnel still needs a running process and database access.
-The verified local runtime depends on this Mac being awake.
+The verified managed local runtime depends on this Mac being awake and starts from the `tbrain` tunnel-client profile.
+Inspect it with `tunnel-client runtimes status tbrain --json` and `tunnel-client doctor --profile tbrain --explain`.
 An always-available runtime needs a separately approved host and operating budget; this release makes no such deployment claim.
 Stop the runtime or remove the tunnel/workspace association to revoke remote access, and revoke its runtime credential through the provider's credential controls.
 
@@ -206,13 +211,15 @@ Restore only trusted backups because database archives contain executable schema
 Production restoration requires a separate explicitly authorized operator procedure.
 After restoring, run `verify` on a known receipt and inspect its original source from a fresh client.
 
-## Verification and remaining gates
+## Verification and operating boundary
 
 Run `npm run test:tbrain` with DATABASE_URL_DEV pointing to an isolated local PostgreSQL instance with pgvector installed.
 Run the repository's required `npm test`, `npm run lint` and `npm run typecheck` before release.
 The dedicated CI workflow provisions a disposable PostgreSQL instance and exercises the actual CLI and stdio boundaries.
 See docs/tbrain-verification.md for measured results and scenario coverage.
 
-The remaining human gates are approval to apply the additive production migration and configure its source allowlist, and creation/authorization of the private tunnel and ChatGPT connection.
-A synthetic ChatGPT capture followed by retrieval in a fresh ChatGPT conversation must be observed before claiming that client verified.
-No reminders, paid-host commitments, public personal-data endpoint or production experiment is part of this release.
+The production migration, source allowlist, private tunnel, restricted runtime key and private ChatGPT connection are complete.
+The synthetic ChatGPT capture and fresh-conversation retrieval ran only against `brain_dev`.
+Each future archive still requires an explicit authorized request such as a close-of-day review and may include only material actually supplied to the client.
+The current ChatGPT permission flow asked for the synthetic write and received one-time permission.
+No reminders, paid-host commitment, public personal-data endpoint or synthetic production record is part of this release.

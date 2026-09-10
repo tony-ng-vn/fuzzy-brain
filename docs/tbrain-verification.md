@@ -1,8 +1,8 @@
 # Tbrain release evidence
 
-Local verification date: September 9, 2026.
-The database and all new fixtures were isolated, local and synthetic.
-No production migration, production capture, tunnel registration or ChatGPT tool call is claimed.
+Local and live verification date: September 10, 2026.
+Automated fixtures and ChatGPT write tests used isolated synthetic data in `brain_dev`.
+The production migration, source allowlist, private tunnel and private ChatGPT connection are verified below.
 
 ## Required checks
 
@@ -16,6 +16,8 @@ Lint and type checking passed, with the same six baseline warnings and no new wa
 The final suite includes the source-list whitespace and shared observation-identity regressions.
 The dedicated CI workflow passed on Node 22 with the actual transport against disposable PostgreSQL for code commit 8e07ed9.
 The current check results are attached to [PR 37](https://github.com/tony-ng-vn/fuzzy-brain/pull/37).
+After the managed-database backup fix, the required suite passed 565 of 568 tests with zero failures and the same three intentional skips.
+The final hotfix checks are attached to [PR 38](https://github.com/tony-ng-vn/fuzzy-brain/pull/38).
 
 An earlier development suite failed because retained synthetic archive rows took the embedding sweep's limited batch ahead of its fixtures.
 Each new archive integration suite now creates and removes its own local database.
@@ -25,7 +27,7 @@ This was an integration defect fixed during development, not a baseline failure.
 ## Round trip and measured latency
 
 Environment: macOS Mac16,8, Node 26.6.0, PostgreSQL 17.11 and pgvector 0.8.6 on localhost port 55439.
-These measurements describe a small synthetic corpus on a local machine, not remote or production latency.
+The table measurements describe a small synthetic corpus on a local machine, not remote or production latency.
 
 | Operation | Measured elapsed time |
 | --- | --- |
@@ -35,6 +37,9 @@ These measurements describe a small synthetic corpus on a local machine, not rem
 | Maximum of those 100 replays | 110.20 ms |
 | Direct transaction capture | 6.75 ms |
 | Direct lexical search before embedding | 1.02 ms |
+
+The ChatGPT user interface reported about 7 seconds for the successful synthetic archive call and about 13 seconds for search plus exact readback in a fresh conversation.
+Those are observed end-to-end client durations, not server-only benchmarks.
 
 The transport test terminates the first server process and verifies the same receipt, source messages and reflection through a fresh server process.
 One hundred deliveries preserve one record and its evidence rows.
@@ -52,6 +57,16 @@ All five source-protection trigger definitions also matched.
 The private verification file has SHA256 `095b8d06f5e84cca420656aeb0a1d4983187d151c3b247eb4185038906fa6acf`.
 Private backup archives and raw test logs remain outside this public repository.
 This proof validates snapshot restoration of the implemented schema; it is not a backup of the real brain.
+
+A fresh post-migration production backup was created with mode 0600.
+It is 291,032,363 bytes and has SHA256 `2c7f73e7f7753f7e51a716b050a0f96a8d0320d23e7b469e57c62f12fff8b01a`.
+`pg_restore --list` read all 442 archive entries.
+
+The unmodified full restore correctly stopped on a local machine that does not have the managed `graph`, `pgcontext` and `pgcontext_pgvector` extension binaries.
+A second empty loopback database restored the complete public application schema and data while omitting those managed extension schemas and their eight graph synchronization triggers.
+The restored copy matched production across all nine public table row counts, all primary keys and all 21 text columns.
+The comparison covered 51,603 rows without printing source text.
+Full disaster recovery still requires a PostgreSQL target with the same managed extension binaries as production.
 
 ## Distinct scenario coverage
 
@@ -118,11 +133,19 @@ This is evidence about the exercised cases, not proof against every possible fai
 
 ## Account and release boundaries
 
-A live read-only account inspection confirmed developer mode enabled and no existing Tbrain plugin or tunnel.
-The production additive migration and private ChatGPT registration still require approval.
-The source allowlist must identify the actual authorized production source.
-There is no measured ChatGPT capture latency or successful ChatGPT round trip yet.
-The local path depends on a running Mac; no paid or always-on host has been provisioned.
+Developer mode is enabled.
+The private Tbrain app is connected through an OpenAI Secure MCP Tunnel associated with the selected ChatGPT workspace.
+Its restricted runtime key grants Tunnels Read and Use, and the secret is stored outside the repository in a mode-0600 file.
+The app discovered `archive_day`, `read_archive`, `read_receipt`, `read_source`, `recall`, `search_archive`, `status` and `transfer_format`.
+
+The first invalid synthetic transfer was rejected because model-assembled material cannot claim a complete source export with original bytes.
+The corrected source-export transfer committed in `brain_dev` with receipt `44e503a3-3c17-4450-bec0-fcbeec01fc06`.
+A fresh ChatGPT conversation retrieved the exact synthetic passage and the same receipt with speaker `Tony`, fidelity `verbatim` and coverage `source_export`.
+The daemon then switched to production, where ChatGPT reported storage ready, capture guarded by runtime authorization and one allowed source, transcript access limited to supplied material, and automations disabled.
+Production had zero archive records before and after the synthetic test.
+
+The local path depends on this Mac being awake and able to reach the database.
+No paid or always-on host has been provisioned.
 
 External automated review was unavailable: one reviewer reported a quota limit, while another skipped automatic review under its repository policy.
 Neither status is counted as substantive review coverage.
