@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.26.2
+
+Sep 10, 2026
+
+**Docs**
+
+- The Tbrain runbook now records the verified production migration, private ChatGPT tunnel, development-schema round trip and production backup restore evidence.
+
+---
+
 ## v0.26.1
 
 Sep 10, 2026
