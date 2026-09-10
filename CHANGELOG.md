@@ -19,6 +19,8 @@ Sep 9, 2026
 - Compatible clients can capture an authorized day, inspect original passages, search older evidence and verify receipts through a private connection.
 - A validated portable JSON file supports one-command import when the conversation client cannot write directly.
 - Local memory writes now deliver their input to the child process and report bounded failures without exposing private output.
+- The agent installer registers both the existing Fuzzy Brain server and the new Tbrain server through the same pinned runtime.
+- Patched browser, URL parsing and archive dependencies replace the vulnerable versions reported by the release audit. Four upstream findings in the local embedding stack still have no published fix.
 
 **UI**
 

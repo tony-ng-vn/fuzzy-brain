@@ -119,6 +119,9 @@ It cannot create approved memories, semantic edges or commitments.
 The old `scripts/fuzzy-brain-mcp.mjs`, package name, installed identities and `~/.fuzzy-brain` launchers remain compatible.
 Those launchers use a pinned runtime; a new checkout alone does not update an already installed client.
 Do not point an existing production launcher at an unfinished development branch.
+After this release reaches `main`, run `npm run agents:install` once.
+The installer refreshes the pinned runtime and registers both `fuzzy-brain` and `tbrain` with each detected local MCP client.
+The stable stdio command for a tunnel or another private client is `~/.fuzzy-brain/bin/brain-run tbrain-mcp.mjs`.
 
 For ChatGPT, create an authorized Secure MCP Tunnel and associate it with the actual ChatGPT workspace.
 Use the official tunnel-client setup command for the installed version, with the private stdio command above as the target.
