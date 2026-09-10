@@ -69,6 +69,7 @@ test("portable archive transactions on isolated development schema", async t => 
       await importTransfer(client, schema, p, opts);
       const start = performance.now(); const found = await searchArchive(client, schema, { query: "astrolabe" }); timings.push(performance.now() - start);
       assert.ok(found.hits.some(h => h.text.includes("astrolabe")));
+      assert.equal(found.hits.find(h=>h.text.includes("astrolabe")).observation_group,`${sourceId}:${p.source_key}`);
       assert.equal(found.exhaustive, false);
     });
     await t.test("one query retrieves independently recorded days with their own dates", async () => {
