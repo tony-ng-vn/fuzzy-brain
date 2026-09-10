@@ -76,5 +76,7 @@ export function prepareTransfer(input) {
   const bundle = scrub(supplied);
   // Identity must survive filtering; otherwise two different inputs could alias.
   if (["source_id", "source_key", "revision"].some(k => bundle[k] !== supplied[k])) throw new Error("sensitive transfer identity rejected");
+  if (bundle.messages.some((m,i)=>m.id!==supplied.messages[i].id) || bundle.source.conversation_id!==supplied.source.conversation_id) throw new Error("sensitive source identifier rejected");
+  validateTransfer(bundle);
   return { bundle, digest: digest(supplied), stored_digest: digest(bundle), redactions };
 }
