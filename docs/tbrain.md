@@ -172,6 +172,7 @@ Exclusions reject the entire packet before any source record is committed.
 Omissions in a partial handoff are explicit source claims with a reason and known count or null.
 
 Corrections and later exports append a new revision with `relation.kind` equal to `correction`, `supplements` or `source_export` and the previous receipt ID.
+A source_key may be assigned locally when the platform identity is unknown; it is a transfer identity, never a fabricated platform message or conversation ID.
 Keep the same source_key even if a later export supplies previously unknown platform IDs.
 The prior revision remains inspectable and retrieval identifies related revisions as one observation group.
 Cross-platform material with unknown shared identity is not automatically deduplicated or treated as corroboration.

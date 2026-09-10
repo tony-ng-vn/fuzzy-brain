@@ -9,12 +9,13 @@ No production migration, production capture, tunnel registration or ChatGPT tool
 Baseline commit 62989ffcde71b6b210df0b483004da7528e30eea passed 477 of 479 tests, with two existing optional corpus tests skipped.
 Baseline lint and type checking passed; lint had six existing warnings in the recall benchmark files.
 
-The integrated required suite passed 563 of 566 tests, with zero failures and three skips, in 41.95 seconds.
+The integrated required suite passed 564 of 567 tests, with zero failures and three skips, in 42.50 seconds.
 The skips were the two existing optional corpus tests and the explicit backup integration test that needs two empty local restore databases.
 The backup integration was run separately and all six backup checks passed.
 Lint and type checking passed, with the same six baseline warnings and no new warnings.
-A subsequent one-line source-list whitespace fix passed all 17 relevant CLI and MCP checks, including its new regression.
-The dedicated CI workflow verifies Node 22 and the actual transport against disposable PostgreSQL.
+The final suite includes the source-list whitespace and shared observation-identity regressions.
+The dedicated CI workflow passed on Node 22 with the actual transport against disposable PostgreSQL for code commit 8e07ed9.
+The current check results are attached to [PR 37](https://github.com/tony-ng-vn/fuzzy-brain/pull/37).
 
 An earlier development suite failed because retained synthetic archive rows took the embedding sweep's limited batch ahead of its fixtures.
 Each new archive integration suite now creates and removes its own local database.
@@ -28,12 +29,12 @@ These measurements describe a small synthetic corpus on a local machine, not rem
 
 | Operation | Measured elapsed time |
 | --- | --- |
-| First capture through the real stdio server and controlled CLI | 113.79 ms |
-| Older-history lexical search through stdio | 3.95 ms |
-| Median of 100 real transport replays | 104.18 ms |
-| Maximum of those 100 replays | 110.08 ms |
-| Direct transaction capture | 6.95 ms |
-| Direct lexical search before embedding | 1.07 ms |
+| First capture through the real stdio server and controlled CLI | 112.27 ms |
+| Older-history lexical search through stdio | 3.60 ms |
+| Median of 100 real transport replays | 103.67 ms |
+| Maximum of those 100 replays | 110.20 ms |
+| Direct transaction capture | 6.75 ms |
+| Direct lexical search before embedding | 1.02 ms |
 
 The transport test terminates the first server process and verifies the same receipt, source messages and reflection through a fresh server process.
 One hundred deliveries preserve one record and its evidence rows.
@@ -122,3 +123,6 @@ The production additive migration and private ChatGPT registration still require
 The source allowlist must identify the actual authorized production source.
 There is no measured ChatGPT capture latency or successful ChatGPT round trip yet.
 The local path depends on a running Mac; no paid or always-on host has been provisioned.
+
+External automated review was unavailable: one reviewer reported a quota limit, while another skipped automatic review under its repository policy.
+Neither status is counted as substantive review coverage.
