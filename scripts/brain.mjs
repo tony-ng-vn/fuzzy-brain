@@ -319,7 +319,7 @@ async function main() {
       const input = JSON.parse(await readStdin());
       const receipt = await importTransfer(client, schema, input, {
         authorized: args.includes("--authorize"),
-        allowedSourceIds: (process.env.TBRAIN_ALLOWED_SOURCE_IDS || "").split(",").filter(Boolean),
+        allowedSourceIds: (process.env.TBRAIN_ALLOWED_SOURCE_IDS || "").split(",").map(id => id.trim()).filter(Boolean),
       });
       console.log(JSON.stringify(receipt, null, 2));
     } else if (!command || command === "index") {
