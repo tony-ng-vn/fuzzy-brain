@@ -25,8 +25,10 @@ import { mergeMcpServer, replaceTomlTable, tomlTableExists } from "./lib/mcp-con
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
-const SERVER_NAME = "fuzzy-brain";
-const SERVER_SCRIPT = "fuzzy-brain-mcp.mjs";
+const SERVERS = Object.freeze([
+  { name: "fuzzy-brain", script: "fuzzy-brain-mcp.mjs" },
+  { name: "tbrain", script: "tbrain-mcp.mjs" },
+]);
 
 function skip(id, reason) {
   return { id, status: "skip", detail: reason };
@@ -48,13 +50,14 @@ function describeEntry(entry) {
   return JSON.stringify({ command: entry.command, args: entry.args });
 }
 
-function writeJsonConfig(id, path, entry, dryRun) {
+function writeJsonConfig(id, path, entries, dryRun) {
   if (dryRun) {
     const exists = existsSync(path);
-    return planned(id, `${exists ? "merge into" : "create"} ${path}: mcpServers.${SERVER_NAME} -> ${describeEntry(entry)}`);
+    const summary = entries.map(({ name, entry }) => `mcpServers.${name} -> ${describeEntry(entry)}`).join(", ");
+    return planned(id, `${exists ? "merge into" : "create"} ${path}: ${summary}`);
   }
   const existing = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
-  const next = mergeMcpServer(existing, SERVER_NAME, entry);
+  const next = entries.reduce((config, { name, entry }) => mergeMcpServer(config, name, entry), existing);
   backupIfExists(path);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -63,15 +66,18 @@ function writeJsonConfig(id, path, entry, dryRun) {
 
 function registerJsonAgent({ id, dir, file, brainRunPath, dryRun, extraEntryFields = {} }) {
   if (!existsSync(dir)) return skip(id, `${dir} not found`);
-  const entry = { command: brainRunPath, args: [SERVER_SCRIPT], ...extraEntryFields };
-  return writeJsonConfig(id, join(dir, file), entry, dryRun);
+  const entries = SERVERS.map(({ name, script }) => ({
+    name,
+    entry: { command: brainRunPath, args: [script], ...extraEntryFields },
+  }));
+  return writeJsonConfig(id, join(dir, file), entries, dryRun);
 }
 
 function registerVsCode({ homeDir, brainRunPath, dryRun }) {
   const path = join(homeDir, "Library", "Application Support", "Code", "User", "mcp.json");
   if (!existsSync(path)) return skip("vscode", `${path} not found (VS Code MCP config is only rewritten if it already exists)`);
-  const entry = { command: brainRunPath, args: [SERVER_SCRIPT] };
-  return writeJsonConfig("vscode", path, entry, dryRun);
+  const entries = SERVERS.map(({ name, script }) => ({ name, entry: { command: brainRunPath, args: [script] } }));
+  return writeJsonConfig("vscode", path, entries, dryRun);
 }
 
 function registerCodex({ homeDir, brainRunPath, dryRun }) {
@@ -79,17 +85,26 @@ function registerCodex({ homeDir, brainRunPath, dryRun }) {
   if (!existsSync(codexDir)) return skip("codex", `${codexDir} not found`);
   const configPath = join(codexDir, "config.toml");
   const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
-  const body = [
-    `[mcp_servers.${SERVER_NAME}]`,
-    `command = "${brainRunPath}"`,
-    `args = ["${SERVER_SCRIPT}"]`,
-  ].join("\n");
+  const bodies = SERVERS.map(({ name, script }) => ({
+    name,
+    body: [
+      `[mcp_servers.${name}]`,
+      `command = "${brainRunPath}"`,
+      `args = ["${script}"]`,
+    ].join("\n"),
+  }));
 
   if (dryRun) {
-    const action = tomlTableExists(existing, `mcp_servers.${SERVER_NAME}`) ? "replace in place" : "append";
-    return planned("codex", `${action} [mcp_servers.${SERVER_NAME}] in ${configPath}`);
+    const actions = bodies.map(({ name }) => {
+      const action = tomlTableExists(existing, `mcp_servers.${name}`) ? "replace in place" : "append";
+      return `${action} [mcp_servers.${name}]`;
+    });
+    return planned("codex", `${actions.join(", ")} in ${configPath}`);
   }
-  const next = replaceTomlTable(existing, `mcp_servers.${SERVER_NAME}`, body);
+  const next = bodies.reduce(
+    (config, { name, body }) => replaceTomlTable(config, `mcp_servers.${name}`, body),
+    existing,
+  );
   backupIfExists(configPath);
   writeFileSync(configPath, next, "utf8");
   return written("codex", `updated ${configPath}`);
@@ -117,25 +132,32 @@ function registerClaudeCode({ homeDir, brainRunPath, dryRun, hasCli, runCli }) {
   }
 
   if (cliPresent) {
-    const removeArgs = ["mcp", "remove", SERVER_NAME, "-s", "user"];
-    const addArgs = ["mcp", "add", SERVER_NAME, "-s", "user", "--", brainRunPath, SERVER_SCRIPT];
+    const commands = SERVERS.flatMap(({ name, script }) => [
+      ["mcp", "remove", name, "-s", "user"],
+      ["mcp", "add", name, "-s", "user", "--", brainRunPath, script],
+    ]);
     if (dryRun) {
-      return planned("claude-code", `claude ${removeArgs.join(" ")} (ignore failure if not registered), then claude ${addArgs.join(" ")}`);
+      return planned("claude-code", commands.map(args => `claude ${args.join(" ")}`).join(", then "));
     }
-    try {
-      runCli(removeArgs);
-    } catch {
-      // Nothing registered yet under this name; add still runs.
+    for (let index = 0; index < commands.length; index += 2) {
+      try {
+        runCli(commands[index]);
+      } catch {
+        // Nothing registered yet under this name; add still runs.
+      }
+      runCli(commands[index + 1]);
     }
-    runCli(addArgs);
-    return written("claude-code", "registered via `claude mcp add -s user`");
+    return written("claude-code", "registered both servers via `claude mcp add -s user`");
   }
 
   // No CLI on PATH: edit the user-scope config directly, matching the
   // exact shape `claude mcp add` itself would have written so a later
   // run through either path is a no-op against the other.
-  const entry = { type: "stdio", command: brainRunPath, args: [SERVER_SCRIPT], env: {} };
-  return writeJsonConfig("claude-code", claudeJsonPath, entry, dryRun);
+  const entries = SERVERS.map(({ name, script }) => ({
+    name,
+    entry: { type: "stdio", command: brainRunPath, args: [script], env: {} },
+  }));
+  return writeJsonConfig("claude-code", claudeJsonPath, entries, dryRun);
 }
 
 function formatResult(result) {
@@ -151,7 +173,12 @@ function runtimeLine(runtime, dryRun) {
 }
 
 function genericSnippet(brainRunPath) {
-  const snippet = { mcpServers: { [SERVER_NAME]: { command: brainRunPath, args: [SERVER_SCRIPT] } } };
+  const snippet = {
+    mcpServers: Object.fromEntries(SERVERS.map(({ name, script }) => [
+      name,
+      { command: brainRunPath, args: [script] },
+    ])),
+  };
   return [
     "For any other MCP-compatible agent, add this to its config:",
     JSON.stringify(snippet, null, 2),

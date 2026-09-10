@@ -1,9 +1,19 @@
-# Fuzzy Brain
+# Tbrain
 
-Fuzzy Brain is Tony's append-mostly personal memory: ratified nodes and human-approved why-edges beside a larger, explicitly unratified evidence store.
+Tbrain is Tony's append-mostly personal memory: ratified nodes and human-approved why-edges beside a larger, explicitly unratified evidence store.
 
 The local app renders the brain.
 The command-line tools and local MCP server let Codex and other agents recall it, save explicit memories, understand deadlines, and append completion events without rewriting history.
+
+## Portable daily memory
+
+Tbrain can capture an authorized day as source evidence and a separate provisional reflection.
+The private MCP server and portable JSON importer share atomic storage, retry protection and read-back receipts.
+Older source passages remain searchable before embeddings are ready.
+
+Start with [the Tbrain operating guide](docs/tbrain.md) for capture, import, verification, backups and the current account setup gates.
+Existing fuzzy-brain package names, stored identities and launchers remain compatible.
+The new private server does not expose the local web app to the internet.
 
 ## Local setup
 

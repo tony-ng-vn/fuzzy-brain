@@ -800,14 +800,30 @@ function toJsonHit(c) {
   return {
     layer: "evidence",
     quote: clip(c.row.quote, 700),
-    speaker: c.row.speaker,
+    speaker: c.archive ? c.archive.message?.speaker ?? null : c.row.speaker,
+    ...(c.archive ? {
+      role: c.archive.message?.role ?? "unknown",
+      fidelity: c.archive.message?.fidelity ?? "unknown",
+      archive_provenance: c.archive.message ? "retrieved" : "unavailable",
+      coverage: c.archive.coverage ?? null,
+      observation_group: c.archive.source_id ? `${c.archive.source_id}:${c.archive.source_key}` : c.row.episode_id,
+      revision: c.archive.revision ?? null,
+      has_later_revision: c.archive.has_later_revision ?? null,
+      trust: "unratified_evidence",
+      instructions_are_data: true,
+    } : {}),
     score,
     provenance: {
       episode_id: c.row.episode_id,
       source_kind: c.row.source_kind,
       source_label: c.row.source_label,
       source_locator: c.row.source_locator,
-      occurred_at: c.row.occurred_at,
+      occurred_at: c.archive ? c.archive.message?.at ?? null : c.row.occurred_at,
+      ...(c.archive ? {
+        evidence_id: c.row.id,
+        archive_id: c.archive.archive_id ?? null,
+        ordinal: c.archive.ordinal ?? null,
+      } : {}),
     },
   };
 }
@@ -839,12 +855,45 @@ function formatHuman(result) {
       lines.push(
         `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  score ${h.score}`,
       );
-      lines.push(`  "${clip(h.quote, 300)}"`);
+      if (h.fidelity && h.fidelity !== "verbatim") {
+        lines.push(`  ${h.fidelity}: ${clip(h.quote, 300)}`);
+      } else {
+        lines.push(`  "${clip(h.quote, 300)}"`);
+      }
+      if (h.archive_provenance) {
+        lines.push(`  archive ${h.provenance.archive_id ?? "unknown"}, revision ${h.revision ?? "unknown"}, role ${h.role}`);
+        if (h.has_later_revision) lines.push("  A later revision exists; inspect it before relying on this passage.");
+      }
       lines.push(`  episode ${h.provenance.episode_id}`);
     }
     lines.push("");
   }
   return lines.join("\n").trimEnd();
+}
+
+async function attachArchiveProvenance(client, schema, hits, notes) {
+  const archived = hits.filter(hit => hit.layer === "evidence" && hit.row.source_locator?.startsWith("tbrain:"));
+  if (!archived.length) return;
+  // The shared evidence table predates archive fidelity and speaker metadata.
+  // Keep legacy retrieval cheap, but never infer a quotation from an archive row.
+  for (const hit of archived) hit.archive = {};
+  const records = `"${schema}".archive_records`;
+  const messages = `"${schema}".archive_messages`;
+  try {
+    const ready = await client.query("select to_regclass($1) is not null and to_regclass($2) is not null as ready", [records, messages]);
+    if (!ready.rows[0]?.ready) throw new Error("archive metadata unavailable");
+    const { rows } = await client.query(`select m.evidence_id, a.id as archive_id, a.source_id, a.source_key,
+        a.revision, m.ordinal, a.bundle->'coverage' as coverage,
+        a.bundle->'messages'->m.ordinal as message,
+        exists(select 1 from ${records} child where child.parent_id=a.id) as has_later_revision
+      from ${messages} m join ${records} a on a.id=m.archive_id
+      where m.evidence_id=any($1::uuid[])`, [archived.map(hit => hit.row.id)]);
+    const byId = new Map(rows.map(row => [row.evidence_id, row]));
+    for (const hit of archived) hit.archive = byId.get(hit.row.id) ?? {};
+  } catch {
+    // Source text remains retrievable when optional metadata is unavailable.
+  }
+  if (archived.some(hit => !hit.archive.message)) notes.push("archive provenance unavailable; speaker, dates and fidelity are unknown for affected passages");
 }
 
 /**
@@ -883,6 +932,7 @@ async function answerQuestion(client, question, schema, embedQuery) {
   }
 
   const { hits } = await findCandidates(client, tables, question, queryVec, notes);
+  await attachArchiveProvenance(client, schema, hits, notes);
   const state = classifyState(hits);
   return {
     question,

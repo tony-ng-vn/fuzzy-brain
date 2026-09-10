@@ -7,8 +7,6 @@
 // fixed cost against roughly 600 ms of real searching, and the query
 // embedding cache never survived long enough to hit. Writes still shell out
 // to brain.mjs: they are rare, and the CLI stays the one ratified write path.
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -18,18 +16,11 @@ import { z } from "zod";
 import { getNode, listReminders, makePool, schemaTables } from "./brain.mjs";
 import { loadEnvLocal, recall } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
+import { runJson } from "./lib/run-json.mjs";
 
-const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const brainScript = join(here, "brain.mjs");
-
-const EXEC_OPTIONS = Object.freeze({
-  cwd: root,
-  encoding: "utf8",
-  timeout: 3 * 60 * 1000,
-  maxBuffer: 16 * 1024 * 1024,
-});
 
 // Room for a couple of overlapping tool calls. One connection would be worse
 // than it looks: connectionTimeoutMillis doubles as the wait for a free
@@ -44,14 +35,6 @@ const POOL_OPTIONS = Object.freeze({ max: 3, idleTimeoutMillis: 30_000 });
 // after a cold stretch pays one reconnect, exactly as before.
 const KEEPALIVE_INTERVAL_MS = 25_000;
 const KEEPALIVE_WARM_WINDOW_MS = 30 * 60_000;
-
-async function runJson(script, args, input) {
-  const { stdout } = await execFileAsync(process.execPath, [script, ...args], {
-    ...EXEC_OPTIONS,
-    input: input === undefined ? undefined : JSON.stringify(input),
-  });
-  return JSON.parse(stdout);
-}
 
 /**
  * The connections a resident server holds. Opened on the first call rather

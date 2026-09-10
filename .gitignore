@@ -44,6 +44,11 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Private portable transfers and full database backups.
+.tbrain/
+*.tbrain.json
+*.dump
+
 # claude code runtime state (skills under .claude are tracked; the lock is not)
 .claude/scheduled_tasks.lock
 

@@ -4,6 +4,35 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.26.0
+
+Sep 9, 2026
+
+**Data**
+
+- A close-of-day capture keeps supplied source messages, coverage, authorship and corrections separate from provisional reflections and approved memories.
+- Repeated transfers return the same durable receipt, while changed text under the same revision is rejected.
+- Private database backups include source evidence and capture receipts, with a restore path restricted to empty local test databases.
+
+**Tools**
+
+- Compatible clients can capture an authorized day, inspect original passages, search older evidence and verify receipts through a private connection.
+- A validated portable JSON file supports one-command import when the conversation client cannot write directly.
+- Local memory writes now deliver their input to the child process and report bounded failures without exposing private output.
+- The agent installer registers both the existing Fuzzy Brain server and the new Tbrain server through the same pinned runtime.
+- Patched browser, URL parsing and archive dependencies replace the vulnerable versions reported by the release audit. Four upstream findings in the local embedding stack still have no published fix.
+
+**UI**
+
+- The product title is now Tbrain; existing local configuration names and launchers still work.
+
+**Docs**
+
+- The companion now retrieves context for the current question and preserves nightly evidence without automatically approving meanings or commitments.
+- The operating guide distinguishes local verification, account setup and production migration approval.
+
+---
+
 ## v0.25.0
 
 Aug 31, 2026
