@@ -62,7 +62,10 @@ test("Tbrain archive authorization comes from runtime source consent", async (t)
   const seen = [];
   const client = await connected(t, { archiveDay: async input => { seen.push(input); return { receipt_id: RECEIPT_ID }; } },
     { allowCapture: true, allowedSourceIds: [SOURCE_ID] });
-  assert.deepEqual((await client.listTools()).tools.map(t => t.name).sort(), ["archive_day", ...READ_TOOLS]);
+  const tools = (await client.listTools()).tools;
+  assert.deepEqual(tools.map(t => t.name).sort(), ["archive_day", ...READ_TOOLS]);
+  assert.match(client.getInstructions(), /call transfer_format before archive_day/i);
+  assert.match(tools.find(tool => tool.name === "archive_day").description, /authorized_source_ids/i);
   const result = await client.callTool({ name: "archive_day", arguments: { transfer: transfer() } });
   assert.equal(result.isError, undefined);
   assert.equal(parsed(result).receipt_id, RECEIPT_ID);
