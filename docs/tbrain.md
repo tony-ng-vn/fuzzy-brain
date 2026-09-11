@@ -115,6 +115,8 @@ The source allowlist still applies when capture is enabled.
 Omit `TBRAIN_ALLOW_CAPTURE=1` for a read-only connection.
 The read-only connection still exposes `transfer_format`, so the client can prepare a compatible file.
 Use `status` to inspect storage readiness, configured source IDs and whether the write tool is enabled.
+Before `archive_day`, call `transfer_format` and copy one of its returned `authorized_source_ids` into `source_id`.
+Keep the conversation identity in `source_key` and `source.conversation_id`; never invent a source ID.
 
 The tools are `recall`, `search_archive`, `read_archive`, `read_source`, `read_receipt`, `transfer_format`, `status`, and, when enabled, `archive_day`.
 The write tool is correctly declared as a write.

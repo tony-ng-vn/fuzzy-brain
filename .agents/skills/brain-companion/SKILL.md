@@ -67,6 +67,8 @@ Disclose coverage gaps, omissions and redactions.
 Respect configured source exclusions and confidential material restrictions.
 
 Read `status` and `transfer_format` when needed to discover actual permissions, configured source IDs and the machine-readable format.
+Before `archive_day`, copy one of the `authorized_source_ids` returned by `transfer_format` into `source_id`.
+Keep the conversation identity in `source_key` and `source.conversation_id`; never invent a source ID.
 Use `archive_day` when a connected authorized write path is available.
 Reuse the same source_key and revision after an ambiguous failure.
 Report a save only after a successful committed receipt; verify it with `read_receipt` and source readback.
