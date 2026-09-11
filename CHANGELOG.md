@@ -4,6 +4,20 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.26.3
+
+Sep 11, 2026
+
+**Tools**
+
+- Tbrain now tells conversation clients to fetch and reuse a registered source ID before saving a review, and an authorization failure gives the same recovery step.
+
+**Docs**
+
+- The capture instructions now keep the registered source ID separate from the conversation's own identity.
+
+---
+
 ## v0.26.2
 
 Sep 10, 2026
