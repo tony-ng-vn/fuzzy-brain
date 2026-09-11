@@ -12,7 +12,7 @@ import { transferSchema, validateTransfer } from "./lib/tbrain-transfer.mjs";
 
 const brainScript = fileURLToPath(new URL("./brain.mjs", import.meta.url));
 const FAILURE_MESSAGES = Object.freeze({
-  unauthorized: "This source is not authorized for capture by this server.",
+  unauthorized: "This source is not authorized for capture by this server. Call transfer_format and retry with one of its authorized_source_ids. Do not invent a source_id.",
   conflict: "This archive revision conflicts with an existing record.",
   excluded: "This source is excluded from access or capture.",
   unavailable: "Tbrain could not complete this operation.",
@@ -85,6 +85,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       "Keep thought dumps light. Possibilities are not commitments. New beliefs, semantic links, and commitments require explicit agreement.",
       "Tony initiates reviews. Do not create reminder automations. A night review authorizes available conversation evidence and a provisional assistant reflection only, subject to configured source permissions and exclusions.",
       "Preserve genuinely available source text. Do not invent missing messages, identifiers, timestamps, or approval. Disclose partial coverage and model-assembled material.",
+      "Call transfer_format before archive_day and copy one of its authorized_source_ids exactly into source_id. Keep the conversation identity in source_key and source.conversation_id. Never invent a source_id.",
       "Report persistence only after a successful archive_day result. Verify its returned receipt with read_receipt when possible. A prepared transfer is not saved.",
       "Recall ranks existing nodes and source evidence. Use search_archive for explicit lexical and date searches; neither is exhaustive proof of absence.",
       "Repeated summaries are not independent evidence. Silence does not prove absence. Keep uncertainty and corrections visible, and report unavailable retrieval plainly.",
@@ -136,7 +137,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
     return services.searchArchive(input);
   });
   if (allowCapture === true) {
-    register("archive_day", "Save an authorized review as unratified evidence and an optional assistant-authored provisional reflection. This never creates beliefs, links, or commitments.", {
+    register("archive_day", "Save an authorized review as unratified evidence and an optional assistant-authored provisional reflection. Call transfer_format first and copy one of its authorized_source_ids exactly into source_id. Keep the conversation identity in source_key and source.conversation_id. Never invent a source_id. This never creates beliefs, links, or commitments.", {
       transfer: transferSchema,
     }, ({ transfer }) => {
       if (!allowed.has(transfer.source_id)) throw codedError("unauthorized");
