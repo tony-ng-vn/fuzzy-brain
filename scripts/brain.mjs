@@ -16,6 +16,7 @@ import pg from "pg";
 import { formatLocalDate, formatReminderSummary, normalizeTimestamp } from "./lib/temporal.mjs";
 import { importTransfer, errorCode } from "./lib/tbrain-store.mjs";
 import { addMemoryNode, completeMemoryNodes, readWriteReceipt } from "./lib/memory-writes.mjs";
+import { syncSession, listSessionCheckpoints } from "./lib/session-sync.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -238,33 +239,32 @@ async function insertEvidenceRow(client, tables, item) {
 // 2026-07-13), and in the array form a bad episode must never roll back
 // its already-settled neighbors, so this begin/commit never widens beyond
 // one episode no matter how it's called.
-async function addOneEpisode(client, tables, input) {
+export async function insertEpisode(client, tables, input) {
   const { source_id, source_locator, raw, occurred_at, occurred_until, evidence } = input;
   if (!raw || !raw.trim()) throw new Error("an episode needs its raw: the whole captured text");
-  // Scrubbed BEFORE the insert, always: no update path exists afterward
-  // to fix a miss, so an unfiltered write would be permanent (ADR 0002).
   const { text: filtered } = scrubSensitivePatterns(raw);
-  await client.query("begin");
-  let episodeRow;
-  let insertedCount = 0;
-  try {
-    const { rows } = await client.query(
-      `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
-       values ($1, $2, $3, $4, $5)
-       returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
-      [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
-    );
-    episodeRow = rows[0];
-    for (const item of evidence ?? []) {
-      await insertEvidenceRow(client, tables, { ...item, episode_id: episodeRow.id });
-      insertedCount++;
-    }
-    await client.query("commit");
-  } catch (err) {
-    await client.query("rollback");
-    throw err;
+  const { rows } = await client.query(
+    `insert into ${tables.episodes} (source_id, source_locator, raw, occurred_at, occurred_until)
+     values ($1, $2, $3, $4, $5)
+     returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
+    [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
+  );
+  for (const item of evidence ?? []) {
+    await insertEvidenceRow(client, tables, { ...item, episode_id: rows[0].id });
   }
-  return { ...episodeRow, evidence_count: insertedCount };
+  return { ...rows[0], evidence_count: evidence?.length ?? 0 };
+}
+
+async function addOneEpisode(client, tables, input) {
+  await client.query("begin");
+  try {
+    const episode = await insertEpisode(client, tables, input);
+    await client.query("commit");
+    return episode;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
 }
 
 // The two read verbs the MCP server needs, as values rather than printed
@@ -448,6 +448,20 @@ async function main() {
       );
       if (rowCount === 0) throw new Error(`no source with id ${id}`);
       console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "list-session-checkpoints") {
+      console.log(JSON.stringify(await listSessionCheckpoints(client, schema, args[0])));
+    } else if (command === "sync-session") {
+      const input = JSON.parse(await readStdin());
+      if (Array.isArray(input)) {
+        const results = [];
+        for (const item of input) {
+          try { results.push(await syncSession(client, schema, item)); }
+          catch (error) { results.push({ error: errorCode(error), source_locator: item?.source_locator ?? null }); }
+        }
+        console.log(JSON.stringify(results));
+      } else {
+        console.log(JSON.stringify(await syncSession(client, schema, input)));
+      }
     } else if (command === "add-episode") {
       // Accepts one episode object (unchanged), or an array for batch
       // ingestion -- the wildcard backfill shelled out once per episode,

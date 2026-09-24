@@ -10,11 +10,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import pg from "pg";
+import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import {
   acquireIngestLock,
   sessionFileIsUnchanged,
-  unseenSessionRevision,
 } from "../scripts/ingest-sessions.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -160,53 +159,19 @@ function makeSession(sessionId, cwd, userTexts) {
   return lines.join("\n");
 }
 
-test("resumed sessions append only their unseen turns as a versioned episode", () => {
-  const parsed = {
-    cwd: "/Users/tony/Desktop/fuzzy-brain",
-    occurredAt: "2026-07-10T09:00:00.000Z",
-    occurredUntil: "2026-07-10T09:03:00.000Z",
-    turns: [
-      { speaker: "tony", text: "first", ts: "2026-07-10T09:00:00.000Z" },
-      { speaker: "assistant", text: "reply", ts: "2026-07-10T09:01:00.000Z" },
-      { speaker: "tony", text: "resumed", ts: "2026-07-10T09:02:00.000Z" },
-      { speaker: "assistant", text: "new reply", ts: "2026-07-10T09:03:00.000Z" },
-    ],
-  };
-
-  const revision = unseenSessionRevision(
-    [{ source_locator: SESSION_A, evidence_count: 2 }],
-    SESSION_A,
-    parsed,
-  );
-  assert.equal(revision.locator, `${SESSION_A}:turns:4`);
-  assert.deepEqual(revision.parsed.turns.map((turn) => turn.text), ["resumed", "new reply"]);
-  assert.equal(revision.parsed.occurredAt, "2026-07-10T09:02:00.000Z");
-
-  const existing = [{
-    source_locator: SESSION_A,
-    evidence_count: 2,
-    ingested_at: "2026-07-10T10:00:00.000Z",
-  }];
-  assert.equal(sessionFileIsUnchanged(existing, SESSION_A, Date.parse("2026-07-10T09:30:00.000Z")), true);
-  assert.equal(sessionFileIsUnchanged(existing, SESSION_A, Date.parse("2026-07-10T10:30:00.000Z")), false);
-
-  assert.equal(
-    unseenSessionRevision(
-      [
-        { source_locator: SESSION_A, evidence_count: 2 },
-        { source_locator: `${SESSION_A}:turns:4`, evidence_count: 2 },
-      ],
-      SESSION_A,
-      parsed,
-    ),
-    null,
-  );
+test("only a current parser checkpoint can skip an unchanged file", () => {
+  const checkpoint = { session_key: SESSION_A, parser_version: 2, file_mtime_ms: 1234, file_size: 500 };
+  assert.equal(sessionFileIsUnchanged([checkpoint], SESSION_A, 1234, 500), true);
+  assert.equal(sessionFileIsUnchanged([checkpoint], SESSION_A, 1235, 500), false);
+  assert.equal(sessionFileIsUnchanged([checkpoint], SESSION_A, 1234, 600), false);
+  assert.equal(sessionFileIsUnchanged([{ ...checkpoint, parser_version: 1 }], SESSION_A, 1234, 500), false);
+  assert.equal(sessionFileIsUnchanged([{ source_locator: SESSION_A, evidence_count: 2, ingested_at: "2026-09-24T00:00:00Z" }], SESSION_A, 1234, 500), false);
 });
 
 test("ingest-sessions: archive fixtures flow into brain_dev with every guard enforced", async (t) => {
-  const connectionString = process.env.DATABASE_URL_DEV || process.env.DATABASE_URL;
-  const client = new pg.Client({ connectionString });
-  await client.connect();
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const client = database.client;
 
   const home = mkdtempSync(join(tmpdir(), "fuzzy-ingest-"));
   const archive = join(home, "session-archive", "claude-code");
@@ -272,6 +237,8 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
 
   const env = {
     ...process.env,
+    DATABASE_URL: database.url,
+    DATABASE_URL_DEV: database.url,
     BRAIN_SCHEMA: "brain_dev",
     FUZZY_BRAIN_INGEST_CONFIG: configPath,
     FUZZY_BRAIN_INGEST_LOCK: join(home, "ingest.lock"),
@@ -302,15 +269,15 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
         [TEST_LABEL],
       );
       const locators = rows.map((r) => r.source_locator);
-      assert.ok(locators.includes(SESSION_A), "allowlisted session must be ingested");
-      assert.ok(!locators.includes(SESSION_B), "non-allowlisted session must never reach the cloud DB");
+      assert.ok(locators.some(locator => locator.startsWith(`${SESSION_A}:sync:`)), "allowlisted session must be ingested");
+      assert.ok(!locators.some(locator => locator.startsWith(SESSION_B)), "non-allowlisted session must never reach the cloud DB");
     });
 
     await t.test("excluded-person session produced zero rows", async () => {
       const { rows } = await client.query(
         `select count(*)::int as n from brain_dev.episodes e
          join brain_dev.sources s on s.id = e.source_id
-         where s.label = $1 and e.source_locator = $2`,
+         where s.label = $1 and split_part(e.source_locator, ':sync:', 1) = $2`,
         [TEST_LABEL, SESSION_C],
       );
       assert.equal(rows[0].n, 0);
@@ -322,7 +289,7 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
          from brain_dev.evidence v
          join brain_dev.episodes e on e.id = v.episode_id
          join brain_dev.sources s on s.id = e.source_id
-         where s.label = $1 and e.source_locator = $2
+         where s.label = $1 and split_part(e.source_locator, ':sync:', 1) = $2
          order by v.start_offset`,
         [TEST_LABEL, SESSION_A],
       );
@@ -338,7 +305,7 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
       const { rows } = await client.query(
         `select count(*)::int as n from brain_dev.episodes e
          join brain_dev.sources s on s.id = e.source_id
-         where s.label = $1 and e.source_locator = $2`,
+         where s.label = $1 and split_part(e.source_locator, ':sync:', 1) = $2`,
         [TEST_LABEL, SESSION_D],
       );
       assert.equal(rows[0].n, 1, "an episode raw over 1MB must not kill the pipeline");
@@ -350,7 +317,7 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
          from brain_dev.episodes e
          join brain_dev.sources s on s.id = e.source_id
          left join brain_dev.evidence v on v.episode_id = e.id
-         where s.label = $1 and e.source_locator = $2
+         where s.label = $1 and split_part(e.source_locator, ':sync:', 1) = $2
          group by e.raw`,
         [TEST_LABEL, SESSION_A],
       );
@@ -404,8 +371,8 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
         [CODEX_TEST_LABEL],
       );
       const locators = rows.map((r) => r.source_locator);
-      assert.ok(locators.includes(CODEX_A), "fuzzy-brain-cwd codex session must be ingested");
-      assert.ok(!locators.includes(CODEX_B), "other-cwd codex session must stay out");
+      assert.ok(locators.some(locator => locator.startsWith(`${CODEX_A}:sync:`)), "fuzzy-brain-cwd codex session must be ingested");
+      assert.ok(!locators.some(locator => locator.startsWith(CODEX_B)), "other-cwd codex session must stay out");
       const spans = await client.query(
         `select v.speaker from brain_dev.evidence v
          join brain_dev.episodes e on e.id = v.episode_id
@@ -416,21 +383,6 @@ test("ingest-sessions: archive fixtures flow into brain_dev with every guard enf
       assert.deepEqual(spans.rows.map((r) => r.speaker), ["tony", "assistant"]);
     });
   } finally {
-    // brain_dev-only cleanup, restrict-ordered: evidence -> episodes -> source.
-    for (const label of [TEST_LABEL, CODEX_TEST_LABEL]) {
-      await client.query(
-        `delete from brain_dev.evidence v using brain_dev.episodes e, brain_dev.sources s
-         where v.episode_id = e.id and e.source_id = s.id and s.label = $1`,
-        [label],
-      );
-      await client.query(
-        `delete from brain_dev.episodes e using brain_dev.sources s
-         where e.source_id = s.id and s.label = $1`,
-        [label],
-      );
-      await client.query(`delete from brain_dev.sources where label = $1`, [label]);
-    }
-    await client.end();
     rmSync(home, { recursive: true, force: true });
   }
 });

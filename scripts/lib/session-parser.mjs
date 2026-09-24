@@ -14,6 +14,9 @@
 
 import { isObservationEnvelope } from "./observation-envelope.mjs";
 
+// Bump when conversation extraction changes so old checkpoints are rechecked.
+export const SESSION_PARSER_VERSION = 2;
+
 // Injected-content tags observed in real transcripts (2026-07-13 survey).
 // Non-greedy paired strips first, then any orphan open/close tags.
 const INJECTED_BLOCKS = [

@@ -4,6 +4,26 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.29.0
+
+2026-09-23
+
+**Data**
+
+- Session capture records an immutable checkpoint in the same transaction as new evidence, so interrupted or concurrent runs can retry safely.
+
+**Tools**
+
+- Session reconciliation compares stored message occurrences instead of turn counts, preserving repeated messages and recovering gaps after parser changes.
+- Session writes check exclusions against the whole supplied conversation before redaction, then render scrubbed text with matching evidence offsets.
+- Automatic sync checks legacy sessions once, then skips unchanged files only when their current parser and file metadata match a committed checkpoint.
+
+**Docs**
+
+- The sync guide explains historical gap recovery, repeated messages, the initial reconciliation pass, and checkpoint deployment.
+
+---
+
 ## v0.28.0
 
 2026-09-23
