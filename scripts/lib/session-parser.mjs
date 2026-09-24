@@ -117,7 +117,7 @@ export function renderEpisode(turns) {
     raw += prefix + turn.text + "\n\n";
     spans.push({ speaker: turn.speaker, text: turn.text, start, end: start + turn.text.length, ts: turn.ts });
   }
-  return { raw: raw.trimEnd(), spans };
+  return { raw: raw.slice(0, -2), spans };
 }
 
 export function parseClaudeSession(jsonlText) {

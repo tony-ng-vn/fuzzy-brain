@@ -4,6 +4,16 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.29.1
+
+2026-09-23
+
+**Data**
+
+- Rendering a supplied conversation preserves trailing message whitespace so evidence offsets still return the exact quote.
+
+---
+
 ## v0.29.0
 
 2026-09-23
