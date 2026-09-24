@@ -49,6 +49,26 @@ test("approved memory writes have durable retry identities across processes", as
     assert.equal(original.raw, raw);
   });
 
+  await t.test("UUID letter casing does not change a request identity or completion targets", async () => {
+    const packet = { ...input, request_id: randomUUID().toUpperCase(), title: "UUID normalization" };
+    const saved = await run("add-node", packet);
+    assert.equal(saved.state, "committed");
+    assert.equal(saved.request_id, packet.request_id.toLowerCase());
+    assert.equal((await run("add-node", { ...packet, request_id: packet.request_id.toLowerCase() })).id, saved.id);
+    const completion = { request_id: randomUUID(), node_ids: [saved.id, saved.id.toUpperCase()], raw: "mark this complete" };
+    const result = await run("mark-complete", completion);
+    assert.equal(result.events.length, 1);
+    assert.equal((await run("mark-complete", { ...completion, node_ids: [saved.id] })).replayed, true);
+  });
+
+  await t.test("invalid timestamps return input errors without creating a receipt", async () => {
+    for (const deadline_at of ["tomorrow", "", "2026-99-99T00:00:00Z"]) {
+      const packet = { ...input, request_id: randomUUID(), deadline_at };
+      assert.equal((await run("add-node", packet)).error.code, "invalid");
+      assert.equal((await run("read-write-receipt", undefined, [packet.request_id])).error.code, "not_found");
+    }
+  });
+
   await t.test("replay survives later approved readable and deadline changes", async () => {
     await run("set-readable", { body: "Newly approved readable layer", title: "A later approved title" }, [first.id]);
     await run("set-deadline", { due_at: "2031-05-02T00:00:00Z", raw: "set this deadline", origin: "explicit" }, [first.id]);
