@@ -94,6 +94,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       "Follow a hit's read instruction with read_evidence to inspect the matching passage and neighboring context. Continue long passages with next_text_offset.",
       "Use prepare_capture to build a partial transfer from supplied messages without inventing metadata, or validate_transfer to check a hand-built packet offline. Neither tool saves or authorizes it.",
       "Repeated summaries are not independent evidence. Silence does not prove absence. Keep uncertainty and corrections visible, and report unavailable retrieval plainly.",
+      "Passages sharing observation_group come from one conversation or source. Neighboring context covers the saved episode, which may be a conversation fragment. A null message date stays unknown; recall date_filter_basis distinguishes message dates from source context.",
     ].join(" "),
   });
   const register = (name, description, inputSchema, handler, writable = false) => {
@@ -118,7 +119,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   register("recall", "Rank relevant brain records and evidence across history. Inspect source passages before drawing conclusions.", {
     question: z.string().trim().min(1).max(2000),
   }, ({ question }) => services.recall(question));
-  register("read_evidence", "Read one evidence passage by its recall or search identifier, with bounded neighboring context. Follow next_text_offset with the same id for long text. Works with legacy and archived evidence.",
+  register("read_evidence", "Read one evidence passage by its recall or search identifier, with bounded neighboring context within the same saved episode. Follow next_text_offset with the same id for long text. Works with legacy and archived evidence.",
     evidenceReadShape, input => services.readEvidence(input));
   register("read_receipt", "Verify one saved archive receipt, its provenance, coverage, and persistence identifiers.", {
     id: z.uuid(),

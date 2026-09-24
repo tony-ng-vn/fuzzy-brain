@@ -85,7 +85,7 @@ export async function readReceipt(client, schema, id) {
 const page = { offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(20).default(10) };
 export const evidenceReadShape = {
   id: z.uuid(),
-  context: z.number().int().min(0).max(3).default(1).describe("Adjacent passages on each side, in source order."),
+  context: z.number().int().min(0).max(3).default(1).describe("Adjacent passages on each side within the same saved episode, in source order."),
   text_offset: z.number().int().min(0).max(5000000).default(0),
   text_limit: z.number().int().min(1).max(8000).default(2000),
 };

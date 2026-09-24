@@ -15,6 +15,10 @@ New updates and changes to Fuzzy Brain.
 - Undated passages keep an unknown message date while recall reports the separate source date it can use to narrow a search.
 - Reading an unknown node reports a missing record instead of a storage outage.
 
+**Docs**
+
+- Retrieval instructions explain shared source groups, uncertain dates, episode context limits, and the difference between a search match and support for an answer.
+
 ---
 
 ## v0.29.1

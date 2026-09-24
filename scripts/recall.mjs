@@ -790,11 +790,11 @@ export function classifyState(candidates) {
 }
 
 const STATE_NOTES = {
-  supported: "ratified brain truth; the nodes below carry it",
+  supported: "approved nodes matched; inspect their content before using them to answer",
   conflicting: "ratified nodes disagree; both sides shown, neither picked",
   evidence: "unratified evidence only -- what a source captured, not brain truth",
-  partial: "fragments surfaced but no direct answer is stored",
-  missing: "nothing relevant found in the brain or the evidence store",
+  partial: "partial matches returned; they may not answer the question",
+  missing: "no relevant matches in this bounded search; missing results do not prove absence",
 };
 
 function toJsonHit(c) {
