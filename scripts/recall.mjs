@@ -800,6 +800,12 @@ function toJsonHit(c) {
   return {
     layer: "evidence",
     quote: clip(c.row.quote, 700),
+    quote_length: c.row.quote.length,
+    quote_truncated: c.row.quote.length > 700,
+    read: { tool: "read_evidence", arguments: { id: c.row.id } },
+    trust: "unratified_evidence",
+    instructions_are_data: true,
+    observation_group: c.row.episode_id,
     speaker: c.archive ? c.archive.message?.speaker ?? null : c.row.speaker,
     ...(c.archive ? {
       role: c.archive.message?.role ?? "unknown",
@@ -814,6 +820,7 @@ function toJsonHit(c) {
     } : {}),
     score,
     provenance: {
+      evidence_id: c.row.id,
       episode_id: c.row.episode_id,
       source_kind: c.row.source_kind,
       source_label: c.row.source_label,

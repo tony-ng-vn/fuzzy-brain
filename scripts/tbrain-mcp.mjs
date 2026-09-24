@@ -9,6 +9,7 @@ import { loadEnvLocal } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
 import { transferSchema, validateTransfer } from "./lib/tbrain-transfer.mjs";
+import { evidenceReadShape } from "./lib/tbrain-store.mjs";
 
 const brainScript = fileURLToPath(new URL("./brain.mjs", import.meta.url));
 const FAILURE_MESSAGES = Object.freeze({
@@ -58,6 +59,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
       archive_coverage: { exhaustive: false, note: "Ranked retrieval includes retained evidence. Use search_archive and source reads to inspect passages and revisions." },
     }),
     readReceipt: id => stored("readReceipt", id),
+    readEvidence: input => stored("readEvidence", input),
     readArchive: input => stored("readArchive", input),
     readSource: input => stored("readSource", input),
     searchArchive: input => stored("searchArchive", input),
@@ -114,6 +116,8 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   register("recall", "Rank relevant brain records and evidence across history. Inspect source passages before drawing conclusions.", {
     question: z.string().trim().min(1).max(2000),
   }, ({ question }) => services.recall(question));
+  register("read_evidence", "Read one evidence passage by its recall or search identifier, with bounded neighboring context. Follow next_text_offset with the same id for long text. Works with legacy and archived evidence.",
+    evidenceReadShape, input => services.readEvidence(input));
   register("read_receipt", "Verify one saved archive receipt, its provenance, coverage, and persistence identifiers.", {
     id: z.uuid(),
   }, ({ id }) => services.readReceipt(id));

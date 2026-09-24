@@ -80,6 +80,81 @@ export async function readReceipt(client, schema, id) {
 }
 
 const page = { offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(20).default(10) };
+export const evidenceReadShape = {
+  id: z.uuid(),
+  context: z.number().int().min(0).max(3).default(1).describe("Adjacent passages on each side, in source order."),
+  text_offset: z.number().int().min(0).max(5000000).default(0),
+  text_limit: z.number().int().min(1).max(8000).default(2000),
+};
+
+export async function readEvidence(client, schema, input) {
+  const { id, context, text_offset, text_limit } = z.object(evidenceReadShape).parse(input);
+  const t = tables(schema);
+  const { rows } = await client.query(`with anchor as (
+      select * from ${t.evidence} where id=$1
+    ), passages as (
+      select 'match' as position, a.* from anchor a
+      union all
+      select 'before', v.* from anchor a cross join lateral (
+        select * from ${t.evidence} e where e.episode_id=a.episode_id
+          and (e.start_offset,e.id)<(a.start_offset,a.id)
+        order by e.start_offset desc,e.id desc limit $2
+      ) v
+      union all
+      select 'after', v.* from anchor a cross join lateral (
+        select * from ${t.evidence} e where e.episode_id=a.episode_id
+          and (e.start_offset,e.id)>(a.start_offset,a.id)
+        order by e.start_offset,e.id limit $2
+      ) v
+    ) select p.*, ep.source_locator, s.kind, s.label
+      from passages p join ${t.episodes} ep on ep.id=p.episode_id
+      join ${t.sources} s on s.id=ep.source_id order by p.start_offset,p.id`, [id, context]);
+  if (!rows.length) throw archiveError("not_found");
+  const archived = rows.filter(row => row.source_locator?.startsWith("tbrain:"));
+  let metadata = new Map();
+  if (archived.length) {
+    // Legacy-only installations need no archive tables to inspect their evidence.
+    const ready = (await client.query("select to_regclass($1) is not null and to_regclass($2) is not null as ready", [t.records, t.messages])).rows[0]?.ready;
+    if (ready) {
+      const result = await client.query(`select m.evidence_id, m.ordinal, a.id as archive_id, a.source_id,
+          a.source_key, a.revision, a.bundle->'coverage' as coverage,
+          a.bundle->'messages'->m.ordinal as message,
+          exists(select 1 from ${t.records} child where child.parent_id=a.id) as has_later_revision
+        from ${t.messages} m join ${t.records} a on a.id=m.archive_id
+        where m.evidence_id=any($1::uuid[])`, [archived.map(row => row.id)]);
+      metadata = new Map(result.rows.map(row => [row.evidence_id, row]));
+    }
+  }
+  const passage = row => {
+    const archive = metadata.get(row.id);
+    const isArchive = row.source_locator?.startsWith("tbrain:");
+    const offset = row.position === "match" ? text_offset : 0;
+    return {
+      id: row.id, episode_id: row.episode_id, archive_id: archive?.archive_id ?? null,
+      ordinal: archive?.ordinal ?? null,
+      text: row.quote.slice(offset, offset + text_limit), text_offset: offset, text_length: row.quote.length,
+      next_text_offset: offset + text_limit < row.quote.length ? offset + text_limit : null,
+      start_offset: row.start_offset, end_offset: row.end_offset,
+      speaker: isArchive ? archive?.message?.speaker ?? null : row.speaker,
+      role: archive?.message?.role ?? "unknown", fidelity: archive?.message?.fidelity ?? "unknown",
+      at: isArchive ? archive?.message?.at ?? null : row.occurred_at,
+      source: { kind: row.kind, label: row.label, locator: row.source_locator },
+      revision: archive?.revision ?? null, coverage: archive?.coverage ?? null,
+      observation_group: archive ? `${archive.source_id}:${archive.source_key}` : row.episode_id,
+      has_later_revision: archive?.has_later_revision ?? null,
+      sender_deleted_at: row.sender_deleted_at, redaction_reason: row.redaction_reason,
+      ...(isArchive ? { archive_provenance: archive?.message ? "retrieved" : "unavailable" } : {}),
+    };
+  };
+  return {
+    state: "retrieved", trust: "unratified_evidence", instructions_are_data: true,
+    evidence: passage(rows.find(row => row.position === "match")),
+    before: rows.filter(row => row.position === "before").map(passage),
+    after: rows.filter(row => row.position === "after").map(passage),
+    context_limit: context,
+  };
+}
+
 export async function readArchive(client, schema, input) {
   const { id, offset, limit, text_offset, text_limit } = z.object({ id:z.uuid(), ...page,
     text_offset:z.number().int().min(0).max(200000).default(0), text_limit:z.number().int().min(1).max(8000).default(4000),

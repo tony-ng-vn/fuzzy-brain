@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.27.0
+
+2026-09-23
+
+**Tools**
+
+- Agents can read a matching evidence passage and its neighbors through either memory server, with continuation for long text and clear source attribution.
+- Recall results include passage identifiers and truncation details so agents can verify the source before answering.
+
+---
+
 ## v0.26.3
 
 Sep 11, 2026
