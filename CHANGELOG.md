@@ -4,6 +4,23 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.29.3
+
+2026-09-24
+
+**Tools**
+
+- Dated recall keeps connected memory hits inside the requested period, including when retrieval falls back after a query failure.
+- Out-of-range connections no longer fill the candidate limit and hide matching memories.
+- Calendar boundaries use UTC consistently instead of changing with the database connection timezone.
+- Dated results report the applied bounds and explain which timestamps they filter.
+
+**Docs**
+
+- The memory guide explains UTC calendar bounds, node creation dates, and connections that provide context outside the requested period.
+
+---
+
 ## v0.29.2
 
 2026-09-23
