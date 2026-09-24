@@ -7,6 +7,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { importTransfer } from "../scripts/lib/tbrain-store.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
+import { productionServices } from "../scripts/fuzzy-brain-mcp.mjs";
 
 test("both memory servers advertise and enforce the same ranked recall filters", async t => {
   const database = await createTbrainTestDatabase();
@@ -43,4 +44,11 @@ test("both memory servers advertise and enforce the same ranked recall filters",
       } finally { await client.close(); }
     });
   }
+});
+
+test("contradictory scope is rejected before the resident service opens storage", async () => {
+  let accesses = 0;
+  const services = productionServices({ pool: { async withClient() { accesses++; throw new Error("unavailable test storage"); } } });
+  await assert.rejects(async () => services.recall("a question", { layer: "nodes", role: "user" }), error => error.code === "invalid");
+  assert.equal(accesses, 0);
 });
