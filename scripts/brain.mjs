@@ -16,6 +16,7 @@ import pg from "pg";
 import { formatLocalDate, formatReminderSummary, normalizeTimestamp } from "./lib/temporal.mjs";
 import { importTransfer, errorCode } from "./lib/tbrain-store.mjs";
 import { addMemoryNode, completeMemoryNodes, readWriteReceipt } from "./lib/memory-writes.mjs";
+import { syncSession, listSessionCheckpoints } from "./lib/session-sync.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -447,6 +448,20 @@ async function main() {
       );
       if (rowCount === 0) throw new Error(`no source with id ${id}`);
       console.log(JSON.stringify(rows[0], null, 2));
+    } else if (command === "list-session-checkpoints") {
+      console.log(JSON.stringify(await listSessionCheckpoints(client, schema, args[0])));
+    } else if (command === "sync-session") {
+      const input = JSON.parse(await readStdin());
+      if (Array.isArray(input)) {
+        const results = [];
+        for (const item of input) {
+          try { results.push(await syncSession(client, schema, item)); }
+          catch (error) { results.push({ error: errorCode(error), source_locator: item?.source_locator ?? null }); }
+        }
+        console.log(JSON.stringify(results));
+      } else {
+        console.log(JSON.stringify(await syncSession(client, schema, input)));
+      }
     } else if (command === "add-episode") {
       // Accepts one episode object (unchanged), or an array for batch
       // ingestion -- the wildcard backfill shelled out once per episode,
