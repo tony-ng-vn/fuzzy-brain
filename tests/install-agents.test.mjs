@@ -486,6 +486,15 @@ test("needsDependencyInstall installs on a fresh clone and whenever node_modules
   assert.equal(needsDependencyInstall({ freshClone: false, nodeModulesPresent: false, lockfileBefore: "a", lockfileAfter: "a" }).install, true);
 });
 
+test("a release version bump does not reinstall unchanged runtime dependencies", () => {
+  const lock = version => JSON.stringify({ name: "fuzzy-brain", version, lockfileVersion: 3,
+    packages: { "": { name: "fuzzy-brain", version, dependencies: { pg: "^8.0.0" } }, "node_modules/pg": { version: "8.0.0", integrity: "same" } } });
+  const options = { freshClone: false, nodeModulesPresent: true, lockfileBefore: lock("1.0.0"), lockfileAfter: lock("1.1.0") };
+  assert.equal(needsDependencyInstall(options).install, false);
+  options.lockfileAfter = options.lockfileAfter.replace('"integrity":"same"', '"integrity":"changed"');
+  assert.equal(needsDependencyInstall(options).install, true);
+});
+
 test("needsDependencyInstall reinstalls only when the lockfile actually changed", () => {
   const changed = needsDependencyInstall({ freshClone: false, nodeModulesPresent: true, lockfileBefore: "a", lockfileAfter: "b" });
   assert.equal(changed.install, true);
