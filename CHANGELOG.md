@@ -4,6 +4,18 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.30.0
+
+2026-09-24
+
+**Tools**
+
+- Ranked recall accepts source, role, layer, and exact timestamp filters before candidate limits, so unrelated records cannot crowd out the requested material.
+- Explicit date arguments override inferred calendar dates and require known message timestamps for evidence.
+- Invalid or contradictory filters fail before storage or model access, and fallback queries preserve the requested restrictions.
+
+---
+
 ## v0.29.3
 
 2026-09-24

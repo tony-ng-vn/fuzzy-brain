@@ -44,7 +44,8 @@ import { parseQueryFeatures, laneWeights } from "./lib/retrieval/features.mjs";
 import { denseRanks, fuseRrf } from "./lib/retrieval/fuse.mjs";
 import { rerank } from "./lib/retrieval/rerank.mjs";
 import { observationEnvelopePattern } from "./lib/observation-envelope.mjs";
-import { legacyEvidenceProvenance } from "./lib/evidence-provenance.mjs";
+import { legacyEvidenceProvenance, legacyEvidenceRoleSql } from "./lib/evidence-provenance.mjs";
+import { parseRecallScope } from "./lib/recall-scope.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -208,7 +209,7 @@ function dayInstant(day) { return day ? `${day}T00:00:00.000Z` : null; }
 
 function dateRangeSql(ctx, p) {
   return ctx.span
-    ? `tstzrange(${p.bind(dayInstant(ctx.span.from))}::timestamptz, ${p.bind(dayInstant(ctx.span.to))}::timestamptz, '[)')`
+    ? `tstzrange(${p.bind(ctx.span.from)}::timestamptz, ${p.bind(ctx.span.to)}::timestamptz, '${ctx.span.bounds}')`
     : null;
 }
 
@@ -223,7 +224,7 @@ function dateFilterSql(expression, ctx, p) {
 function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const isEvidence = layer === "evidence";
   const a = isEvidence ? "v" : "n";
-  const occurredAt = isEvidence ? "coalesce(v.occurred_at, e.occurred_at)" : "n.created_at";
+  const occurredAt = isEvidence ? ctx.explicitDates ? "v.occurred_at" : "coalesce(v.occurred_at, e.occurred_at)" : "n.created_at";
   const trigramText = isEvidence
     ? `left(v.quote, ${TRIGRAM_QUOTE_CAP})`
     : `left(n.title || ' ' || n.body, ${TRIGRAM_NODE_CAP})`;
@@ -235,7 +236,9 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const from = isEvidence
     ? `from ${tables.evidence} v
        join ${tables.episodes} e on e.id = v.episode_id
-       join ${tables.sources} s on s.id = e.source_id`
+       join ${tables.sources} s on s.id = e.source_id
+       ${ctx.archiveRoles ? `left join ${tables.archiveMessages} rm on rm.evidence_id=v.id
+       left join ${tables.archiveRecords} rr on rr.id=rm.archive_id` : ""}`
     : `from ${tables.nodes} n`;
 
   // Bound once and reused: the lane's own ordering and the cosine every lane
@@ -284,6 +287,13 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const conversationClause = isEvidence
     ? ` and not (s.kind in ('claude_code_session','codex_session') and left(v.quote, 500) ~ ${p.bind(observationEnvelopePattern)})`
     : "";
+  let scopeClause = "";
+  if (isEvidence && ctx.scope.source_id) scopeClause += ` and e.source_id=${p.bind(ctx.scope.source_id)}::uuid`;
+  if (isEvidence && ctx.scope.role) {
+    const legacyRole = legacyEvidenceRoleSql({ sourceKind: "s.kind", sourceLocator: "e.source_locator", speaker: "v.speaker" });
+    const role = ctx.archiveRoles ? `coalesce(rr.bundle->'messages'->rm.ordinal->>'role',${legacyRole})` : legacyRole;
+    scopeClause += ` and (${role})=${p.bind(ctx.scope.role)}`;
+  }
 
   return {
     sql: `select ${payload},
@@ -291,7 +301,7 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
        ${simExpr} as sim,
        ${rareExpr} as rare_hit
      ${from}
-     where ${where}${dateClause}${conversationClause}
+     where ${where}${dateClause}${conversationClause}${scopeClause}
      order by ${orderBy} limit ${LANE_LIMIT}`,
     values: p.values,
   };
@@ -424,9 +434,11 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
   return { sql: `with ${ctes.join(",\n")}\n${arms.join("\nunion all\n")}`, values: p.values };
 }
 
-async function findCandidates(client, tables, question, queryVec, notes) {
+async function findCandidates(client, tables, question, queryVec, notes, scope) {
   const vocab = await loadQueryVocab(client, tables, question);
   const features = parseQueryFeatures(question, vocab, cfg);
+  const explicitDates = Boolean(scope.from || scope.until);
+  if (explicitDates) features.dateRange = { from: scope.from, to: scope.until };
   const weights = laneWeights(features, PROFILE, cfg);
 
   const contentTerms = [...new Set(features.terms.filter((t) => !STOPWORDS.has(t)))].slice(0, MAX_QUERY_TERMS);
@@ -438,8 +450,16 @@ async function findCandidates(client, tables, question, queryVec, notes) {
   const rareWords = contentTerms.filter((t) => features.rareTerms.includes(stem(t)));
   const rareQuery = rareWords.length > 0 ? rareWords.map(quoteLexeme).join(" | ") : null;
   const span = features.dateRange.from || features.dateRange.to
-    ? { from: features.dateRange.from, to: features.dateRange.to }
+    ? { from: explicitDates ? scope.from : dayInstant(features.dateRange.from),
+      to: explicitDates ? scope.until : dayInstant(features.dateRange.to), bounds: explicitDates ? "[]" : "[)" }
     : null;
+
+  let archiveRoles = false;
+  if (scope.role) {
+    archiveRoles = (await client.query("select to_regclass($1) is not null and to_regclass($2) is not null as ready",
+      [tables.archiveRecords, tables.archiveMessages])).rows[0]?.ready === true;
+    if (!archiveRoles) notes.push("archive role metadata unavailable; archive roles remain unknown");
+  }
 
   const ctx = {
     question,
@@ -455,6 +475,7 @@ async function findCandidates(client, tables, question, queryVec, notes) {
     vecLiteral: queryVec ? `[${queryVec.join(",")}]` : null,
     rareQuery,
     span,
+    scope, explicitDates, archiveRoles,
   };
 
   // A lane weighted zero contributes nothing to the fused score, so running it
@@ -500,10 +521,12 @@ async function findCandidates(client, tables, question, queryVec, notes) {
   };
 
   const laneJobs = [];
-  for (const mode of active) for (const layer of ["evidence", "node"]) laneJobs.push({ mode, layer });
+  const layers = scope.layer === "all" ? ["evidence", "node"] : scope.layer === "nodes" ? ["node"] : ["evidence"];
+  for (const mode of active) for (const layer of layers) laneJobs.push({ mode, layer });
 
   const edgeModes = [];
   for (const mode of ["and", "or"]) {
+    if (scope.layer === "evidence") continue;
     if ((weights[mode] ?? 0) === 0) continue;
     if (mode === "or" && !orQuery) continue;
     edgeModes.push(mode);
@@ -673,7 +696,7 @@ async function findCandidates(client, tables, question, queryVec, notes) {
     };
   }
   const ranked = rerank(features, shortlist, cfg);
-  return { hits: ranked.slice(0, MAX_HITS), features, weights };
+  return { hits: ranked.slice(0, MAX_HITS), features, weights, span, explicitDates };
 }
 
 // A quoted phrase in the question, found in a node's title. Evidence spans
@@ -950,18 +973,19 @@ async function attachArchiveProvenance(client, schema, hits, notes) {
  */
 export async function recall(question, options = {}) {
   const { client, schema = process.env.BRAIN_SCHEMA || "public", embedQuery = embedQueryCached } = options;
-  if (client) return answerQuestion(client, question, schema, embedQuery);
+  const scope = parseRecallScope(options);
+  if (client) return answerQuestion(client, question, schema, embedQuery, scope);
   const own = makeClient();
   await own.connect();
   try {
-    return await answerQuestion(own, question, schema, embedQuery);
+    return await answerQuestion(own, question, schema, embedQuery, scope);
   } finally {
     await own.end();
   }
 }
 
-async function answerQuestion(client, question, schema, embedQuery) {
-  const tables = schemaTables(schema);
+async function answerQuestion(client, question, schema, embedQuery, scope) {
+  const tables = { ...schemaTables(schema), archiveRecords: `"${schema}".archive_records`, archiveMessages: `"${schema}".archive_messages` };
 
   // The vector lane degrades, never blocks: if the local model cannot load,
   // recall still answers from full-text and says so.
@@ -973,7 +997,7 @@ async function answerQuestion(client, question, schema, embedQuery) {
     notes.push("vector lane unavailable; text lanes only");
   }
 
-  const { hits, features } = await findCandidates(client, tables, question, queryVec, notes);
+  const { hits, span, explicitDates } = await findCandidates(client, tables, question, queryVec, notes, scope);
   await attachArchiveProvenance(client, schema, hits, notes);
   const state = classifyState(hits);
   return {
@@ -982,10 +1006,11 @@ async function answerQuestion(client, question, schema, embedQuery) {
     degraded: notes.length > 0,
     exhaustive: false,
     note: STATE_NOTES[state] + (notes.length > 0 ? ` (${notes.join("; ")})` : ""),
-    ...(features.dateRange.from || features.dateRange.to ? { date_filter: {
-      from: dayInstant(features.dateRange.from), to: dayInstant(features.dateRange.to),
-      timezone: "UTC", bounds: "[)", node_basis: "created_at", evidence_basis: "message_or_source_context",
-      connection_context_may_be_outside_range: true,
+    ...(scope.layer !== "all" || scope.from || scope.until ? { scope } : {}),
+    ...(span ? { date_filter: {
+      from: span.from, to: span.to,
+      timezone: "UTC", bounds: span.bounds, node_basis: "created_at", evidence_basis: explicitDates ? "message" : "message_or_source_context",
+      connection_context_may_be_outside_range: scope.layer !== "evidence",
     } } : {}),
     hits: hits.map(toJsonHit),
   };
