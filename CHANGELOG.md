@@ -18,6 +18,10 @@ New updates and changes to Fuzzy Brain.
 - Direct evidence batches keep their original result order and redaction behavior.
 - Portable archives batch both evidence and source-message associations while preserving receipt identifiers, ordered readback, and all-or-nothing saves.
 
+**Docs**
+
+- Capture guides explain batch limits, rollback behavior, and measured reductions in database calls.
+
 ---
 
 ## v0.29.0
