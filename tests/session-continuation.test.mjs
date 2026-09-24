@@ -81,5 +81,13 @@ for (const platform of ["claude", "codex"]) {
     await run(env, "ingest-sessions");
     assert.equal((await quotes()).filter(text => text === "a fresh appended thought").length, 1);
     assert.equal((await quotes()).length, before + 1);
+
+    await t.test("exclusions still match text that the sensitive-pattern filter would redact", async () => {
+      await command("set-exclusions", { exclusions: [{ kind: "topic", value: "123-45-6789" }] }, [source.id]);
+      await writeFile(file, transcript(platform, sessionId, [...full, turn("a fresh appended thought"), turn("Excluded source context 123-45-6789")]));
+      const result = await run(env, "ingest-sessions");
+      assert.match(result, /excluded\s+1/);
+      assert.equal((await quotes()).length, before + 1);
+    });
   });
 }
