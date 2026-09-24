@@ -118,7 +118,11 @@ Use `status` to inspect storage readiness, configured source IDs and whether the
 Before `archive_day`, call `transfer_format` and copy one of its returned `authorized_source_ids` into `source_id`.
 Keep the conversation identity in `source_key` and `source.conversation_id`; never invent a source ID.
 
-The tools are `recall`, `search_archive`, `read_archive`, `read_source`, `read_receipt`, `transfer_format`, `status`, and, when enabled, `archive_day`.
+The tools are `recall`, `search_archive`, `read_evidence`, `read_archive`, `read_source`, `read_receipt`, `prepare_capture`, `validate_transfer`, `transfer_format`, `status`, and, when enabled, `archive_day`.
+Use `prepare_capture` for a partial packet assembled from supplied messages, or `validate_transfer` to check a full transfer without database access.
+Both return `saved:false` and do not grant permission to capture.
+The preparation tool defaults unknown metadata to null and requires an explicit source selection when several sources are configured.
+Use the full transfer format for source exports and explicit omissions.
 The write tool is correctly declared as a write.
 It cannot create approved memories, semantic edges or commitments.
 The old `scripts/fuzzy-brain-mcp.mjs`, package name, installed identities and `~/.fuzzy-brain` launchers remain compatible.

@@ -12,6 +12,7 @@ The private MCP server and portable JSON importer share atomic storage, retry pr
 Older source passages remain searchable before embeddings are ready.
 
 Start with [the Tbrain operating guide](docs/tbrain.md) for capture, import, verification, backups and the current account setup gates.
+For agent tool selection and recovery, use [the agent memory guide](docs/agents/memory-tools.md).
 Existing fuzzy-brain package names, stored identities and launchers remain compatible.
 The new private server does not expose the local web app to the internet.
 
@@ -40,7 +41,7 @@ There are deliberately no node-delete or set-raw commands.
 
 ## Fusion bridge
 
-The local MCP server exposes `recall`, `list_reminders`, `get_node`, `remember`, and `mark_complete`.
+The local MCP server exposes `recall`, `read_evidence`, `list_reminders`, `get_node`, `remember`, and `mark_complete`.
 Its instructions tell compatible agents to query Fuzzy Brain automatically for questions about Tony's past, people, preferences, goals, deadlines, and unfinished work.
 
 The scheduled sync ingests settled Claude Code and Codex sessions into the unratified evidence store, then fills a bounded number of missing local embeddings.
@@ -54,7 +55,7 @@ Setup, privacy boundaries, operations, and verification are documented in [docs/
 npm run agents:install
 ```
 
-This registers the `fuzzy-brain` MCP server with every coding agent it finds on the Mac: Claude Code (user scope), Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code if its user `mcp.json` already exists.
+This registers both the `fuzzy-brain` and `tbrain` MCP servers with every coding agent it finds on the Mac: Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code if its user `mcp.json` already exists.
 It skips and reports on any agent it does not find installed, and prints a generic JSON snippet at the end for anything else.
 
 Every agent config points at `~/.fuzzy-brain/bin/brain-run`, a small launcher, instead of a checkout path directly.
@@ -85,7 +86,7 @@ After landing a change on `main`, one command brings the agents up to date witho
 npm run agents:install -- --runtime-only
 ```
 
-That fetches from this checkout and hard-resets the runtime to `main`, then reinstalls dependencies only if `package-lock.json` actually changed.
+That fetches from this checkout and hard-resets the runtime to `main`, then reinstalls dependencies only if the lockfile changes beyond the project release version.
 You can run it mid-change.
 The refresh takes committed `main`, so whatever you have open stays yours and is reported as a warning rather than blocking the command.
 The runtime's `origin` is the path of the checkout it was cloned from, so a refresh needs that checkout to still be there; a rerun from a new location repoints it.

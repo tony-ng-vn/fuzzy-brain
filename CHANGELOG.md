@@ -22,6 +22,10 @@ New updates and changes to Fuzzy Brain.
 - Conversational recall filters old machine observation envelopes without changing stored history, and reports broken or degraded retrieval without exposing internal errors.
 - Recall results include passage identifiers and truncation details so agents can verify the source before answering.
 
+**Docs**
+
+- The agent memory guide explains source readback, partial capture, retries, failure recovery, and updating installed clients.
+
 ---
 
 ## v0.26.3
