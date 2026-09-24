@@ -16,6 +16,7 @@ New updates and changes to Fuzzy Brain.
 
 - Reusing a memory write request ID returns its original result, while changed requests conflict instead of duplicating or overwriting memories.
 - Concurrent completion commands append one event per node, including older callers without request IDs.
+- Memory tools accept stable request IDs and expose receipt readback after reconnecting, with distinct conflict and missing-record errors.
 
 ---
 
