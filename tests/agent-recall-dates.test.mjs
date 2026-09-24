@@ -81,3 +81,20 @@ test("out-of-range connection matches cannot consume the dated candidate limit",
   const result = await recall(question, { client: db, schema: "brain_dev", embedQuery: async () => null });
   assert.deepEqual(result.hits.map(hit => hit.node_id), [inside]);
 });
+
+test("calendar date bounds do not shift with the database connection timezone", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const marker = `zonebound${randomUUID().replaceAll("-", "")}`;
+  const question = `${marker} in September 2026`;
+  const first = await node(db, question, september);
+  const last = await node(db, question, "2026-09-30T23:59:59.999Z");
+  await node(db, question, october);
+  await node(db, question, "2026-08-31T23:59:59.999Z");
+  for (const zone of ["UTC", "America/Los_Angeles", "Asia/Tokyo"]) {
+    await db.query("select set_config('TimeZone',$1,false)", [zone]);
+    const result = await recall(question, { client: db, schema: "brain_dev", embedQuery: async () => null });
+    assert.deepEqual(result.hits.map(hit => hit.node_id).sort(), [first, last].sort(), zone);
+  }
+});
