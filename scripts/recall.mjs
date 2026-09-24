@@ -203,11 +203,12 @@ async function loadQueryVocab(client, tables, question) {
   return { totalDocs, df, stem };
 }
 
+// The calendar parser and reranker use UTC, regardless of the DB session zone.
+function dayInstant(day) { return day ? `${day}T00:00:00.000Z` : null; }
+
 function dateRangeSql(ctx, p) {
-  // The calendar parser and reranker use UTC, regardless of the DB session zone.
-  const instant = day => day ? `${day}T00:00:00.000Z` : null;
   return ctx.span
-    ? `tstzrange(${p.bind(instant(ctx.span.from))}::timestamptz, ${p.bind(instant(ctx.span.to))}::timestamptz, '[)')`
+    ? `tstzrange(${p.bind(dayInstant(ctx.span.from))}::timestamptz, ${p.bind(dayInstant(ctx.span.to))}::timestamptz, '[)')`
     : null;
 }
 
@@ -972,7 +973,7 @@ async function answerQuestion(client, question, schema, embedQuery) {
     notes.push("vector lane unavailable; text lanes only");
   }
 
-  const { hits } = await findCandidates(client, tables, question, queryVec, notes);
+  const { hits, features } = await findCandidates(client, tables, question, queryVec, notes);
   await attachArchiveProvenance(client, schema, hits, notes);
   const state = classifyState(hits);
   return {
@@ -981,6 +982,11 @@ async function answerQuestion(client, question, schema, embedQuery) {
     degraded: notes.length > 0,
     exhaustive: false,
     note: STATE_NOTES[state] + (notes.length > 0 ? ` (${notes.join("; ")})` : ""),
+    ...(features.dateRange.from || features.dateRange.to ? { date_filter: {
+      from: dayInstant(features.dateRange.from), to: dayInstant(features.dateRange.to),
+      timezone: "UTC", bounds: "[)", node_basis: "created_at", evidence_basis: "message_or_source_context",
+      connection_context_may_be_outside_range: true,
+    } } : {}),
     hits: hits.map(toJsonHit),
   };
 }
