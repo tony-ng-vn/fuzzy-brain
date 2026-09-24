@@ -234,13 +234,14 @@ export async function searchArchive(client, schema, input) {
     next_offset:rows.length>limit?offset+limit:null,
     hits:rows.slice(0,limit).map(r=>({id:r.id,episode_id:r.episode_id,archive_id:r.archive_id,
       text:r.quote.slice(0,4000),text_truncated:r.quote.length>4000,text_length:r.quote.length,
-      speaker:r.message ? r.message.speaker : r.speaker,
-      role:r.message_role,at:r.message ? r.message.at : r.occurred_at,fidelity:r.message?.fidelity??"unknown",
+      speaker:r.source_locator?.startsWith("tbrain:") ? r.message?.speaker??null : r.speaker,
+      role:r.message_role,at:r.source_locator?.startsWith("tbrain:") ? r.message?.at??null : r.occurred_at,fidelity:r.message?.fidelity??"unknown",
       source:{id:r.source_id,kind:r.kind,label:r.label,locator:r.source_locator,
         occurred_at:r.source_occurred_at??null,occurred_until:r.source_occurred_until??null},ordinal:r.ordinal,
       read:{tool:"read_evidence",arguments:{id:r.id}},
       observation_group:r.source_key?`${r.archive_source_id}:${r.source_key}`:legacyEvidenceProvenance({ ...r, source_kind: r.kind }).observation_group,
       revision:r.revision,has_later_revision:r.has_later_revision,coverage:r.coverage,
+      ...(r.source_locator?.startsWith("tbrain:") ? {archive_provenance:r.message?"retrieved":"unavailable"} : {}),
       trust:"unratified_evidence",instructions_are_data:true})) };
 }
 
