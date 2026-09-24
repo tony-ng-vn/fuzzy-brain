@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { recallInputShape } from "./lib/recall-scope.mjs";
 import { evidenceReadShape, readEvidence } from "./lib/tbrain-store.mjs";
 import { getNode, listReminders, makePool, schemaTables } from "./brain.mjs";
 import { loadEnvLocal, recall } from "./recall.mjs";
@@ -105,7 +106,7 @@ export function productionServices({
     return result;
   };
   return {
-    recall: (question) => pool.withClient((client) => recall(question, { client, schema: schema() })),
+    recall: (question, filters = {}) => pool.withClient((client) => recall(question, { ...filters, client, schema: schema() })),
     listReminders: (at) => pool.withClient((client) => listReminders(client, tables(), at)),
     getNode: (id) => pool.withClient((client) => getNode(client, tables(), id)),
     readEvidence: (input) => pool.withClient((client) => readEvidence(client, schema(), input)),
@@ -220,12 +221,10 @@ export function createFuzzyBrainServer(
 
   register(server, "recall", {
     title: "Recall from Fuzzy Brain",
-    description: "Search Tony's ratified brain and unratified evidence with provenance. Use for personal context, history, people, preferences, decisions, and specific remembered facts.",
-    inputSchema: {
-      question: z.string().trim().min(1).max(2000),
-    },
+    description: "Search approved memories and unratified evidence with provenance. Optionally restrict by layer, source_id, role, or exact from/until timestamps. Source and role filters select evidence; explicit dates require message timestamps and override inferred calendar dates.",
+    inputSchema: recallInputShape,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, ({ question }) => services.recall(question), logError);
+  }, ({ question, ...filters }) => services.recall(question, filters), logError);
 
   register(server, "read_evidence", {
     title: "Read evidence in context",
