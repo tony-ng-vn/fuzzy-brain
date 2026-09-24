@@ -9,7 +9,7 @@ import { loadEnvLocal } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
 import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES } from "./lib/tbrain-transfer.mjs";
-import { evidenceReadShape } from "./lib/tbrain-store.mjs";
+import { evidenceReadShape, archiveSearchShape } from "./lib/tbrain-store.mjs";
 
 const brainScript = fileURLToPath(new URL("./brain.mjs", import.meta.url));
 const FAILURE_MESSAGES = Object.freeze({
@@ -111,7 +111,6 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   };
   const offset = z.number().int().min(0).max(100_000).default(0);
   const limit = z.number().int().min(1).max(20).default(10);
-  const instant = z.iso.datetime({ offset: true }).nullable().optional().default(null);
   register("status", "Report archive availability, coverage, and whether capture is enabled in this server.", {}, async () => ({
     ...await services.archiveStatus(), capture_enabled: allowCapture === true,
     authorized_source_ids: [...allowed],
@@ -145,9 +144,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
     captureShape, input => ({ ...prepareCapture(input, [...allowed]), capture_enabled: allowCapture === true }));
   register("validate_transfer", "Validate a portable transfer offline and report repairable field paths without saving, checking storage, or granting authorization. Use before archive_day or portable import.",
     { transfer: z.unknown() }, ({ transfer }) => inspectTransfer(transfer));
-  register("search_archive", "Search archive passages across all recorded periods unless the question needs an explicit date range.", {
-    query: z.string().trim().min(1).max(2000), from: instant, until: instant, offset, limit,
-  }, input => {
+  register("search_archive", "Search retained passages with lexical cues. Optionally narrow by source_id, role, or date. Follow next_offset for more results and each hit's read instruction for context. All recorded periods are searched unless dates are supplied.", archiveSearchShape, input => {
     if (input.from && input.until && Date.parse(input.from) > Date.parse(input.until)) throw codedError("invalid");
     return services.searchArchive(input);
   });

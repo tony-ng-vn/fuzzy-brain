@@ -14,6 +14,7 @@ New updates and changes to Fuzzy Brain.
 
 **Tools**
 
+- Archive search can narrow by source and message role, and the CLI supports pagination, passage reads, offline help, and actionable validation errors.
 - Agents can prepare partial captures from supplied messages and validate full transfers offline, with explicit unsaved state and repairable field errors.
 - Both memory servers return structured data alongside compatible text results.
 - Agents can read a matching evidence passage and its neighbors through either memory server, with continuation for long text and clear source attribution.

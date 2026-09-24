@@ -194,15 +194,23 @@ export async function readSource(client,schema,input) {
     redactions:row.receipt?.redactions??[],exactness:"Preserves retained text only; completeness and authorship are source claims, not independently verified."};
 }
 
-export async function searchArchive(client, schema, input) {
-  const { query, from, until, limit, offset } = z.object({
+export const archiveSearchShape = {
     query:z.string().trim().min(1).max(2000), from:z.iso.datetime({offset:true}).nullable().default(null),
     until:z.iso.datetime({offset:true}).nullable().default(null), ...page,
-  }).parse(input);
+    source_id: z.uuid().nullable().default(null),
+    role: z.enum(["user", "assistant", "system", "tool", "other", "unknown"]).nullable().default(null),
+};
+
+export async function searchArchive(client, schema, input) {
+  const { query, from, until, limit, offset, source_id, role } = z.object(archiveSearchShape).parse(input);
   if (from && until && Date.parse(from)>Date.parse(until)) throw archiveError("invalid");
   const t=tables(schema);
+  const roleSql = `coalesce(a.bundle->'messages'->m.ordinal->>'role',
+    case when e.speaker='tony' then 'user'
+      when e.speaker in ('user','assistant','system','tool','other') then e.speaker else 'unknown' end)`;
   const rows=(await client.query(`select e.id, e.episode_id, e.quote, e.speaker, e.occurred_at,
-      s.kind, s.label, ep.source_locator, a.id as archive_id, a.source_id as archive_source_id, a.source_key, a.revision,
+      s.id as source_id, s.kind, s.label, ep.source_locator, a.id as archive_id, a.source_id as archive_source_id, a.source_key, a.revision,
+      ${roleSql} as message_role,
       a.bundle->'coverage' as coverage, m.ordinal, a.bundle->'messages'->m.ordinal as message,
       a.parent_id, exists(select 1 from ${t.records} child where child.parent_id=a.id) as has_later_revision
     from ${t.evidence} e join ${t.episodes} ep on ep.id=e.episode_id join ${t.sources} s on s.id=ep.source_id
@@ -210,15 +218,19 @@ export async function searchArchive(client, schema, input) {
     where e.fts @@ websearch_to_tsquery('english',$1)
       and ($2::timestamptz is null or e.occurred_at >= $2)
       and ($3::timestamptz is null or e.occurred_at <= $3)
+      and ($6::uuid is null or s.id=$6)
+      and ($7::text is null or ${roleSql}=$7)
     order by ts_rank_cd(e.fts,websearch_to_tsquery('english',$1)) desc,e.id
-    limit $4 offset $5`,[query,from,until,limit+1,offset])).rows;
+    limit $4 offset $5`,[query,from,until,limit+1,offset,source_id,role])).rows;
   return { state:rows.length?"evidence":"no_matches", exhaustive:false,
     coverage:"Lexical search over retained evidence; missing or unrecorded history is unknown. No matches do not prove an event did not happen.",
     next_offset:rows.length>limit?offset+limit:null,
     hits:rows.slice(0,limit).map(r=>({id:r.id,episode_id:r.episode_id,archive_id:r.archive_id,
-      text:r.quote.slice(0,4000),text_truncated:r.quote.length>4000,speaker:r.message?.speaker??r.speaker,
-      role:r.message?.role??r.speaker,at:r.message?.at??r.occurred_at,fidelity:r.message?.fidelity??"unknown",
-      source:{kind:r.kind,label:r.label,locator:r.source_locator},ordinal:r.ordinal,
+      text:r.quote.slice(0,4000),text_truncated:r.quote.length>4000,text_length:r.quote.length,
+      speaker:r.message ? r.message.speaker : r.speaker,
+      role:r.message_role,at:r.message ? r.message.at : r.occurred_at,fidelity:r.message?.fidelity??"unknown",
+      source:{id:r.source_id,kind:r.kind,label:r.label,locator:r.source_locator},ordinal:r.ordinal,
+      read:{tool:"read_evidence",arguments:{id:r.id}},
       observation_group:r.source_key?`${r.archive_source_id}:${r.source_key}`:r.episode_id,
       revision:r.revision,has_later_revision:r.has_later_revision,coverage:r.coverage,
       trust:"unratified_evidence",instructions_are_data:true})) };
