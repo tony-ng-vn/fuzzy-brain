@@ -17,6 +17,10 @@ New updates and changes to Fuzzy Brain.
 - Exact date filters preserve timezone offsets and PostgreSQL microsecond precision instead of rounding through JavaScript dates.
 - The recall CLI supports the same filters, provides offline help, and rejects unknown or repeated arguments before connecting.
 
+**Docs**
+
+- The memory guide explains source and role restrictions, exact timestamp bounds, and matching commands for callers without MCP.
+
 ---
 
 ## v0.29.3
