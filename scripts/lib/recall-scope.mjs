@@ -40,3 +40,34 @@ export function parseRecallScope(input) {
     until: upper?.text ?? null,
   };
 }
+
+export const recallHelp = {
+  state: "help",
+  usage: 'node scripts/recall.mjs "QUESTION" [--json] [--layer all|nodes|evidence] [--source-id UUID] [--role user|assistant|system|tool|other|unknown] [--from ISO] [--until ISO]',
+  note: "Source and role filters select evidence. Explicit timestamp bounds are inclusive, override inferred dates, and require known message timestamps or node creation timestamps. Missing results do not prove absence.",
+};
+
+export function parseRecallArgs(args) {
+  if (args.some(value => value === "--help" || value === "-h")) return { help: true };
+  const flags = { "--layer": "layer", "--source-id": "source_id", "--role": "role", "--from": "from", "--until": "until" };
+  const filters = {};
+  let question, json = false;
+  const invalid = () => Object.assign(new Error("Invalid recall arguments. Use --help for supported filters."), { code: "invalid" });
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === "--json") {
+      if (json) throw invalid();
+      json = true;
+    } else if (Object.hasOwn(flags, token)) {
+      const key = flags[token], value = args[++i];
+      if (key in filters || value === undefined || value.startsWith("--")) throw invalid();
+      filters[key] = value;
+    } else {
+      if (token.startsWith("--") || question !== undefined) throw invalid();
+      question = token;
+    }
+  }
+  const parsed = recallInputShape.question.safeParse(question);
+  if (!parsed.success) throw invalid();
+  return { question: parsed.data, json, scope: parseRecallScope(filters) };
+}

@@ -45,7 +45,7 @@ import { denseRanks, fuseRrf } from "./lib/retrieval/fuse.mjs";
 import { rerank } from "./lib/retrieval/rerank.mjs";
 import { observationEnvelopePattern } from "./lib/observation-envelope.mjs";
 import { legacyEvidenceProvenance, legacyEvidenceRoleSql } from "./lib/evidence-provenance.mjs";
-import { parseRecallScope } from "./lib/recall-scope.mjs";
+import { parseRecallScope, parseRecallArgs, recallHelp } from "./lib/recall-scope.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -1017,17 +1017,15 @@ async function answerQuestion(client, question, schema, embedQuery, scope) {
 }
 
 async function main() {
-  loadEnvLocal();
-  const args = process.argv.slice(2);
-  const json = args.includes("--json");
-  const question = args.filter((a) => a !== "--json")[0];
-  if (!question || !question.trim()) {
-    console.error('usage: node scripts/recall.mjs "<question>" [--json]');
-    process.exit(1);
+  const { help, question, json, scope } = parseRecallArgs(process.argv.slice(2));
+  if (help) {
+    console.log(JSON.stringify(recallHelp, null, 2));
+    return;
   }
+  loadEnvLocal();
 
   try {
-    const result = await recall(question);
+    const result = await recall(question, scope);
     console.log(json ? JSON.stringify(result, null, 2) : formatHuman(result));
   } finally {
     // The one place the model is torn down. A resident caller keeps it loaded
