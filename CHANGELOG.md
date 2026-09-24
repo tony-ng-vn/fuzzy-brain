@@ -15,6 +15,10 @@ New updates and changes to Fuzzy Brain.
 - Calendar boundaries use UTC consistently instead of changing with the database connection timezone.
 - Dated results report the applied bounds and explain which timestamps they filter.
 
+**Docs**
+
+- The memory guide explains UTC calendar bounds, node creation dates, and connections that provide context outside the requested period.
+
 ---
 
 ## v0.29.2

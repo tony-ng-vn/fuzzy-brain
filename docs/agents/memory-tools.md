@@ -31,6 +31,14 @@ Recall can use a source date to narrow a dated question, and `date_filter_basis`
 For example, an undated passage in a September conversation can match "in September 2026" without claiming that the passage itself has a known timestamp.
 Passage readback and lexical search expose those separate source dates under `source`.
 
+When recall recognizes a calendar restriction, `date_filter` reports its actual UTC bounds.
+The lower bound is inclusive and the upper bound is exclusive.
+An absent `date_filter` means recall did not recognize a date restriction; it does not promise that every date phrase is understood.
+Node dates refer to when the node was created, not necessarily when the described event happened.
+The same restriction applies to node hits found through connection explanations or through a neighboring memory.
+Connection titles and why sentences remain source context and can mention memories outside that period.
+Use the exact date arguments on `search_archive` when the question requires known message timestamps rather than contextual dates.
+
 If ranked recall is insufficient, use `search_archive` with distinctive lexical cues.
 It uses PostgreSQL web-search syntax, so all ordinary query terms must match; shorten a long question to its useful terms or use explicit `OR` alternatives.
 Add `role:"user"` when looking specifically for the user's statements, or `source_id` when searching one known source.
