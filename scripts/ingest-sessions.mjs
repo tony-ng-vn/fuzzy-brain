@@ -11,16 +11,14 @@
 //   1. the allowlist (machine-local config: only named projects ingest),
 //   2. DB exclusions on the source row (thread skips by project; person/
 //      topic skip the whole episode -- zero rows, per ADR 0002),
-//   3. the sensitive-pattern scrub (inside the verbs, and pre-render here
-//      so span offsets stay exact -- placeholder length differs from the
-//      matched text, so scrubbing after rendering would drift offsets).
+//   3. the sensitive-pattern scrub inside the controlled writer, before
+//      rendering stored spans so their offsets remain exact.
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode, SESSION_PARSER_VERSION } from "./lib/session-parser.mjs";
-import { scrubSensitivePatterns } from "./brain.mjs";
 import { cli, ensureSource } from "./lib/brain-cli.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
 
@@ -170,16 +168,10 @@ function newCounts() {
   };
 }
 
-// The shared tail of every source's pipeline: scrub each turn BEFORE
-// rendering (so offsets are computed against the exact text that gets
-// stored), then enforce DB exclusions (a match means ZERO rows --
-// conservative whole-episode skip, never a partial ingest of an excluded
-// subject). Pure and local: no cli() call here -- the actual write is
-// batched, later, in flushChunk, so this is the one place that decides
-// whether an episode is submitted at all.
+// Check exclusions against the original local rendering. The controlled writer
+// rechecks current exclusions, then scrubs and renders the spans before storing them.
 function prepareEpisode(source, exclusions, locator, parsed, threadHaystack, counts) {
-  const scrubbedTurns = parsed.turns.map((t) => ({ ...t, text: scrubSensitivePatterns(t.text).text }));
-  const { raw, spans } = renderEpisode(scrubbedTurns);
+  const { raw, spans } = renderEpisode(parsed.turns);
 
   const rawLower = raw.toLowerCase();
   const hit = exclusions.find((x) =>
@@ -205,7 +197,7 @@ function prepareEpisode(source, exclusions, locator, parsed, threadHaystack, cou
       end_offset: s.end,
       speaker: s.speaker,
       occurred_at: s.ts,
-      omitted_before: scrubbedTurns[index].omittedBefore ?? 0,
+      omitted_before: parsed.turns[index].omittedBefore ?? 0,
     })),
   };
 }

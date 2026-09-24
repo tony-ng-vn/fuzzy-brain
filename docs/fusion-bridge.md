@@ -77,6 +77,8 @@ Known timestamps normalize to an instant; unknown timestamps stay null.
 Indistinguishable undated occurrences cannot recover source identifiers that were never recorded.
 The importer can recover a missing middle even when a later part of the conversation was already captured.
 Source exclusions apply to the whole supplied conversation again at the write boundary.
+Both checks run before redaction, so excluded terms still match even when the sensitive-pattern filter would remove them.
+The controlled writer redacts the selected messages before rendering the stored episode and its offsets.
 
 Each successful reconciliation commits an immutable checkpoint together with any new evidence.
 An unchanged file skips parsing only when its size, modification time, and parser version match a checkpoint.

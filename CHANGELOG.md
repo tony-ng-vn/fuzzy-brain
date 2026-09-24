@@ -15,7 +15,7 @@ New updates and changes to Fuzzy Brain.
 **Tools**
 
 - Session reconciliation compares stored message occurrences instead of turn counts, preserving repeated messages and recovering gaps after parser changes.
-- Session writes recheck exclusions against the whole supplied conversation before adding evidence.
+- Session writes check exclusions against the whole supplied conversation before redaction, then render scrubbed text with matching evidence offsets.
 - Automatic sync checks legacy sessions once, then skips unchanged files only when their current parser and file metadata match a committed checkpoint.
 
 **Docs**
