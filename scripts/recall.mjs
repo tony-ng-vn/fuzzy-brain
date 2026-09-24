@@ -43,6 +43,7 @@ import { STOPWORDS, tokenize, stem } from "./lib/retrieval/text.mjs";
 import { parseQueryFeatures, laneWeights } from "./lib/retrieval/features.mjs";
 import { denseRanks, fuseRrf } from "./lib/retrieval/fuse.mjs";
 import { rerank } from "./lib/retrieval/rerank.mjs";
+import { observationEnvelopePattern } from "./lib/observation-envelope.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -266,6 +267,9 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const dateClause = ctx.span
     ? ` and ${occurredAt} <@ tstzrange(${p.bind(ctx.span.from)}::timestamptz, ${p.bind(ctx.span.to)}::timestamptz, '[)')`
     : "";
+  const conversationClause = isEvidence
+    ? ` and not (s.kind in ('claude_code_session','codex_session') and left(v.quote, 500) ~ ${p.bind(observationEnvelopePattern)})`
+    : "";
 
   return {
     sql: `select ${payload},
@@ -273,7 +277,7 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
        ${simExpr} as sim,
        ${rareExpr} as rare_hit
      ${from}
-     where ${where}${dateClause}
+     where ${where}${dateClause}${conversationClause}
      order by ${orderBy} limit ${LANE_LIMIT}`,
     values: p.values,
   };
@@ -454,8 +458,8 @@ async function findCandidates(client, tables, question, queryVec, notes) {
       await client.query("select set_config('pg_trgm.word_similarity_threshold', $1, false)", [
         String(cfg.trigramThreshold),
       ]);
-    } catch (err) {
-      notes.push(`trigram lane unavailable (${err.message}); weighted 0`);
+    } catch {
+      notes.push("trigram lane unavailable; weighted 0");
       active.splice(active.indexOf("trigram"), 1);
     }
   }
@@ -538,11 +542,12 @@ async function findCandidates(client, tables, question, queryVec, notes) {
         if (list) list.push(row);
         else buckets.set(row.lane, [row]);
       }
-    } catch (err) {
-      notes.push(`fused retrieval failed (${err.message}); per-lane fallback`);
+    } catch {
+      notes.push("fused retrieval failed; per-lane fallback");
     }
   }
 
+  let failedLanes = 0;
   if (buckets) {
     // A union does not preserve per-arm order, so each bucket is re-sorted
     // the way its own statement used to return it. denseRanks gives tied
@@ -565,8 +570,9 @@ async function findCandidates(client, tables, question, queryVec, notes) {
       let rows;
       try {
         ({ rows } = await client.query(sql, values));
-      } catch (err) {
-        notes.push(`${mode} lane over ${layer} failed (${err.message}); skipped`);
+      } catch {
+        failedLanes++;
+        notes.push(`${mode} lane over ${layer} failed; skipped`);
         continue;
       }
       ingestLane(mode, layer, rows);
@@ -576,8 +582,9 @@ async function findCandidates(client, tables, question, queryVec, notes) {
       let rows;
       try {
         ({ rows } = await client.query(sql, values));
-      } catch (err) {
-        notes.push(`edge lane unavailable (${err.message}); skipped`);
+      } catch {
+        failedLanes++;
+        notes.push("edge lane unavailable; skipped");
         break;
       }
       ingestEdges(mode, rows);
@@ -616,13 +623,16 @@ async function findCandidates(client, tables, question, queryVec, notes) {
   // lexeme, a fragment, a trigram, or a ratified why. This is the same rule
   // the old two-lane find had, widened to the lanes that now exist.
   candidates = candidates.filter((c) => c.weakLex || c.trigramLex || c.viaEdge || isStrongHit(c));
+  if (!candidates.length && failedLanes) {
+    throw Object.assign(new Error("Recall is unavailable. Retry the lookup; failed retrieval does not mean a memory is absent."), { code: "unavailable" });
+  }
 
   for (const c of candidates) {
     if (c.layer === "evidence" && c.row.speaker === "tony") c.rrf *= TONY_BOOST;
   }
   candidates.sort((a, b) => b.rrf - a.rrf);
 
-  const edges = await expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode);
+  const edges = await expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode, notes);
   candidates.sort((a, b) => b.rrf - a.rrf);
 
   for (const c of candidates) {
@@ -667,7 +677,7 @@ async function hydrateNodes(client, tables, ctx, ids, rowByKey) {
 // hits that survived admission. The neighbour inherits EDGE_HOP_SCALE of its
 // parent's fused score and the why sentence that reached it, and it never
 // expands further -- one hop is the whole traversal this phase gets.
-async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode) {
+async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode, notes) {
   const nodeIds = candidates.filter((c) => c.layer === "node").map((c) => c.row.id);
   if (nodeIds.length === 0) return [];
 
@@ -706,6 +716,7 @@ async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode
       p.values,
     ));
   } catch {
+    notes.push("related nodes unavailable; connections and contradictions may be incomplete");
     return [];
   }
   const edges = rows.filter((r) => r.kind === "edge");
@@ -934,8 +945,8 @@ async function answerQuestion(client, question, schema, embedQuery) {
   let queryVec = null;
   try {
     queryVec = await embedQuery(question);
-  } catch (err) {
-    notes.push(`vector lane unavailable (${err.message}); text lanes only`);
+  } catch {
+    notes.push("vector lane unavailable; text lanes only");
   }
 
   const { hits } = await findCandidates(client, tables, question, queryVec, notes);
@@ -944,6 +955,8 @@ async function answerQuestion(client, question, schema, embedQuery) {
   return {
     question,
     state,
+    degraded: notes.length > 0,
+    exhaustive: false,
     note: STATE_NOTES[state] + (notes.length > 0 ? ` (${notes.join("; ")})` : ""),
     hits: hits.map(toJsonHit),
   };

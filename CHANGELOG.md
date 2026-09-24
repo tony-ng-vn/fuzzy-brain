@@ -8,9 +8,14 @@ New updates and changes to Fuzzy Brain.
 
 2026-09-23
 
+**Data**
+
+- Session capture no longer attributes known machine observation envelopes to the human speaker.
+
 **Tools**
 
 - Agents can read a matching evidence passage and its neighbors through either memory server, with continuation for long text and clear source attribution.
+- Conversational recall filters old machine observation envelopes without changing stored history, and reports broken or degraded retrieval without exposing internal errors.
 - Recall results include passage identifiers and truncation details so agents can verify the source before answering.
 
 ---

@@ -12,6 +12,8 @@
 //   archived original remains the durable artifact; this rendering can be
 //   regenerated when the parser improves.
 
+import { isObservationEnvelope } from "./observation-envelope.mjs";
+
 // Injected-content tags observed in real transcripts (2026-07-13 survey).
 // Non-greedy paired strips first, then any orphan open/close tags.
 const INJECTED_BLOCKS = [
@@ -68,7 +70,7 @@ export function parseClaudeSessionTurns(jsonlText) {
 
     if (entry.type === "user") {
       const text = userText(content).trim();
-      if (!text) continue;
+      if (!text || isObservationEnvelope(text)) continue;
       turns.push({ speaker: "tony", text, ts: entry.timestamp ?? null });
     } else {
       if (!Array.isArray(content)) continue;
@@ -171,7 +173,7 @@ export function parseCodexSessionTurns(jsonlText) {
         .join("\n");
       for (const re of CODEX_INJECTED_BLOCKS) text = text.replace(re, "");
       text = text.trim();
-      if (!text) continue;
+      if (!text || isObservationEnvelope(text)) continue;
       turns.push({ speaker: "tony", text, ts: entry.timestamp ?? null });
     } else if (p.role === "assistant") {
       const text = (p.content ?? [])
