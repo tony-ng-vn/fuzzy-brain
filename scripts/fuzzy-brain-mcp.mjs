@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { recallInputShape } from "./lib/recall-scope.mjs";
+import { recallInputShape, parseRecallScope } from "./lib/recall-scope.mjs";
 import { evidenceReadShape, readEvidence } from "./lib/tbrain-store.mjs";
 import { getNode, listReminders, makePool, schemaTables } from "./brain.mjs";
 import { loadEnvLocal, recall } from "./recall.mjs";
@@ -106,7 +106,10 @@ export function productionServices({
     return result;
   };
   return {
-    recall: (question, filters = {}) => pool.withClient((client) => recall(question, { ...filters, client, schema: schema() })),
+    recall: (question, filters = {}) => {
+      const scope = parseRecallScope(filters);
+      return pool.withClient((client) => recall(question, { ...scope, client, schema: schema() }));
+    },
     listReminders: (at) => pool.withClient((client) => listReminders(client, tables(), at)),
     getNode: (id) => pool.withClient((client) => getNode(client, tables(), id)),
     readEvidence: (input) => pool.withClient((client) => readEvidence(client, schema(), input)),
