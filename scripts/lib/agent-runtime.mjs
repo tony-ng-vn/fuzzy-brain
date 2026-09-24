@@ -129,7 +129,22 @@ export function checkSourceReady({ hasMain, trackedChanges = [], untracked = [],
 export function needsDependencyInstall({ freshClone, nodeModulesPresent, lockfileBefore, lockfileAfter } = {}) {
   if (freshClone) return { install: true, reason: "fresh clone" };
   if (!nodeModulesPresent) return { install: true, reason: "node_modules is missing" };
-  if (lockfileBefore !== lockfileAfter) return { install: true, reason: `${LOCKFILE} changed` };
+  if (lockfileBefore !== lockfileAfter) {
+    try {
+      const dependencies = text => {
+        const lock = JSON.parse(text);
+        if (!lock?.packages?.[""]) throw new Error("Unknown lockfile shape");
+        // A release changes these two labels without changing installed packages.
+        delete lock.version;
+        delete lock.packages[""].version;
+        return JSON.stringify(lock);
+      };
+      if (dependencies(lockfileBefore) === dependencies(lockfileAfter)) {
+        return { install: false, reason: "only the project release version changed" };
+      }
+    } catch { /* Unknown lockfile formats keep the conservative reinstall behavior. */ }
+    return { install: true, reason: `${LOCKFILE} changed` };
+  }
   return { install: false, reason: `${LOCKFILE} unchanged` };
 }
 
