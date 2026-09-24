@@ -67,7 +67,7 @@ test("recall returns the documented shape without a CLI in the middle", async ()
     embedQuery: async () => new Array(768).fill(0.1),
   });
 
-  assert.deepEqual(Object.keys(result), ["question", "state", "note", "hits"]);
+  assert.deepEqual(Object.keys(result), ["question", "state", "degraded", "exhaustive", "note", "hits"]);
   assert.equal(result.question, "what is the walnut desk restoration");
   assert.equal(result.state, "supported");
   assert.equal(result.note, "ratified brain truth; the nodes below carry it");
@@ -87,7 +87,8 @@ test("recall says so in the note when the model cannot load, and still answers",
       throw new Error("weights are missing");
     },
   });
-  assert.match(result.note, /vector lane unavailable \(weights are missing\); text lanes only/);
+  assert.match(result.note, /vector lane unavailable; text lanes only/);
+  assert.doesNotMatch(result.note, /weights are missing/);
   assert.equal(result.hits.length, 1);
 });
 

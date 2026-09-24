@@ -26,7 +26,7 @@ test("MCP executable speaks stdio without contaminating JSON-RPC output", async 
     const listed = await client.listTools();
     assert.deepEqual(
       listed.tools.map((tool) => tool.name).sort(),
-      ["get_node", "list_reminders", "mark_complete", "recall", "remember"],
+      ["get_node", "list_reminders", "mark_complete", "read_evidence", "recall", "remember"],
     );
   } finally {
     await client.close();
