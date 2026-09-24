@@ -135,6 +135,17 @@ test("approved memory writes have durable retry identities across processes", as
     await assert.rejects(database.client.query("truncate brain_dev.memory_write_receipts"), /append-only/);
     assert.equal((await run("read-write-receipt", undefined, [requestId])).id, first.id);
   });
+
+  await t.test("receipt constraints reject null identity and state fields", async () => {
+    for (const field of ["state", "request_id", "operation"]) {
+      const id = randomUUID();
+      const result = { state: "committed", request_id: id, operation: "add-node", [field]: null };
+      await assert.rejects(database.client.query(
+        "insert into brain_dev.memory_write_receipts(request_id,operation,request_digest,result) values($1,'add-node',$2,$3)",
+        [id, "a".repeat(64), JSON.stringify(result)],
+      ), error => error.code === "23514");
+    }
+  });
 });
 
 test("unkeyed concurrent completion commands append only one event", async t => {
