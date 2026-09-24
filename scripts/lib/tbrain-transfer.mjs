@@ -104,12 +104,17 @@ export function prepareCapture(input, allowedSourceIds) {
   if (!sourceId || !allowedSourceIds.includes(sourceId)) {
     throw Object.assign(new Error("Choose one configured source_id from transfer_format before preparing capture."), { code: "unauthorized" });
   }
-  const prepared = prepareTransfer({
+  const transfer = {
     format: "tbrain.transfer.v1", source_id: sourceId, source_key: value.source_key, revision: value.revision,
     source: { platform: value.platform, conversation_id: value.conversation_id, title: value.title, project: value.project },
     coverage: { kind: "model_assembled", completeness: "partial", from: null, until: null, limitations: value.limitations, omissions: [] },
     messages: value.messages, reflection: value.reflection, relation: value.relation,
-  });
+  };
+  let prepared;
+  try { prepared = prepareTransfer(transfer); }
+  catch {
+    throw Object.assign(new Error("Capture input is invalid. Check the transfer format and message references."), { code: "invalid" });
+  }
   return { state: "prepared", saved: false, storage_checked: false, transfer: prepared.bundle, redactions: prepared.redactions };
 }
 

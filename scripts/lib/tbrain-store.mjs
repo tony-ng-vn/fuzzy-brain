@@ -106,7 +106,7 @@ export async function readEvidence(client, schema, input) {
           and (e.start_offset,e.id)>(a.start_offset,a.id)
         order by e.start_offset,e.id limit $2
       ) v
-    ) select p.*, ep.source_locator, s.kind, s.label
+    ) select p.*, ep.source_id, ep.source_locator, s.kind, s.label
       from passages p join ${t.episodes} ep on ep.id=p.episode_id
       join ${t.sources} s on s.id=ep.source_id order by p.start_offset,p.id`, [id, context]);
   if (!rows.length) throw archiveError("not_found");
@@ -138,7 +138,7 @@ export async function readEvidence(client, schema, input) {
       speaker: isArchive ? archive?.message?.speaker ?? null : row.speaker,
       role: archive?.message?.role ?? "unknown", fidelity: archive?.message?.fidelity ?? "unknown",
       at: isArchive ? archive?.message?.at ?? null : row.occurred_at,
-      source: { kind: row.kind, label: row.label, locator: row.source_locator },
+      source: { id: row.source_id, kind: row.kind, label: row.label, locator: row.source_locator },
       revision: archive?.revision ?? null, coverage: archive?.coverage ?? null,
       observation_group: archive ? `${archive.source_id}:${archive.source_key}` : row.episode_id,
       has_later_revision: archive?.has_later_revision ?? null,
