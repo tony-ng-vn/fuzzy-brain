@@ -55,6 +55,7 @@ test("agents can follow a recall clue to exact evidence and its neighbors on eit
         assert.equal(result.evidence.speaker, null);
         assert.equal(result.evidence.at, null);
         assert.equal(result.evidence.archive_id, receipt.id);
+        assert.equal(result.evidence.source.id, sourceId);
         assert.equal(result.evidence.ordinal, 1);
         assert.equal(result.evidence.next_text_offset, 80);
         assert.equal(result.before[0].text, packet.messages[0].text);

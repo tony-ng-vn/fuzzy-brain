@@ -87,3 +87,13 @@ test("both servers preserve text compatibility and expose structured read result
     assert.deepEqual(response.structuredContent, parsed(response));
   }
 });
+
+test("invalid capture relationships are repairable requests rather than storage outages", async t => {
+  const client = await connect(t, createTbrainServer({}, { allowedSourceIds: [SOURCE] }));
+  const response = await client.callTool({ name: "prepare_capture", arguments: {
+    source_key: "conversation", revision: "1", platform: "test", messages: [{ role: "user", text: "supplied" }],
+    reflection: { author: "assistant", status: "provisional", text: "provisional", message_ordinals: [9] },
+  } });
+  assert.equal(response.isError, true);
+  assert.equal(parsed(response).error.code, "invalid");
+});
