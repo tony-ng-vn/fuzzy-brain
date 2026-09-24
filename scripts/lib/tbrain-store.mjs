@@ -109,7 +109,8 @@ export async function readEvidence(client, schema, input) {
           and (e.start_offset,e.id)>(a.start_offset,a.id)
         order by e.start_offset,e.id limit $2
       ) v
-    ) select p.*, ep.source_id, ep.source_locator, s.kind, s.label
+    ) select p.*, ep.source_id, ep.source_locator, s.kind, s.label,
+        ep.occurred_at as source_occurred_at, ep.occurred_until as source_occurred_until
       from passages p join ${t.episodes} ep on ep.id=p.episode_id
       join ${t.sources} s on s.id=ep.source_id order by p.start_offset,p.id`, [id, context]);
   if (!rows.length) throw archiveError("not_found");
@@ -142,7 +143,8 @@ export async function readEvidence(client, schema, input) {
       speaker: isArchive ? archive?.message?.speaker ?? null : row.speaker,
       role: archive?.message?.role ?? legacy.role, fidelity: archive?.message?.fidelity ?? "unknown",
       at: isArchive ? archive?.message?.at ?? null : row.occurred_at,
-      source: { id: row.source_id, kind: row.kind, label: row.label, locator: row.source_locator },
+      source: { id: row.source_id, kind: row.kind, label: row.label, locator: row.source_locator,
+        occurred_at: row.source_occurred_at ?? null, occurred_until: row.source_occurred_until ?? null },
       revision: archive?.revision ?? null, coverage: archive?.coverage ?? null,
       observation_group: archive ? `${archive.source_id}:${archive.source_key}` : legacy.observation_group,
       has_later_revision: archive?.has_later_revision ?? null,
@@ -213,6 +215,7 @@ export async function searchArchive(client, schema, input) {
   const roleSql = `coalesce(a.bundle->'messages'->m.ordinal->>'role',
     ${legacyEvidenceRoleSql({ sourceKind: "s.kind", sourceLocator: "ep.source_locator", speaker: "e.speaker" })})`;
   const rows=(await client.query(`select e.id, e.episode_id, e.quote, e.speaker, e.occurred_at,
+      ep.occurred_at as source_occurred_at, ep.occurred_until as source_occurred_until,
       s.id as source_id, s.kind, s.label, ep.source_locator, a.id as archive_id, a.source_id as archive_source_id, a.source_key, a.revision,
       ${roleSql} as message_role,
       a.bundle->'coverage' as coverage, m.ordinal, a.bundle->'messages'->m.ordinal as message,
@@ -233,7 +236,8 @@ export async function searchArchive(client, schema, input) {
       text:r.quote.slice(0,4000),text_truncated:r.quote.length>4000,text_length:r.quote.length,
       speaker:r.message ? r.message.speaker : r.speaker,
       role:r.message_role,at:r.message ? r.message.at : r.occurred_at,fidelity:r.message?.fidelity??"unknown",
-      source:{id:r.source_id,kind:r.kind,label:r.label,locator:r.source_locator},ordinal:r.ordinal,
+      source:{id:r.source_id,kind:r.kind,label:r.label,locator:r.source_locator,
+        occurred_at:r.source_occurred_at??null,occurred_until:r.source_occurred_until??null},ordinal:r.ordinal,
       read:{tool:"read_evidence",arguments:{id:r.id}},
       observation_group:r.source_key?`${r.archive_source_id}:${r.source_key}`:legacyEvidenceProvenance({ ...r, source_kind: r.kind }).observation_group,
       revision:r.revision,has_later_revision:r.has_later_revision,coverage:r.coverage,

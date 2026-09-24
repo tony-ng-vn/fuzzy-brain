@@ -214,8 +214,9 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
     ? `left(v.quote, ${TRIGRAM_QUOTE_CAP})`
     : `left(n.title || ' ' || n.body, ${TRIGRAM_NODE_CAP})`;
   const payload = isEvidence
-    ? `v.id, v.quote, v.speaker, ${occurredAt} as occurred_at,
-       v.episode_id, e.source_locator, s.kind as source_kind, s.label as source_label, e.source_id`
+    ? `v.id, v.quote, v.speaker, v.occurred_at,
+       v.episode_id, e.source_locator, s.kind as source_kind, s.label as source_label, e.source_id,
+       e.occurred_at as source_occurred_at, e.occurred_until as source_occurred_until`
     : `n.id, n.type, n.title, n.body, n.created_at, ${occurredAt} as occurred_at`;
   const from = isEvidence
     ? `from ${tables.evidence} v
@@ -346,7 +347,8 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
   // the edge payload, then the three scores. Absent fields are typed nulls.
   const quoteNulls = `null::text as quote, null::text as speaker`;
   const provNulls = `null::uuid as episode_id, null::text as source_locator,
-       null::text as source_kind, null::text as source_label, null::uuid as source_id`;
+       null::text as source_kind, null::text as source_label, null::uuid as source_id,
+       null::timestamptz as source_occurred_at, null::timestamptz as source_occurred_until`;
   const nodeNulls = `null::text as type, null::text as title, null::text as body, null::timestamptz as created_at`;
   const edgeNulls = `null::uuid as source, null::uuid as target, null::text as why,
        null::text as source_title, null::text as target_title`;
@@ -360,6 +362,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
     if (layer === "evidence") {
       arms.push(`select '${mode}:evidence' as lane, c.id,
        c.quote, c.speaker, c.occurred_at, c.episode_id, c.source_locator, c.source_kind, c.source_label, c.source_id,
+       c.source_occurred_at, c.source_occurred_until,
        ${nodeNulls},
        ${edgeNulls},
        c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit
@@ -809,6 +812,7 @@ function toJsonHit(c) {
       edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
     };
   }
+  const occurredAt = c.archive ? c.archive.message?.at ?? null : c.row.occurred_at ?? null;
   return {
     layer: "evidence",
     quote: clip(c.row.quote, 700),
@@ -838,7 +842,10 @@ function toJsonHit(c) {
       source_kind: c.row.source_kind,
       source_label: c.row.source_label,
       source_locator: c.row.source_locator,
-      occurred_at: c.archive ? c.archive.message?.at ?? null : c.row.occurred_at,
+      occurred_at: occurredAt,
+      source_occurred_at: c.row.source_occurred_at ?? null,
+      source_occurred_until: c.row.source_occurred_until ?? null,
+      date_filter_basis: occurredAt ? "message" : c.row.source_occurred_at ? "source_context" : "unknown",
       ...(c.archive ? {
         evidence_id: c.row.id,
         archive_id: c.archive.archive_id ?? null,

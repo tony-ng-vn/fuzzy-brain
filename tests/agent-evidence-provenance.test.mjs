@@ -100,7 +100,7 @@ test("recall separates a passage timestamp from the source date used for retriev
     assert.equal(read.evidence.source.occurred_at?.toISOString() ?? null, item.from);
     assert.equal(read.evidence.source.occurred_until?.toISOString() ?? null, item.until);
   }
-  const dated = await recall(`${marker} September 2026`, options);
+  const dated = await recall(`${marker} in September 2026`, options);
   assert.deepEqual(dated.hits.map(hit => hit.provenance.evidence_id).sort(), cases.slice(0, 2).map(item => item.id).sort());
   const exactDates = await searchArchive(db, "brain_dev", { query: marker, from: "2026-09-01T00:00:00Z", until: "2026-10-01T00:00:00Z" });
   assert.deepEqual(exactDates.hits.map(hit => hit.id), [cases[1].id], "archive date filters still require a known message timestamp");

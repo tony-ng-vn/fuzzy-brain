@@ -12,6 +12,7 @@ New updates and changes to Fuzzy Brain.
 
 - Recall, search, and passage readback identify saved fragments of one conversation as one source group, so repeated excerpts do not look like independent support.
 - Speaker roles come from recorded archive metadata or known session parsers, and passage context explicitly covers the current saved episode.
+- Undated passages keep an unknown message date while recall reports the separate source date it can use to narrow a search.
 
 ---
 
