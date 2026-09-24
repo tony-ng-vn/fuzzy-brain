@@ -104,3 +104,24 @@ test("calendar date bounds do not shift with the database connection timezone", 
     });
   }
 });
+
+test("one-sided date ranges remain open through connection retrieval", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const marker = `openbound${randomUUID().replaceAll("-", "")}`;
+  const before = await node(db, "Older connected thought", "2025-12-31T23:59:59.999Z");
+  const during = await node(db, "Connected thought inside the named year", "2026-06-01T00:00:00Z");
+  const after = await node(db, "Newer connected thought", "2027-01-01T00:00:00Z");
+  await edge(db, before, during, `${marker} before 2026`);
+  await edge(db, during, after, `${marker} after 2026`);
+  const options = { client: db, schema: "brain_dev", embedQuery: async () => null };
+  const earlier = await recall(`${marker} before 2026`, options);
+  assert.deepEqual(earlier.hits.map(hit => hit.node_id), [before]);
+  assert.equal(earlier.date_filter.from, null);
+  assert.equal(earlier.date_filter.to, "2026-01-01T00:00:00.000Z");
+  const later = await recall(`${marker} after 2026`, options);
+  assert.deepEqual(later.hits.map(hit => hit.node_id), [after]);
+  assert.equal(later.date_filter.from, "2027-01-01T00:00:00.000Z");
+  assert.equal(later.date_filter.to, null);
+});
