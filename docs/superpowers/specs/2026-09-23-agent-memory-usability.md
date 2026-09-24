@@ -56,6 +56,9 @@ No claim about general human cognition or retrieval-quality improvement rests on
 ## Verification observations
 
 Baseline `npm test` passed 565 of 568 tests, with three existing optional skips and no failures.
+The final required suite passed 585 of 588 tests in 48.27 seconds, with the same three skips and zero failures.
+The app production build passed with real local dependencies.
+An initial worktree build rejected the shared `node_modules` symlink; a local dependency copy resolved that setup issue without changing application code.
 The initial full run after implementation exposed old exact-shape assertions for the tool catalog and recall fields; those contracts now include the additive fields.
 Lint and type checking passed with six existing benchmark warnings and no new warnings.
 
