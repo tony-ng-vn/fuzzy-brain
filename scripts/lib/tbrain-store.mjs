@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { schemaTables } from "../brain.mjs";
+import { schemaTables, insertEvidenceRows } from "../brain.mjs";
 import { prepareTransfer } from "./tbrain-transfer.mjs";
 
 export function archiveError(code) { return Object.assign(new Error(`Tbrain ${code}`), { code }); }
@@ -42,28 +42,30 @@ export async function importTransfer(client, schema, input, { authorized = false
     const id = randomUUID();
     const episodeId = randomUUID();
     let raw = "";
-    const spans = bundle.messages.map((m, ordinal) => {
+    const spans = bundle.messages.map(m => {
       const start = raw.length;
       raw += m.text;
       const end = raw.length;
       raw += "\n\n";
-      return { id: randomUUID(), ordinal, start, end, message: m };
+      return { start, end, message: m };
     });
-    const receipt = { id, state: "committed", source_id: bundle.source_id, source_key: bundle.source_key,
-      revision: bundle.revision, episode_id: episodeId, digest, stored_digest,
-      message_count: spans.length, evidence_ids: spans.map(s => s.id),
-      coverage: bundle.coverage, redactions, reflection_status: bundle.reflection ? "provisional" : null,
-      created_at: (await client.query("select clock_timestamp() as at")).rows[0].at.toISOString() };
     await client.query(`insert into ${t.episodes}(id,source_id,source_locator,raw,occurred_at,occurred_until) values ($1,$2,$3,$4,$5,$6)`,
       [episodeId, bundle.source_id, `tbrain:${id}`, raw, bundle.coverage.from, bundle.coverage.until]);
+    const evidence = await insertEvidenceRows(client, t, spans.map(span => ({ episode_id: episodeId,
+      quote: span.message.text, start_offset: span.start, end_offset: span.end,
+      speaker: span.message.role, occurred_at: span.message.at })));
+    const receipt = { id, state: "committed", source_id: bundle.source_id, source_key: bundle.source_key,
+      revision: bundle.revision, episode_id: episodeId, digest, stored_digest,
+      message_count: spans.length, evidence_ids: evidence.ids,
+      coverage: bundle.coverage, redactions, reflection_status: bundle.reflection ? "provisional" : null,
+      created_at: (await client.query("select clock_timestamp() as at")).rows[0].at.toISOString() };
     await client.query(`insert into ${t.records}(id,source_id,source_key,revision,episode_id,parent_id,digest,stored_digest,bundle,receipt)
       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [id,bundle.source_id,bundle.source_key,bundle.revision,episodeId,bundle.relation?.receipt_id ?? null,digest,stored_digest,JSON.stringify(bundle),JSON.stringify(receipt)]);
-    for (const s of spans) {
-      await client.query(`insert into ${t.evidence}(id,episode_id,quote,start_offset,end_offset,speaker,occurred_at) values ($1,$2,$3,$4,$5,$6,$7)`,
-        [s.id,episodeId,s.message.text,s.start,s.end,s.message.role,s.message.at]);
-      await client.query(`insert into ${t.messages}(evidence_id,archive_id,ordinal) values ($1,$2,$3)`, [s.id,id,s.ordinal]);
-    }
+    const associations = await client.query(`insert into ${t.messages}(evidence_id,archive_id,ordinal)
+      select m.evidence_id,$2,(m.ordinal-1)::integer from unnest($1::uuid[]) with ordinality as m(evidence_id,ordinal)`,
+    [evidence.ids, id]);
+    if (associations.rowCount !== spans.length) throw archiveError("unavailable");
     await client.query("commit");
     return { ...receipt, replayed: false };
   } catch (error) {

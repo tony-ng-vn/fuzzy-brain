@@ -4,6 +4,26 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.29.1
+
+2026-09-23
+
+**Data**
+
+- Rendering a supplied conversation preserves trailing message whitespace so evidence offsets still return the exact quote.
+
+**Tools**
+
+- Capturing many messages uses bounded database batches instead of one insert per message, while failed captures still roll back completely.
+- Direct evidence batches keep their original result order and redaction behavior.
+- Portable archives batch both evidence and source-message associations while preserving receipt identifiers, ordered readback, and all-or-nothing saves.
+
+**Docs**
+
+- Capture guides explain batch limits, rollback behavior, and measured reductions in database calls.
+
+---
+
 ## v0.29.0
 
 2026-09-23

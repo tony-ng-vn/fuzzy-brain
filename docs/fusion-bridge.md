@@ -87,6 +87,13 @@ This initial pass can take longer than later sync runs because it checks those c
 Later parser versions invalidate the shortcut and repeat that check.
 Concurrent deliveries for the same source and session serialize, and an identical retry returns the committed checkpoint.
 
+Evidence inserts share the episode transaction in batches of at most 500 spans and 4 MiB of encoded JSON.
+A single message larger than that limit travels alone and remains intact.
+The writer only requests full returned spans when the direct evidence command needs them.
+Session and episode capture use the database's inserted-row count instead of echoing every quote back.
+A database failure in any batch rolls back earlier batches, the episode, and its checkpoint together.
+The synthetic 500-message regression fixture uses nine database calls, compared with 508 before batching.
+
 Before installing a runtime with checkpoint support, apply the additive migration:
 
 ```sh

@@ -83,6 +83,9 @@ Validation reports `prepared` and `saved:false` without database access.
 Import requires the source allowlist and the explicit authorization flag.
 It returns `committed`, a receipt `id`, an `episode_id`, message evidence IDs and content fingerprints.
 An identical retry returns the original receipt with `replayed:true`.
+Portable archive imports batch evidence inserts and ordered source associations inside that same transaction.
+The 500-message regression fixture uses 11 database calls, compared with 1,009 before batching.
+A later batch or association failure rolls back the complete import, including its receipt.
 A timeout is ambiguous until retry or readback resolves it.
 Reusing the same source identity and revision for different content fails with `conflict`.
 

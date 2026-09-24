@@ -5,7 +5,15 @@
 // ever render as Tony's words (ADR 0002; issue #12 plan point 4).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseClaudeSession } from "../scripts/lib/session-parser.mjs";
+import { parseClaudeSession, renderEpisode } from "../scripts/lib/session-parser.mjs";
+
+test("rendering preserves final message whitespace and exact span offsets", () => {
+  const text = "  a supplied thought\nwith trailing whitespace \t\n";
+  const rendered = renderEpisode([{ speaker: "tony", text, ts: null }]);
+  const span = rendered.spans[0];
+  assert.equal(rendered.raw.slice(span.start, span.end), text);
+  assert.equal(rendered.raw, `tony:\n${text}`);
+});
 
 function jsonl(entries) {
   return entries.map((e) => JSON.stringify(e)).join("\n");
