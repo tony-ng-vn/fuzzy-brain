@@ -4,6 +4,17 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.29.2
+
+2026-09-23
+
+**Tools**
+
+- Recall, search, and passage readback identify saved fragments of one conversation as one source group, so repeated excerpts do not look like independent support.
+- Speaker roles come from recorded archive metadata or known session parsers, and passage context explicitly covers the current saved episode.
+
+---
+
 ## v0.29.1
 
 2026-09-23

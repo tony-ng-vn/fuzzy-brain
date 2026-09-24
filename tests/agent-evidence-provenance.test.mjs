@@ -24,6 +24,7 @@ test("retrieval identifies conversation fragments consistently without inventing
     { source: 2, locator: "session-one:turns:2", speaker: "tony", role: "unknown", key: null },
     { source: 0, locator: null, speaker: "tony", role: "user", key: null },
     { source: 0, locator: "tbrain:unavailable", speaker: "tony", role: "unknown", key: null },
+    { source: 0, locator: "session-two", speaker: "constructor", role: "unknown", key: "session-two" },
   ];
   for (const spec of specs) {
     spec.episode = randomUUID();
