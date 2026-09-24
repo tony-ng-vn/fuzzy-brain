@@ -1,0 +1,83 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { recall } from "../scripts/recall.mjs";
+import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
+
+const september = "2026-09-01T00:00:00.000Z";
+const october = "2026-10-01T00:00:00.000Z";
+
+async function node(db, text, at) {
+  const id = randomUUID();
+  await db.query("insert into brain_dev.nodes(id,type,title,body,raw,created_at) values($1,'note',$2,$2,$2,$3)", [id, text, at]);
+  return id;
+}
+
+async function edge(db, source, target, why, id = randomUUID()) {
+  await db.query("insert into brain_dev.edges(id,source,target,why) values($1,$2,$3,$4)", [id, source, target, why]);
+}
+
+function fallbackClient(db) {
+  let rejected = false;
+  return { async query(sql, values) {
+    if (!rejected && / as lane\b/.test(sql)) {
+      rejected = true;
+      throw new Error("Synthetic fused query failure");
+    }
+    return db.query(sql, values);
+  } };
+}
+
+test("dated recall bounds direct connection matches and their node hydration", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const marker = `edgedate${randomUUID().replaceAll("-", "")}`;
+  const question = `${marker} in September 2026`;
+  const inside = await node(db, "A saved thought about paper boats", september);
+  const outside = await node(db, "A saved thought about wooden blocks", "2026-08-31T23:59:59.999Z");
+  await edge(db, outside, inside, question);
+  for (const [mode, client] of [["fused", db], ["fallback", fallbackClient(db)]]) {
+    await t.test(mode, async () => {
+      const result = await recall(question, { client, schema: "brain_dev", embedQuery: async () => null });
+      assert.deepEqual(result.hits.map(hit => hit.node_id), [inside]);
+      assert.equal(result.degraded, mode === "fallback");
+    });
+  }
+});
+
+test("one-hop expansion keeps date boundaries while undated recall keeps its connections", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const marker = `hopdate${randomUUID().replaceAll("-", "")}`;
+  const question = `${marker} in September 2026`;
+  const anchor = await node(db, question, september);
+  const inside = await node(db, "Related note inside the requested month", "2026-09-30T23:59:59.999Z");
+  const before = await node(db, "Related note just before the requested month", "2026-08-31T23:59:59.999Z");
+  const after = await node(db, "Related note at the next month boundary", october);
+  for (const id of [inside, before, after]) await edge(db, anchor, id, "The user approved this connection between the saved thoughts.");
+  for (const client of [db, fallbackClient(db)]) {
+    const result = await recall(question, { client, schema: "brain_dev", embedQuery: async () => null });
+    assert.deepEqual(result.hits.map(hit => hit.node_id).sort(), [anchor, inside].sort());
+  }
+  const unrestricted = await recall(marker, { client: db, schema: "brain_dev", embedQuery: async () => null });
+  assert.deepEqual(unrestricted.hits.map(hit => hit.node_id).sort(), [anchor, inside, before, after].sort());
+});
+
+test("out-of-range connection matches cannot consume the dated candidate limit", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const marker = `limitdate${randomUUID().replaceAll("-", "")}`;
+  const question = `${marker} in September 2026`;
+  const outside = await node(db, "Common endpoint from an earlier month", "2026-08-01T00:00:00Z");
+  for (let i = 0; i < 35; i++) {
+    const other = await node(db, `Earlier note number ${i}`, "2026-08-02T00:00:00Z");
+    await edge(db, outside, other, question, `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+  }
+  const inside = await node(db, "The relevant thought from the requested month", september);
+  await edge(db, outside, inside, question, "ffffffff-ffff-4fff-8fff-ffffffffffff");
+  const result = await recall(question, { client: db, schema: "brain_dev", embedQuery: async () => null });
+  assert.deepEqual(result.hits.map(hit => hit.node_id), [inside]);
+});
