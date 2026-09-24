@@ -63,6 +63,7 @@ test("one-hop expansion keeps date boundaries while undated recall keeps its con
   }
   const unrestricted = await recall(marker, { client: db, schema: "brain_dev", embedQuery: async () => null });
   assert.deepEqual(unrestricted.hits.map(hit => hit.node_id).sort(), [anchor, inside, before, after].sort());
+  assert.equal(unrestricted.date_filter, undefined);
 });
 
 test("out-of-range connection matches cannot consume the dated candidate limit", async t => {
@@ -96,5 +97,10 @@ test("calendar date bounds do not shift with the database connection timezone", 
     await db.query("select set_config('TimeZone',$1,false)", [zone]);
     const result = await recall(question, { client: db, schema: "brain_dev", embedQuery: async () => null });
     assert.deepEqual(result.hits.map(hit => hit.node_id).sort(), [first, last].sort(), zone);
+    assert.deepEqual(result.date_filter, {
+      from: september, to: october, timezone: "UTC", bounds: "[)",
+      node_basis: "created_at", evidence_basis: "message_or_source_context",
+      connection_context_may_be_outside_range: true,
+    });
   }
 });
