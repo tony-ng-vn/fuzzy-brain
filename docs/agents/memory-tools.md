@@ -119,3 +119,13 @@ That command rehearses the new receipt table in `brain_dev` before creating prod
 It does not rerun historical node backfills or copy development records into production.
 Use the full schema backup in `docs/tbrain.md` to preserve receipts together with memories.
 The older node-only JSON dump is not a complete receipt backup.
+
+## Understand automatic session capture
+
+The installed session sync compares changed conversations with stored message occurrences.
+It can recover older gaps after a parser change without duplicating the later messages that were already captured.
+Each reconciliation commits a checkpoint with any newly appended evidence.
+Only a checkpoint for the current parser and observed file metadata permits an unchanged-file skip.
+An identical retry verifies the original committed checkpoint.
+The first run after installing this support also reconciles older sessions that have no checkpoint.
+See `docs/fusion-bridge.md` for the required additive checkpoint migration and operational commands.

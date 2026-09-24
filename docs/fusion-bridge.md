@@ -64,12 +64,38 @@ Each run performs these steps in order:
 
 1. Scan settled Claude Code and Codex sessions.
 2. Apply the local allowlist, source exclusions, and deterministic sensitive-pattern scrub.
-3. Append new episodes and evidence spans to the configured database.
+3. Compare each changed conversation with its stored message occurrences and append missing evidence.
 4. Fill at most 32 missing embeddings with the local model.
 
 Sessions must be older than `settledHours` in `~/.fuzzy-brain/ingest.json` before they ingest.
 The exact string `"*"` in `allowlist` explicitly permits every project; a missing or empty allowlist permits nothing.
 The database is cloud-hosted, so allowed session text leaves this Mac after the guards run.
+
+Session continuation matches the speaker, scrubbed text, and known timestamp of each message.
+It consumes matching occurrences individually, so repeated identical undated messages keep their multiplicity.
+Known timestamps normalize to an instant; unknown timestamps stay null.
+Indistinguishable undated occurrences cannot recover source identifiers that were never recorded.
+The importer can recover a missing middle even when a later part of the conversation was already captured.
+Source exclusions apply to the whole supplied conversation again at the write boundary.
+
+Each successful reconciliation commits an immutable checkpoint together with any new evidence.
+An unchanged file skips parsing only when its size, modification time, and parser version match a checkpoint.
+Existing sessions without checkpoints receive one reconciliation, including files whose modification times predate their legacy captures.
+This initial pass can take longer than later sync runs because it checks those conversations against stored evidence.
+Later parser versions invalidate the shortcut and repeat that check.
+Concurrent deliveries for the same source and session serialize, and an identical retry returns the committed checkpoint.
+
+Before installing a runtime with checkpoint support, apply the additive migration:
+
+```sh
+BRAIN_SCHEMA=brain_dev npm run session:migrate
+BRAIN_SCHEMA=public npm run session:migrate -- --authorize-production
+```
+
+Use the production command only as part of an authorized deployment.
+It rehearses in `brain_dev` before creating production checkpoint storage.
+It leaves existing episodes, evidence, approved nodes, and raw text unchanged.
+Full schema backups include these checkpoints.
 
 Inspect the job and its logs with:
 
@@ -84,6 +110,11 @@ Run one foreground cycle with:
 ```bash
 npm run fusion:sync
 ```
+
+The controlled `brain.mjs sync-session` command accepts the prepared full session or a batch of sessions.
+It returns checkpoint and episode identifiers with counts, without echoing conversation text.
+`brain.mjs list-session-checkpoints SOURCE_ID` returns file and parser metadata for the most recent checkpoint of each session.
+The usual installed sync handles both commands automatically.
 
 ## Reminder behavior
 
