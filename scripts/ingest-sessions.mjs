@@ -19,9 +19,9 @@ import { fileURLToPath } from "node:url";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
-import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode } from "./lib/session-parser.mjs";
+import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode, SESSION_PARSER_VERSION } from "./lib/session-parser.mjs";
 import { scrubSensitivePatterns } from "./brain.mjs";
-import { cli, ensureSource, listExistingEpisodes } from "./lib/brain-cli.mjs";
+import { cli, ensureSource } from "./lib/brain-cli.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
 
 // One brain.mjs call per this many episodes, not one call per session: a
@@ -198,75 +198,30 @@ function prepareEpisode(source, exclusions, locator, parsed, threadHaystack, cou
     raw,
     occurred_at: parsed.occurredAt,
     occurred_until: parsed.occurredUntil,
-    evidence: spans.map((s) => ({
+    thread_context: threadHaystack,
+    evidence: spans.map((s, index) => ({
       quote: s.text,
       start_offset: s.start,
       end_offset: s.end,
       speaker: s.speaker,
       occurred_at: s.ts,
+      omitted_before: scrubbedTurns[index].omittedBefore ?? 0,
     })),
   };
 }
 
-function existingTurnCount(entries, sessionId) {
-  let count = 0;
-  for (const entry of entries) {
-    const locator = typeof entry === "string" ? entry : entry?.source_locator;
-    if (!locator) continue;
-    if (locator === sessionId) {
-      if (typeof entry === "string") return Number.POSITIVE_INFINITY;
-      count = Math.max(count, Number(entry.evidence_count) || 0);
-      continue;
-    }
-    const prefix = `${sessionId}:turns:`;
-    if (locator.startsWith(prefix)) {
-      const version = Number(locator.slice(prefix.length));
-      if (Number.isInteger(version) && version >= 0) count = Math.max(count, version);
-    }
-  }
-  return count;
+export function sessionFileIsUnchanged(checkpoints, sessionId, mtimeMs, size) {
+  return checkpoints.some(checkpoint => checkpoint.session_key === sessionId
+    && checkpoint.parser_version === SESSION_PARSER_VERSION
+    && checkpoint.file_mtime_ms === mtimeMs && checkpoint.file_size === size);
 }
 
-function locatorBelongsToSession(locator, sessionId) {
-  return locator === sessionId || locator.startsWith(`${sessionId}:turns:`);
+function listCheckpoints(sourceId) {
+  return cli("list-session-checkpoints", [sourceId]);
 }
 
-export function sessionFileIsUnchanged(entries, sessionId, mtimeMs) {
-  let latestIngestedAt = 0;
-  for (const entry of entries) {
-    if (typeof entry === "string" || !locatorBelongsToSession(entry?.source_locator ?? "", sessionId)) continue;
-    const ingestedAt = new Date(entry.ingested_at).getTime();
-    if (Number.isFinite(ingestedAt)) latestIngestedAt = Math.max(latestIngestedAt, ingestedAt);
-  }
-  return latestIngestedAt > 0 && mtimeMs <= latestIngestedAt;
-}
-
-export function unseenSessionRevision(entries, sessionId, parsed) {
-  const priorTurns = existingTurnCount(entries, sessionId);
-  if (priorTurns >= parsed.turns.length) return null;
-  if (priorTurns === 0) return { locator: sessionId, parsed };
-
-  const turns = parsed.turns.slice(priorTurns);
-  const stamped = turns.filter((turn) => turn.ts);
-  return {
-    locator: `${sessionId}:turns:${parsed.turns.length}`,
-    parsed: {
-      ...parsed,
-      occurredAt: stamped.length > 0 ? stamped[0].ts : null,
-      occurredUntil: stamped.length > 0 ? stamped[stamped.length - 1].ts : null,
-      turns,
-    },
-  };
-}
-
-// Submits one full chunk in a single brain.mjs call -- one process, one
-// connection, many episodes. brain.mjs commits each episode in its own
-// transaction, so a mid-chunk failure only ever costs its own slot; it
-// lands in the same `failed` counter a per-session failure always used.
-// A crash of the CALL itself (the connection died before any per-episode
-// result came back) leaves every episode in the chunk unresolved -- all
-// count as failed, and source_locator's uniqueness makes the next run's
-// idempotency safe to retry every one of them.
+// Reconcile a batch through one process and connection, with one transaction per session.
+// A failed reply leaves its checkpoint available to the identical retry.
 function flushChunk(buffer, submitChunk, counts) {
   if (buffer.length === 0) return;
   const chunk = buffer.splice(0, buffer.length);
@@ -279,9 +234,13 @@ function flushChunk(buffer, submitChunk, counts) {
     return;
   }
   for (const r of results) {
-    if (r && r.error) {
+    if (r?.error === "excluded") {
+      counts.excluded++;
+    } else if (r && r.error) {
       counts.failed++;
       console.error(`  failed ${r.source_locator}: ${r.error}`);
+    } else if (r.replayed || (r.state === "committed" && r.evidence_count === 0)) {
+      counts.alreadyIngested++;
     } else {
       counts.ingested++;
       counts.evidenceRows += r.evidence_count;
@@ -292,9 +251,9 @@ function flushChunk(buffer, submitChunk, counts) {
 export function processClaudeSessions(cfg, settledBefore, deps = {}) {
   const source = (deps.ensureSource ?? ensureSource)(cfg.sourceKind, cfg.sourceLabel);
   const exclusions = source.exclusions ?? [];
-  const existing = (deps.listExisting ?? listExistingEpisodes)(source.id);
+  const existing = (deps.listExisting ?? listCheckpoints)(source.id);
   const prepare = deps.prepare ?? prepareEpisode;
-  const submitChunk = deps.submitChunk ?? ((chunk) => cli("add-episode", [], chunk));
+  const submitChunk = deps.submitChunk ?? ((chunk) => cli("sync-session", [], chunk));
   const counts = newCounts();
   const buffer = [];
 
@@ -312,7 +271,7 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
       counts.allowlistSkipped++;
       continue;
     }
-    if (sessionFileIsUnchanged(existing, sessionId, cand.mtimeMs)) {
+    if (sessionFileIsUnchanged(existing, sessionId, cand.mtimeMs, cand.size)) {
       counts.alreadyIngested++;
       continue;
     }
@@ -327,23 +286,18 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
       counts.noTonyTurns++;
       continue;
     }
-    const revision = unseenSessionRevision(existing, sessionId, parsed);
-    if (!revision) {
-      counts.alreadyIngested++;
-      continue;
-    }
     // A session's own preparation failing (e.g. a parser edge case) costs
     // only that session, same as a submission failure below.
     let payload;
     try {
-      payload = prepare(source, exclusions, revision.locator, revision.parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
+      payload = prepare(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
     } catch (err) {
       counts.failed++;
       console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
       continue;
     }
     if (payload) {
-      buffer.push(payload);
+      buffer.push({ ...payload, file_mtime_ms: cand.mtimeMs, file_size: cand.size });
       if (buffer.length >= EPISODE_CHUNK_SIZE || chunkRawBytes(buffer) >= CHUNK_MAX_RAW_BYTES) {
         flushChunk(buffer, submitChunk, counts);
       }
@@ -356,9 +310,9 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
 export function processCodexSessions(cfg, settledBefore, deps = {}) {
   const source = (deps.ensureSource ?? ensureSource)("codex_session", cfg.codexSourceLabel);
   const exclusions = source.exclusions ?? [];
-  const existing = (deps.listExisting ?? listExistingEpisodes)(source.id);
+  const existing = (deps.listExisting ?? listCheckpoints)(source.id);
   const prepare = deps.prepare ?? prepareEpisode;
-  const submitChunk = deps.submitChunk ?? ((chunk) => cli("add-episode", [], chunk));
+  const submitChunk = deps.submitChunk ?? ((chunk) => cli("sync-session", [], chunk));
   const counts = newCounts();
   const buffer = [];
 
@@ -368,7 +322,7 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
       counts.notSettled++;
       continue;
     }
-    if (sessionFileIsUnchanged(existing, sessionId, cand.mtimeMs)) {
+    if (sessionFileIsUnchanged(existing, sessionId, cand.mtimeMs, cand.size)) {
       counts.alreadyIngested++;
       continue;
     }
@@ -388,21 +342,16 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
       counts.allowlistSkipped++;
       continue;
     }
-    const revision = unseenSessionRevision(existing, sessionId, parsed);
-    if (!revision) {
-      counts.alreadyIngested++;
-      continue;
-    }
     let payload;
     try {
-      payload = prepare(source, exclusions, revision.locator, revision.parsed, parsed.cwd ?? "codex", counts);
+      payload = prepare(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
     } catch (err) {
       counts.failed++;
       console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
       continue;
     }
     if (payload) {
-      buffer.push(payload);
+      buffer.push({ ...payload, file_mtime_ms: cand.mtimeMs, file_size: cand.size });
       if (buffer.length >= EPISODE_CHUNK_SIZE || chunkRawBytes(buffer) >= CHUNK_MAX_RAW_BYTES) {
         flushChunk(buffer, submitChunk, counts);
       }
