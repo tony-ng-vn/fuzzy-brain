@@ -14,6 +14,7 @@ New updates and changes to Fuzzy Brain.
 - Explicit date arguments override inferred calendar dates and require known message timestamps for evidence.
 - Invalid or contradictory filters fail before storage or model access, and fallback queries preserve the requested restrictions.
 - Both memory servers expose the same recall filters and return the applied scope for inspection.
+- Exact date filters preserve timezone offsets and PostgreSQL microsecond precision instead of rounding through JavaScript dates.
 
 ---
 
