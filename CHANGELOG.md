@@ -12,6 +12,11 @@ New updates and changes to Fuzzy Brain.
 
 - Rendering a supplied conversation preserves trailing message whitespace so evidence offsets still return the exact quote.
 
+**Tools**
+
+- Capturing many messages uses bounded database batches instead of one insert per message, while failed captures still roll back completely.
+- Direct evidence batches keep their original result order and redaction behavior.
+
 ---
 
 ## v0.29.0

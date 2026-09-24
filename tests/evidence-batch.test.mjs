@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { syncSession } from "../scripts/lib/session-sync.mjs";
 import { renderEpisode } from "../scripts/lib/session-parser.mjs";
@@ -80,4 +81,32 @@ test("evidence batches bound encoded bytes without splitting a large message", a
   const rows = (await db.client.query("select e.raw,v.quote,v.start_offset,v.end_offset from brain_dev.evidence v join brain_dev.episodes e on e.id=v.episode_id where e.id=$1 order by v.start_offset", [saved.id])).rows;
   assert.deepEqual(rows.map(row => row.quote), turns.map(turn => turn.text));
   for (const row of rows) assert.equal(row.raw.slice(row.start_offset, row.end_offset), row.quote);
+});
+
+test("direct evidence CLI keeps result order, redaction markers, and single-object responses", async t => {
+  const db = await fixture(t);
+  const episode = (await db.client.query("insert into brain_dev.episodes(source_id,raw) values($1,'synthetic direct evidence container') returning id", [db.sourceId])).rows[0];
+  const call = input => JSON.parse(execFileSync(process.execPath, ["scripts/brain.mjs", "add-evidence", "--json-errors"], {
+    encoding: "utf8", input: JSON.stringify(input), timeout: 20000,
+    env: { ...process.env, DATABASE_URL: db.url, DATABASE_URL_DEV: db.url, BRAIN_SCHEMA: "brain_dev" },
+  }));
+  const input = Array.from({ length: 503 }, (_, i) => ({ episode_id: episode.id,
+    quote: i === 501 ? "private 123-45-6789" : `direct evidence ${i}`,
+    start_offset: (503 - i) * 100, end_offset: (503 - i) * 100 + 50,
+    speaker: i % 2 ? "assistant" : "tony", occurred_at: i % 3 ? null : "2026-09-24T00:00:00.000Z" }));
+  const rows = call(input);
+  assert.equal(rows.length, input.length);
+  for (let i = 0; i < input.length; i++) {
+    assert.equal(rows[i].quote, i === 501 ? "[REDACTED:ssn_pattern]" : input[i].quote);
+    assert.equal(rows[i].redaction_reason, i === 501 ? "ssn_pattern" : null);
+    assert.equal(rows[i].start_offset, input[i].start_offset);
+    assert.equal(rows[i].speaker, input[i].speaker);
+    assert.equal(rows[i].occurred_at, input[i].occurred_at);
+    assert.ok(rows[i].id);
+  }
+  const single = call({ episode_id: episode.id, quote: "single direct evidence", start_offset: 60000, end_offset: 60022 });
+  assert.equal(Array.isArray(single), false);
+  assert.equal(single.quote, "single direct evidence");
+  assert.equal(single.speaker, null);
+  assert.equal(single.occurred_at, null);
 });

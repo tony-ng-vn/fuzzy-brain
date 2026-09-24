@@ -10,6 +10,7 @@
 // The database CHECKs on raw, why, and recap are the final gates (AGENTS.md);
 // this tool never works around them. BRAIN_SCHEMA=brain_dev targets the sandbox.
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
@@ -212,33 +213,64 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-// The one evidence INSERT, shared by add-evidence and add-episode's atomic
-// evidence array -- a single write path so the scrub covers every caller.
-// Whole-row replacement, not partial: a redacted quote is fully the
-// placeholder or fully the real atomic quote, never a mixed state -- this
-// is what keeps the DB's placeholder-only CHECK constraint airtight.
-async function insertEvidenceRow(client, tables, item) {
+const EVIDENCE_BATCH_ROWS = 500;
+const EVIDENCE_BATCH_BYTES = 4 * 1024 * 1024;
+
+function prepareEvidenceRow(item) {
   const { episode_id, quote, start_offset, end_offset, speaker, occurred_at } = item;
   if (!quote || !quote.trim()) throw new Error("evidence needs a quote");
   const { redactions } = scrubSensitivePatterns(quote);
-  const finalQuote = redactions.length > 0 ? `[REDACTED:${redactions[0].reason}]` : quote;
-  const redactionReason = redactions.length > 0 ? redactions[0].reason : null;
-  const { rows } = await client.query(
-    `insert into ${tables.evidence} (episode_id, quote, start_offset, end_offset, speaker, occurred_at, redaction_reason)
-     values ($1, $2, $3, $4, $5, $6, $7)
-     returning id, episode_id, quote, start_offset, end_offset, speaker, occurred_at, ingested_at, redaction_reason`,
-    [episode_id, finalQuote, start_offset, end_offset, speaker ?? null, occurred_at ?? null, redactionReason],
-  );
-  return rows[0];
+  const reason = redactions[0]?.reason ?? null;
+  return {
+    id: randomUUID(), episode_id,
+    quote: reason ? `[REDACTED:${reason}]` : quote,
+    start_offset, end_offset, speaker: speaker ?? null,
+    occurred_at: occurred_at ?? null, redaction_reason: reason,
+  };
 }
 
-// One episode plus its evidence spans, atomic: shared by add-episode's
-// single-object and array forms so both take on exactly one commit
-// boundary per episode -- a capture event is atomic (a killed pipeline
-// must never strand an episode without its spans, a real near-miss on
-// 2026-07-13), and in the array form a bad episode must never roll back
-// its already-settled neighbors, so this begin/commit never widens beyond
-// one episode no matter how it's called.
+// Every caller owns a transaction, so later batch failures undo earlier batches.
+async function insertEvidenceRows(client, tables, items, { includeRows = false } = {}) {
+  const inserted = [];
+  let count = 0;
+  let pending = [];
+  let pendingBytes = 2;
+  const flush = async () => {
+    if (!pending.length) return;
+    const returning = includeRows
+      ? "returning id,episode_id,quote,start_offset,end_offset,speaker,occurred_at,ingested_at,redaction_reason"
+      : "";
+    const result = await client.query(
+      `insert into ${tables.evidence} (id,episode_id,quote,start_offset,end_offset,speaker,occurred_at,redaction_reason)
+       select v.id,v.episode_id,v.quote,v.start_offset,v.end_offset,v.speaker,v.occurred_at,v.redaction_reason
+       from jsonb_to_recordset($1::jsonb) as v(id uuid,episode_id uuid,quote text,start_offset integer,
+         end_offset integer,speaker text,occurred_at timestamptz,redaction_reason text)
+       ${returning}`,
+      [`[${pending.map(item => item.json).join(",")}]`],
+    );
+    if (result.rowCount !== pending.length) throw new Error("evidence batch did not store every span");
+    count += result.rowCount;
+    if (includeRows) {
+      // RETURNING has no ordering contract; preserve the caller's input order.
+      const byId = new Map(result.rows.map(row => [row.id, row]));
+      inserted.push(...pending.map(item => byId.get(item.id)));
+    }
+    pending = [];
+    pendingBytes = 2;
+  };
+  for (const item of items) {
+    const row = prepareEvidenceRow(item);
+    const json = JSON.stringify(row);
+    const bytes = Buffer.byteLength(json);
+    if (pending.length && (pending.length >= EVIDENCE_BATCH_ROWS || pendingBytes + bytes + 1 > EVIDENCE_BATCH_BYTES)) await flush();
+    pendingBytes += bytes + (pending.length ? 1 : 0);
+    pending.push({ id: row.id, json });
+  }
+  await flush();
+  return { count, rows: inserted };
+}
+
+// The caller commits the episode, all evidence batches, and any receipt together.
 export async function insertEpisode(client, tables, input) {
   const { source_id, source_locator, raw, occurred_at, occurred_until, evidence } = input;
   if (!raw || !raw.trim()) throw new Error("an episode needs its raw: the whole captured text");
@@ -249,10 +281,9 @@ export async function insertEpisode(client, tables, input) {
      returning id, source_id, source_locator, raw, occurred_at, occurred_until, ingested_at`,
     [source_id, source_locator ?? null, filtered, occurred_at ?? null, occurred_until ?? null],
   );
-  for (const item of evidence ?? []) {
-    await insertEvidenceRow(client, tables, { ...item, episode_id: rows[0].id });
-  }
-  return { ...rows[0], evidence_count: evidence?.length ?? 0 };
+  const inserted = await insertEvidenceRows(client, tables,
+    (evidence ?? []).map(item => ({ ...item, episode_id: rows[0].id })));
+  return { ...rows[0], evidence_count: inserted.count };
 }
 
 async function addOneEpisode(client, tables, input) {
@@ -499,12 +530,10 @@ async function main() {
       const input = JSON.parse(await readStdin());
       const items = Array.isArray(input) ? input : [input];
       if (items.length === 0) throw new Error("add-evidence got an empty array");
-      const inserted = [];
+      let inserted;
       await client.query("begin");
       try {
-        for (const item of items) {
-          inserted.push(await insertEvidenceRow(client, tables, item));
-        }
+        inserted = (await insertEvidenceRows(client, tables, items, { includeRows: true })).rows;
         await client.query("commit");
       } catch (err) {
         await client.query("rollback");
