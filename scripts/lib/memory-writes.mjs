@@ -4,15 +4,22 @@ import { digest } from "./tbrain-transfer.mjs";
 import { inferDeadline, normalizeTimestamp } from "./temporal.mjs";
 
 const words = z.string().min(1).refine(value => value.trim().length > 0, "Verbatim words are required.");
-const requestId = z.uuid().optional();
-const timestamp = z.string().nullable().optional().transform(value => value ? normalizeTimestamp(value) : null);
+const uuid = z.uuid().transform(value => value.toLowerCase());
+const requestId = uuid.optional();
+const timestamp = z.string().nullable().optional().transform((value, context) => {
+  if (value == null) return null;
+  try { return normalizeTimestamp(value); } catch {
+    context.addIssue({ code: "custom", message: "Expected an ISO 8601 timestamp with a timezone." });
+    return z.NEVER;
+  }
+});
 const nodeInput = z.object({
   request_id: requestId, type: z.string().default(""), title: words, raw: words,
   body: z.string().nullable().optional(), deadline_at: timestamp,
   deadline_origin: z.enum(["explicit", "derived"]).nullable().optional(),
 });
 const completionInput = z.object({
-  request_id: requestId, node_ids: z.array(z.uuid()).min(1).max(1000), raw: words, occurred_at: timestamp,
+  request_id: requestId, node_ids: z.array(uuid).min(1).max(1000), raw: words, occurred_at: timestamp,
 });
 
 function operationError(code) {
