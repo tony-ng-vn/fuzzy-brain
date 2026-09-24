@@ -203,6 +203,19 @@ async function loadQueryVocab(client, tables, question) {
   return { totalDocs, df, stem };
 }
 
+function dateRangeSql(ctx, p) {
+  // The calendar parser and reranker use UTC, regardless of the DB session zone.
+  const instant = day => day ? `${day}T00:00:00.000Z` : null;
+  return ctx.span
+    ? `tstzrange(${p.bind(instant(ctx.span.from))}::timestamptz, ${p.bind(instant(ctx.span.to))}::timestamptz, '[)')`
+    : null;
+}
+
+function dateFilterSql(expression, ctx, p) {
+  const range = dateRangeSql(ctx, p);
+  return range ? ` and ${expression} <@ ${range}` : "";
+}
+
 // One lane, one layer, one statement. Every lane returns the same envelope --
 // the row's own payload, its lane score, its cosine, and whether it carries a
 // rare word -- so fusion and reranking never care which lane a row came from.
@@ -266,9 +279,7 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const rareExpr = ctx.rareQuery
     ? `(${a}.fts @@ to_tsquery('english', ${p.bind(ctx.rareQuery)}))`
     : "false";
-  const dateClause = ctx.span
-    ? ` and ${occurredAt} <@ tstzrange(${p.bind(ctx.span.from)}::timestamptz, ${p.bind(ctx.span.to)}::timestamptz, '[)')`
-    : "";
+  const dateClause = dateFilterSql(occurredAt, ctx, p);
   const conversationClause = isEvidence
     ? ` and not (s.kind in ('claude_code_session','codex_session') and left(v.quote, 500) ~ ${p.bind(observationEnvelopePattern)})`
     : "";
@@ -288,11 +299,14 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
 // The edge lane: a ratified why, searched as text. Both nodes it joins come
 // back with it, because a why explains a connection and the connection has two
 // ends. Never invents an edge -- only rows in the edges table can match.
-function buildEdgeSql(mode, tables, question, orQuery, p = paramBag()) {
-  const q = p.bind(mode === "and" ? question : orQuery);
+function buildEdgeSql(mode, tables, ctx, p = paramBag()) {
+  const q = p.bind(mode === "and" ? ctx.question : ctx.orQuery);
   const match = mode === "and"
     ? `websearch_to_tsquery('english', ${q})`
     : `to_tsquery('english', ${q})`;
+  const range = dateRangeSql(ctx, p);
+  // Either endpoint can match, but unrelated dates must not fill the lane limit.
+  const dateClause = range ? ` and (ns.created_at <@ ${range} or nt.created_at <@ ${range})` : "";
   return {
     sql: `select ed.id, ed.source, ed.target, ed.why,
             ns.title as source_title, nt.title as target_title,
@@ -300,7 +314,7 @@ function buildEdgeSql(mode, tables, question, orQuery, p = paramBag()) {
      from ${tables.edges} ed
      join ${tables.nodes} ns on ns.id = ed.source
      join ${tables.nodes} nt on nt.id = ed.target
-     where ed.fts @@ ${match}
+     where ed.fts @@ ${match}${dateClause}
      order by lane_score desc, ed.id limit ${LANE_LIMIT}`,
     values: p.values,
   };
@@ -321,7 +335,7 @@ function buildNodeFetchSql(tables, ids, ctx) {
   return {
     sql: `select n.id, n.type, n.title, n.body, n.created_at, n.created_at as occurred_at,
             0::float as lane_score, ${simExpr} as sim, ${rareExpr} as rare_hit
-     from ${tables.nodes} n where n.id = any(${idParam}::uuid[])`,
+     from ${tables.nodes} n where n.id = any(${idParam}::uuid[])${dateFilterSql("n.created_at", ctx, p)}`,
     values: p.values,
   };
 }
@@ -378,7 +392,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
   });
 
   for (const mode of edgeModes) {
-    const { sql } = buildEdgeSql(mode, tables, fctx.question, fctx.orQuery, p);
+    const { sql } = buildEdgeSql(mode, tables, fctx, p);
     const cte = `edge_${mode}`;
     ctes.push(`${cte} as (${sql})`);
     arms.push(`select 'edge-${mode}' as lane, c.id,
@@ -403,7 +417,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
        ${edgeNulls},
        0::float8 as lane_score, ${simExpr}::float8 as sim, ${rareExpr} as rare_hit
      from ${tables.nodes} n
-     where n.id in (${endpoints})`);
+     where n.id in (${endpoints})${dateFilterSql("n.created_at", fctx, p)}`);
   }
 
   return { sql: `with ${ctes.join(",\n")}\n${arms.join("\nunion all\n")}`, values: p.values };
@@ -582,7 +596,7 @@ async function findCandidates(client, tables, question, queryVec, notes) {
       ingestLane(mode, layer, rows);
     }
     for (const mode of edgeModes) {
-      const { sql, values } = buildEdgeSql(mode, tables, question, orQuery);
+      const { sql, values } = buildEdgeSql(mode, tables, ctx);
       let rows;
       try {
         ({ rows } = await client.query(sql, values));
@@ -716,7 +730,7 @@ async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode
               ${simExpr}::float8 as sim, ${rareExpr} as rare_hit
        from ${tables.nodes} n
        where n.id in (select source from hop union select target from hop)
-         and not (n.id = any(${ids}::uuid[]))`,
+         and not (n.id = any(${ids}::uuid[]))${dateFilterSql("n.created_at", ctx, p)}`,
       p.values,
     ));
   } catch {
