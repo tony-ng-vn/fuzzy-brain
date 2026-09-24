@@ -6,8 +6,9 @@ create table if not exists memory_write_receipts (
   request_digest text not null check (request_digest ~ '^[0-9a-f]{64}$'),
   result jsonb not null check (jsonb_typeof(result) = 'object'),
   created_at timestamptz not null default now(),
-  check (result ?& array['state','request_id','operation'] and result->>'state' = 'committed'
-    and result->>'request_id' = request_id::text and result->>'operation' = operation)
+  check ((result->>'state') is not distinct from 'committed'
+    and (result->>'request_id') is not distinct from request_id::text
+    and (result->>'operation') is not distinct from operation)
 );
 
 create or replace function reject_memory_receipt_mutation()
