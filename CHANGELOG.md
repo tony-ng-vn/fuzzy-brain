@@ -16,6 +16,7 @@ New updates and changes to Fuzzy Brain.
 
 - Capturing many messages uses bounded database batches instead of one insert per message, while failed captures still roll back completely.
 - Direct evidence batches keep their original result order and redaction behavior.
+- Portable archives batch both evidence and source-message associations while preserving receipt identifiers, ordered readback, and all-or-nothing saves.
 
 ---
 

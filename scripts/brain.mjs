@@ -230,8 +230,9 @@ function prepareEvidenceRow(item) {
 }
 
 // Every caller owns a transaction, so later batch failures undo earlier batches.
-async function insertEvidenceRows(client, tables, items, { includeRows = false } = {}) {
+export async function insertEvidenceRows(client, tables, items, { includeRows = false } = {}) {
   const inserted = [];
+  const ids = [];
   let count = 0;
   let pending = [];
   let pendingBytes = 2;
@@ -250,6 +251,7 @@ async function insertEvidenceRows(client, tables, items, { includeRows = false }
     );
     if (result.rowCount !== pending.length) throw new Error("evidence batch did not store every span");
     count += result.rowCount;
+    ids.push(...pending.map(item => item.id));
     if (includeRows) {
       // RETURNING has no ordering contract; preserve the caller's input order.
       const byId = new Map(result.rows.map(row => [row.id, row]));
@@ -267,7 +269,7 @@ async function insertEvidenceRows(client, tables, items, { includeRows = false }
     pending.push({ id: row.id, json });
   }
   await flush();
-  return { count, rows: inserted };
+  return { count, ids, rows: inserted };
 }
 
 // The caller commits the episode, all evidence batches, and any receipt together.
