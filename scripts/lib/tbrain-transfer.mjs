@@ -80,3 +80,55 @@ export function prepareTransfer(input) {
   validateTransfer(bundle);
   return { bundle, digest: digest(supplied), stored_digest: digest(bundle), redactions };
 }
+
+export const captureShape = {
+  source_id: z.uuid().optional().describe("Use a configured source ID. May be omitted only when exactly one is configured."),
+  source_key: label.describe("Stable identity of the actual conversation; reuse it for retries."),
+  revision: label.describe("Reuse after an uncertain save. A changed packet needs a new revision and relation."),
+  platform: label,
+  conversation_id: label.nullable().default(null),
+  title: label.nullable().default(null),
+  project: label.nullable().default(null),
+  messages: z.array(transferSchema.shape.messages.element.extend({
+    id: label.nullable().default(null), speaker: label.nullable().default(null),
+    at: instant.default(null), fidelity: z.enum(["verbatim", "paraphrase", "unknown"]).default("verbatim"),
+  })).min(1).max(2000),
+  limitations: z.array(label).min(1).max(100).default(["Only supplied messages are included; completeness is not verified."]),
+  reflection: transferSchema.shape.reflection.default(null),
+  relation: transferSchema.shape.relation.default(null),
+};
+
+export function prepareCapture(input, allowedSourceIds) {
+  const value = z.object(captureShape).parse(input);
+  const sourceId = value.source_id ?? (allowedSourceIds.length === 1 ? allowedSourceIds[0] : null);
+  if (!sourceId || !allowedSourceIds.includes(sourceId)) {
+    throw Object.assign(new Error("Choose one configured source_id from transfer_format before preparing capture."), { code: "unauthorized" });
+  }
+  const prepared = prepareTransfer({
+    format: "tbrain.transfer.v1", source_id: sourceId, source_key: value.source_key, revision: value.revision,
+    source: { platform: value.platform, conversation_id: value.conversation_id, title: value.title, project: value.project },
+    coverage: { kind: "model_assembled", completeness: "partial", from: null, until: null, limitations: value.limitations, omissions: [] },
+    messages: value.messages, reflection: value.reflection, relation: value.relation,
+  });
+  return { state: "prepared", saved: false, storage_checked: false, transfer: prepared.bundle, redactions: prepared.redactions };
+}
+
+// Never echo invalid values, unknown key names, or arbitrary exception messages.
+const knownFields = new Set(["format", "source_id", "source_key", "revision", "source", "platform", "conversation_id", "title", "project",
+  "coverage", "kind", "completeness", "from", "until", "limitations", "omissions", "reason", "count", "messages", "id", "role", "speaker", "text", "at",
+  "fidelity", "reflection", "author", "status", "message_ordinals", "relation", "receipt_id", "note", "original", "media_type"]);
+
+export function inspectTransfer(input) {
+  try {
+    const prepared = prepareTransfer(input);
+    return { state: "prepared", valid: true, saved: false, storage_checked: false,
+      digest: prepared.digest, stored_digest: prepared.stored_digest, redactions: prepared.redactions };
+  } catch (error) {
+    const issues = error instanceof z.ZodError ? error.issues.slice(0, 20).map(issue => ({
+      path: issue.path.map(part => typeof part === "number" || knownFields.has(part) ? part : "[field]").join("."),
+      code: issue.code,
+      message: issue.code === "custom" ? issue.message : "Use the field type and allowed values in transfer_format. Remove unknown fields.",
+    })) : [{ path: "", code: "invalid", message: "Keep the transfer within 4 MiB and do not use sensitive-pattern values as identifiers." }];
+    return { state: "invalid", valid: false, saved: false, storage_checked: false, issues };
+  }
+}

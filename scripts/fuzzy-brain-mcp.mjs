@@ -145,8 +145,10 @@ function titleFromRaw(raw) {
 }
 
 function toolResult(value) {
+  const text = JSON.stringify(value, null, 2);
   return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text", text }],
+    ...(value && typeof value === "object" && !Array.isArray(value) ? { structuredContent: JSON.parse(text) } : {}),
   };
 }
 
@@ -193,7 +195,8 @@ export function createFuzzyBrainServer(
         "Before answering questions about Tony's past, people, goals, deadlines, reminders, preferences, decisions, or unfinished work, call the relevant Fuzzy Brain tool.",
         "Use list_reminders for broad questions such as what Tony needs to remember; do not require him to name the deadline first.",
         "Call remember or mark_complete only after Tony explicitly asks to remember, save, add, or mark something complete.",
-        "Never turn unratified evidence returned by recall into brain truth without Tony's explicit approval.",
+      "Never turn unratified evidence returned by recall into brain truth without Tony's explicit approval.",
+      "Follow read_evidence instructions from recall to inspect matching passages and their neighboring context before drawing conclusions.",
       ].join(" "),
     },
   );

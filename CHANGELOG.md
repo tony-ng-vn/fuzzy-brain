@@ -14,6 +14,8 @@ New updates and changes to Fuzzy Brain.
 
 **Tools**
 
+- Agents can prepare partial captures from supplied messages and validate full transfers offline, with explicit unsaved state and repairable field errors.
+- Both memory servers return structured data alongside compatible text results.
 - Agents can read a matching evidence passage and its neighbors through either memory server, with continuation for long text and clear source attribution.
 - Conversational recall filters old machine observation envelopes without changing stored history, and reports broken or degraded retrieval without exposing internal errors.
 - Recall results include passage identifiers and truncation details so agents can verify the source before answering.
