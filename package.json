@@ -1,6 +1,6 @@
 {
   "name": "fuzzy-brain",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "db:migrate": "node scripts/migrate.mjs",
+    "memory:migrate": "node scripts/memory-migrate.mjs",
     "clippings:sweep": "node scripts/sweep-clippings.mjs",
     "watch:sweep": "node scripts/sweep-watch-items.mjs",
     "fusion:sync": "node scripts/fusion-sync.mjs",

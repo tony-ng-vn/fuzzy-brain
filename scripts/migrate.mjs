@@ -18,7 +18,8 @@ if (!connectionString) {
 const client = makeClient({ connectionString, query_timeout: 0 });
 await client.connect();
 try {
-  const schemaSql = readFileSync(join(here, "schema.sql"), "utf8");
+  const schemaSql = ["schema.sql", "memory-schema.sql"]
+    .map(name => readFileSync(join(here, name), "utf8")).join("\n");
   // Rehearse every migration on the sandbox schema first, then apply for real.
   await client.query("create schema if not exists brain_dev");
   await applySchema("brain_dev", schemaSql);

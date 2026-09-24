@@ -13,8 +13,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
-import { formatLocalDate, formatReminderSummary, inferDeadline, normalizeTimestamp } from "./lib/temporal.mjs";
+import { formatLocalDate, formatReminderSummary, normalizeTimestamp } from "./lib/temporal.mjs";
 import { importTransfer, errorCode } from "./lib/tbrain-store.mjs";
+import { addMemoryNode, completeMemoryNodes, readWriteReceipt } from "./lib/memory-writes.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -357,35 +358,10 @@ async function main() {
       console.log(formatShow(rows));
     } else if (command === "get-node") {
       console.log(JSON.stringify(await getNode(client, tables, args[0]), null, 2));
+    } else if (command === "read-write-receipt") {
+      console.log(JSON.stringify(await readWriteReceipt(client, schema, args[0]), null, 2));
     } else if (command === "add-node") {
-      const { type, title, raw, body, deadline_at, deadline_origin } = JSON.parse(await readStdin());
-      if (!title) throw new Error("a node needs a title");
-      if (!raw || !raw.trim()) throw new Error("a node needs its raw: Tony's verbatim words");
-      // A deliberately written thought is its own readable; body falls back to raw.
-      const readable = body && body.trim() ? body : raw;
-      const inferredDeadline = deadline_at
-        ? { dueAt: normalizeTimestamp(deadline_at), origin: deadline_origin === "explicit" ? "explicit" : "derived" }
-        : inferDeadline({ type, title, text: raw });
-      const dueAt = inferredDeadline?.dueAt ?? null;
-      await client.query("begin");
-      try {
-        const { rows } = await client.query(
-          `insert into ${tables.nodes} (type, title, body, raw) values ($1, $2, $3, $4) returning id, type, title, created_at`,
-          [type ?? "", title, readable, raw],
-        );
-        if (dueAt) {
-          await client.query(
-            `insert into ${tables.temporalEvents} (node_id, event_type, value_at, raw, origin)
-             values ($1, 'deadline_set', $2, $3, $4)`,
-            [rows[0].id, dueAt, raw, inferredDeadline.origin],
-          );
-        }
-        await client.query("commit");
-        console.log(JSON.stringify({ ...rows[0], due_at: dueAt }, null, 2));
-      } catch (err) {
-        await client.query("rollback");
-        throw err;
-      }
+      console.log(JSON.stringify(await addMemoryNode(client, schema, JSON.parse(await readStdin())), null, 2));
     } else if (command === "set-deadline") {
       const [id] = args;
       if (!id) throw new Error("set-deadline needs a node id");
@@ -412,37 +388,7 @@ async function main() {
       );
       console.log(JSON.stringify(rows[0], null, 2));
     } else if (command === "mark-complete") {
-      const { node_ids, raw, occurred_at } = JSON.parse(await readStdin());
-      if (!Array.isArray(node_ids) || node_ids.length === 0) throw new Error("mark-complete needs node_ids");
-      if (!raw || !raw.trim()) throw new Error("mark-complete needs Tony's verbatim authorization");
-      const occurredAt = occurred_at ? normalizeTimestamp(occurred_at) : new Date().toISOString();
-      await client.query("begin");
-      try {
-        const existing = await client.query(
-          `select n.id, n.title, ts.status
-           from ${tables.nodes} n
-           join ${tables.temporalState} ts on ts.node_id = n.id
-           where n.id = any($1::uuid[])`,
-          [node_ids],
-        );
-        if (existing.rowCount !== new Set(node_ids).size) throw new Error("one or more completion targets do not exist");
-        const pending = existing.rows.filter((row) => row.status !== "completed");
-        const inserted = [];
-        for (const row of pending) {
-          const event = await client.query(
-            `insert into ${tables.temporalEvents} (node_id, event_type, occurred_at, raw, origin)
-             values ($1, 'completed', $2, $3, 'explicit')
-             returning id, node_id, event_type, occurred_at, raw, origin, created_at`,
-            [row.id, occurredAt, raw],
-          );
-          inserted.push(event.rows[0]);
-        }
-        await client.query("commit");
-        console.log(JSON.stringify({ completed: pending.map((row) => ({ id: row.id, title: row.title })), already_completed: existing.rows.filter((row) => row.status === "completed").map((row) => ({ id: row.id, title: row.title })), events: inserted }, null, 2));
-      } catch (err) {
-        await client.query("rollback");
-        throw err;
-      }
+      console.log(JSON.stringify(await completeMemoryNodes(client, schema, JSON.parse(await readStdin())), null, 2));
     } else if (command === "list-reminders") {
       const atArg = args.find((arg) => arg.startsWith("--at="));
       console.log(JSON.stringify(await listReminders(client, tables, atArg?.slice(5)), null, 2));
@@ -613,7 +559,7 @@ async function main() {
 // Only touch the database when run directly; importing for tests must not.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
-    if (process.argv[2] === "import-transfer") {
+    if (process.argv[2] === "import-transfer" || process.argv.includes("--json-errors")) {
       const failed = { state: "failed", error: { code: errorCode(err) } };
       if (process.argv.includes("--json-errors")) console.log(JSON.stringify(failed));
       else { console.error(JSON.stringify(failed)); process.exitCode = 1; }

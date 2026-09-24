@@ -46,12 +46,12 @@ test("MCP exposes canonical recall, reminder, node, remember, and completion too
     const listed = await client.listTools();
     assert.deepEqual(
       listed.tools.map((tool) => tool.name).sort(),
-      ["get_node", "list_reminders", "mark_complete", "read_evidence", "recall", "remember"],
+      ["get_node", "list_reminders", "mark_complete", "read_evidence", "read_write_receipt", "recall", "remember"],
     );
     const rememberTool = listed.tools.find((tool) => tool.name === "remember");
     const completeTool = listed.tools.find((tool) => tool.name === "mark_complete");
-    assert.deepEqual(Object.keys(rememberTool.inputSchema.properties).sort(), ["raw", "type"]);
-    assert.deepEqual(Object.keys(completeTool.inputSchema.properties).sort(), ["node_ids", "raw"]);
+    assert.deepEqual(Object.keys(rememberTool.inputSchema.properties).sort(), ["raw", "request_id", "type"]);
+    assert.deepEqual(Object.keys(completeTool.inputSchema.properties).sort(), ["node_ids", "raw", "request_id"]);
 
     const recalled = await client.callTool({ name: "recall", arguments: { question: "who is Evren" } });
     assert.match(recalled.content[0].text, /"state": "missing"/);

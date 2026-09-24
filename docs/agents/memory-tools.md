@@ -59,8 +59,32 @@ Source exclusions still apply at the write boundary.
 
 When capture is unavailable, retain one validated transfer file in private storage.
 Report it as prepared, not saved.
-For approved memories and completions, use `remember` and `mark_complete` only after the user's explicit instruction.
-Those older node writes do not have the archive's replay guarantee; verify state before repeating an ambiguous write.
+
+## Save an approved memory or completion
+
+Use `remember` and `mark_complete` only after the user's explicit instruction.
+Create a UUID `request_id` before the first call and keep it with the exact arguments until the result is verified.
+Pass the user's complete message in `raw` without editing it.
+Retry an uncertain response with the same ID and arguments, even after reconnecting.
+The first successful request commits the memory or completion and its receipt together.
+Identical retries return that original result with `replayed:true` and preserve the original deadline.
+
+Call `read_write_receipt` with the request ID to verify the committed result.
+Use `get_node` with the returned node ID to read the memory's current state.
+A receipt records the original operation; later approved changes can alter current readable text or deadlines.
+A missing receipt does not prove that an in-flight request failed.
+Retrying the same request ID remains safe.
+
+`conflict` means the ID already belongs to different input or another operation.
+Inspect the existing receipt instead of choosing a new ID to bypass an uncertain write.
+A new user instruction gets a new ID.
+Older callers may omit the ID, but a repeated `remember` call can then create another node.
+Verify state before repeating an unkeyed write.
+Concurrent `mark_complete` calls append only one completion event per node even without IDs.
+
+The controlled CLI accepts `request_id` in the JSON input to `add-node` and `mark-complete`.
+Read the result with `node scripts/brain.mjs read-write-receipt REQUEST_ID`.
+These receipts cover approved node creation and completion, not every older write command.
 
 ## Use the CLI without MCP
 
@@ -87,3 +111,11 @@ Version-only releases reuse the existing dependency installation.
 Start a fresh MCP connection to load the new tools; an already running server keeps the code it loaded at startup.
 The private tunnel and the database have separate availability requirements.
 Use `transfer_format` for offline discovery and `status` to test storage availability.
+
+Receipt support requires the additive memory migration before installing the new runtime.
+For development, run `BRAIN_SCHEMA=brain_dev npm run memory:migrate`.
+For an authorized production deployment, run `BRAIN_SCHEMA=public npm run memory:migrate -- --authorize-production`.
+That command rehearses the new receipt table in `brain_dev` before creating production storage.
+It does not rerun historical node backfills or copy development records into production.
+Use the full schema backup in `docs/tbrain.md` to preserve receipts together with memories.
+The older node-only JSON dump is not a complete receipt backup.

@@ -18,6 +18,7 @@ import { getNode, listReminders, makePool, schemaTables } from "./brain.mjs";
 import { loadEnvLocal, recall } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
+import { readWriteReceipt } from "./lib/memory-writes.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -92,25 +93,34 @@ export function residentPool({ open = () => makePool(POOL_OPTIONS), logError = (
 export function productionServices({
   logError = (error) => console.error("[fuzzy-brain] connection failed:", error),
   pool = residentPool({ logError }),
+  run = runJson,
 } = {}) {
   // Read per call, not once: BRAIN_SCHEMA is how a session points the server
   // at the sandbox instead of the real brain.
   const schema = () => process.env.BRAIN_SCHEMA || "public";
   const tables = () => schemaTables(schema());
+  const write = async (command, input) => {
+    const result = await run(brainScript, [command, "--json-errors"], input);
+    if (result?.error) throw Object.assign(new Error("Memory write failed."), { code: result.error.code });
+    return result;
+  };
   return {
     recall: (question) => pool.withClient((client) => recall(question, { client, schema: schema() })),
     listReminders: (at) => pool.withClient((client) => listReminders(client, tables(), at)),
     getNode: (id) => pool.withClient((client) => getNode(client, tables(), id)),
     readEvidence: (input) => pool.withClient((client) => readEvidence(client, schema(), input)),
-    remember: async ({ type, raw }) => {
-      return runJson(brainScript, ["add-node"], {
+    readWriteReceipt: (id) => pool.withClient((client) => readWriteReceipt(client, schema(), id)),
+    remember: async ({ type, raw, requestId }) => {
+      return write("add-node", {
+        request_id: requestId,
         type: explicitTypeFromRaw(type, raw),
         title: titleFromRaw(raw),
         raw,
         body: raw,
       });
     },
-    markComplete: ({ nodeIds, raw }) => runJson(brainScript, ["mark-complete"], {
+    markComplete: ({ nodeIds, raw, requestId }) => write("mark-complete", {
+      request_id: requestId,
       node_ids: nodeIds,
       raw,
     }),
@@ -153,11 +163,15 @@ function toolResult(value) {
 }
 
 function toolError(error) {
-  const code = error?.code === "not_found" ? "not_found" : "unavailable";
+  const messages = {
+    not_found: "The requested brain record was not found. Check the node, evidence, or request ID.",
+    conflict: "This request_id already belongs to a different operation or input. Verify its receipt; do not change IDs to bypass an uncertain write.",
+    invalid: "The request is invalid. Check the tool schema and preserve the user's exact words.",
+    unavailable: "Fuzzy Brain operation failed. Retry a keyed write with the same request_id, or verify existing state before repeating an unkeyed write.",
+  };
+  const code = Object.hasOwn(messages, error?.code) ? error.code : "unavailable";
   return {
-    content: [{ type: "text", text: JSON.stringify({ error: { code, message: code === "not_found"
-      ? "The requested evidence was not found. Use an evidence identifier returned by recall."
-      : "Fuzzy Brain operation failed. Check the local task log for details." } }) }],
+    ...toolResult({ error: { code, message: messages[code] } }),
     isError: true,
   };
 }
@@ -195,6 +209,7 @@ export function createFuzzyBrainServer(
         "Before answering questions about Tony's past, people, goals, deadlines, reminders, preferences, decisions, or unfinished work, call the relevant Fuzzy Brain tool.",
         "Use list_reminders for broad questions such as what Tony needs to remember; do not require him to name the deadline first.",
         "Call remember or mark_complete only after Tony explicitly asks to remember, save, add, or mark something complete.",
+        "Create a UUID request_id before an approved memory write, and reuse it with identical arguments after an uncertain reply. Verify committed results with read_write_receipt. A new user instruction gets a new request_id.",
         "Never turn unratified evidence returned by recall into brain truth without Tony's explicit approval.",
         "Follow read_evidence instructions from recall to inspect matching passages and their neighboring context before drawing conclusions.",
       ].join(" "),
@@ -217,6 +232,13 @@ export function createFuzzyBrainServer(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => services.readEvidence(input), logError);
 
+  register(server, "read_write_receipt", {
+    title: "Verify a memory write receipt",
+    description: "Read the committed result of a remember or mark_complete operation by its original request_id. Use after an uncertain response or a reconnect. A missing receipt is not proof that a still-running request failed.",
+    inputSchema: { request_id: z.uuid() },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, ({ request_id }) => services.readWriteReceipt(request_id), logError);
+
   register(server, "list_reminders", {
     title: "List reminders and deadlines",
     description: "List all active overdue and upcoming deadlines from Fuzzy Brain. Use automatically for broad questions about what Tony needs to remember or return to.",
@@ -237,25 +259,27 @@ export function createFuzzyBrainServer(
     title: "Remember an explicit memory",
     description: "Add a ratified node only when Tony explicitly says to remember, save, or add it to his brain. Pass Tony's complete message in raw without editing. The server uses a mechanical raw excerpt as the title, keeps the readable equal to raw, and detects deadline language automatically.",
     inputSchema: {
+      request_id: z.uuid().optional().describe("Create once before this approved write and reuse for identical retries. Omitted IDs have no replay guarantee."),
       type: z.string().trim().min(1).max(80).optional().describe("Only pass a type whose exact words occur in Tony's raw message; otherwise the server uses note."),
       raw: z.string().min(1)
         .refine((value) => value.trim().length > 0, "raw must contain Tony's verbatim words")
         .refine(isExplicitRememberCommand, "raw must contain Tony's explicit remember, save, or add command"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, ({ type, raw }) => services.remember({ type, raw }), logError);
+  }, ({ type, raw, request_id }) => services.remember({ type, raw, requestId: request_id }), logError);
 
   register(server, "mark_complete", {
     title: "Mark brain goals complete",
     description: "Append completion events to existing nodes only when Tony explicitly says they are finished. Never rewrite or delete the original nodes or raw text.",
     inputSchema: {
+      request_id: z.uuid().optional().describe("Create once before this approved completion and reuse for identical retries."),
       node_ids: z.array(z.string().uuid()).min(1).max(20),
       raw: z.string().min(1)
         .refine((value) => value.trim().length > 0, "raw must contain Tony's verbatim authorization")
         .refine(isExplicitCompletionCommand, "raw must explicitly ask to mark finished work complete"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, ({ node_ids, raw }) => services.markComplete({ nodeIds: node_ids, raw }), logError);
+  }, ({ node_ids, raw, request_id }) => services.markComplete({ nodeIds: node_ids, raw, requestId: request_id }), logError);
 
   return server;
 }

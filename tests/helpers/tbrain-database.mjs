@@ -33,7 +33,7 @@ export async function createTbrainTestDatabase(databaseUrl = process.env.DATABAS
     created = true;
     await client.connect();
     await client.query("create schema brain_dev");
-    for (const script of ["schema.sql", "tbrain-schema.sql"]) {
+    for (const script of ["schema.sql", "tbrain-schema.sql", "memory-schema.sql"]) {
       const sql = await readFile(new URL(`../../scripts/${script}`, import.meta.url), "utf8");
       await client.query("begin");
       try {
