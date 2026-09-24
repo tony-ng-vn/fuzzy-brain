@@ -88,6 +88,8 @@ test("invalid scope fails before querying storage or loading the embedding model
     { source_id: "PRIVATE_BAD_ID" }, { role: "human" }, { layer: "messages" },
     { from: "PRIVATE_BAD_DATE" }, { from: "2026-09-02T00:00:00Z", until: "2026-09-01T00:00:00Z" },
     { layer: "nodes", source_id: randomUUID() }, { layer: "nodes", role: "user" },
+    { from: "2026-09-24T12:00:00.123402Z", until: "2026-09-24T12:00:00.123401Z" },
+    { from: "2026-09-24T12:00:00.1234567Z" },
   ]) {
     let calls = 0;
     await assert.rejects(recall("scope validation", { ...scope,
@@ -100,4 +102,22 @@ test("invalid scope fails before querying storage or loading the embedding model
     });
     assert.equal(calls, 0);
   }
+});
+
+test("explicit timestamp filters preserve database microseconds and timezone offsets", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const source = randomUUID();
+  const marker = `precisescope${randomUUID().replaceAll("-", "")}`;
+  await database.client.query("insert into brain_dev.sources(id,kind,label) values($1,'scope_precision',$2)", [source, source]);
+  const packet = fixture({ source_id: source });
+  packet.messages = ["123400", "123401", "123402"].map(fraction => ({ id: null, role: "user", speaker: null,
+    at: `2026-09-24T12:00:00.${fraction}Z`, fidelity: "verbatim", text: marker }));
+  const receipt = await importTransfer(database.client, "brain_dev", packet, { authorized: true, allowedSourceIds: [source] });
+  const result = await recall(marker, { client: database.client, schema: "brain_dev", embedQuery: async () => null,
+    source_id: source, from: "2026-09-24T05:00:00.123401-07:00", until: "2026-09-24T12:00:00.123401Z" });
+  assert.deepEqual(result.hits.map(hit => hit.provenance.evidence_id), [receipt.evidence_ids[1]]);
+  assert.equal(result.scope.from, "2026-09-24T12:00:00.123401Z");
+  assert.equal(result.scope.until, result.scope.from);
+  assert.equal(result.hits[0].provenance.occurred_at, result.scope.from);
 });
