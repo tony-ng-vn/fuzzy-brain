@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { makeClient } from "../scripts/brain.mjs";
@@ -84,6 +85,35 @@ test("approved memory writes have durable retry identities across processes", as
     const retry = await run("mark-complete", packet);
     assert.equal(retry.state, "committed");
     assert.equal(retry.events.length, 1);
+  });
+
+  await t.test("receipt insertion failure rolls back the new node and inferred deadline", async () => {
+    const packet = { request_id: randomUUID(), title: "Atomic write fixture", raw: "remember to finish this by tomorrow" };
+    await database.client.query(`alter table brain_dev.memory_write_receipts add constraint reject_synthetic_request check (request_id <> '${packet.request_id}'::uuid)`);
+    try {
+      const result = await run("add-node", packet);
+      assert.equal(result.error.code, "unavailable");
+      assert.equal((await database.client.query("select count(*)::int n from brain_dev.nodes where title=$1", [packet.title])).rows[0].n, 0);
+    } finally { await database.client.query("alter table brain_dev.memory_write_receipts drop constraint reject_synthetic_request"); }
+    const retry = await run("add-node", packet);
+    assert.equal(retry.state, "committed");
+    assert.ok(retry.due_at);
+    const again = await run("add-node", packet);
+    assert.equal(again.due_at, retry.due_at);
+    assert.equal(again.id, retry.id);
+    assert.equal((await database.client.query("select count(*)::int n from brain_dev.node_temporal_events where node_id=$1", [retry.id])).rows[0].n, 1);
+  });
+
+  await t.test("receipt migration is replayable and committed receipts are append-only", async () => {
+    const sql = await readFile(new URL("../scripts/memory-schema.sql", import.meta.url), "utf8");
+    await database.client.query("begin");
+    await database.client.query("set local search_path to brain_dev, public");
+    await database.client.query(sql);
+    await database.client.query("commit");
+    await assert.rejects(database.client.query("update brain_dev.memory_write_receipts set result='{}' where request_id=$1", [requestId]), /append-only/);
+    await assert.rejects(database.client.query("delete from brain_dev.memory_write_receipts where request_id=$1", [requestId]), /append-only/);
+    await assert.rejects(database.client.query("truncate brain_dev.memory_write_receipts"), /append-only/);
+    assert.equal((await run("read-write-receipt", undefined, [requestId])).id, first.id);
   });
 });
 

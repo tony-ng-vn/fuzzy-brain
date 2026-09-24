@@ -4,6 +4,21 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.28.0
+
+2026-09-23
+
+**Data**
+
+- Approved memory writes can retain an immutable request receipt in the same transaction as the saved memory or completion.
+
+**Tools**
+
+- Reusing a memory write request ID returns its original result, while changed requests conflict instead of duplicating or overwriting memories.
+- Concurrent completion commands append one event per node, including older callers without request IDs.
+
+---
+
 ## v0.27.0
 
 2026-09-23
