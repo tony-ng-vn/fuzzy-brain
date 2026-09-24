@@ -34,13 +34,20 @@ See the "Connect a coding agent" section in the repository README for `--dry-run
 The MCP process trusts the local Codex client as its caller security boundary.
 Write tools also require explicit save or completion language in the passed verbatim user text as defense in depth.
 
-It exposes five tools:
+It exposes these tools:
 
 - `recall`: search ratified nodes and unratified evidence with provenance.
+- `read_evidence`: inspect a returned passage with bounded neighboring context and text continuation.
 - `list_reminders`: return active overdue and upcoming deadlines.
 - `get_node`: read one node and its current temporal state.
 - `remember`: append an explicitly requested memory and detect a deadline.
 - `mark_complete`: append completion events without rewriting nodes.
+- `read_write_receipt`: verify an approved save or completion using its original request ID.
+
+Create a UUID `request_id` before an approved `remember` or `mark_complete` call.
+Reuse it with identical arguments after an uncertain reply, then read the receipt.
+The receipt and the memory changes commit together, and retries return the original result.
+See [the agent memory guide](agents/memory-tools.md) for conflict handling and the additive database migration.
 
 The server communicates over stdio.
 Its standard output is reserved for MCP JSON-RPC.

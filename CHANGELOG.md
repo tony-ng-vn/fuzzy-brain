@@ -18,6 +18,10 @@ New updates and changes to Fuzzy Brain.
 - Concurrent completion commands append one event per node, including older callers without request IDs.
 - Memory tools accept stable request IDs and expose receipt readback after reconnecting, with distinct conflict and missing-record errors.
 
+**Docs**
+
+- The memory guide and companion instructions explain verified saves, safe retries, receipt migration, and backup coverage.
+
 ---
 
 ## v0.27.0

@@ -88,6 +88,11 @@ Ordinary chat history and host memory do not prove the Tbrain database was updat
 Preserve his words in the raw layer exactly as he gave them, without typo fixes or rewriting.
 For a model-written readable layer, show both raw and readable before saving and follow docs/writing-style.md.
 A direct instruction to remember, save or add his message permits raw and readable both equal to that whole message.
+Before `remember` or `mark_complete`, create one UUID `request_id` for the approved instruction.
+Keep that ID and the exact arguments across retries or reconnects, then verify with `read_write_receipt` and `get_node`.
+An identical retry returns the original committed result; changed input under the same ID must remain a conflict.
+A missing receipt can mean the original request is still running, so retry with the same ID.
+Do not change IDs to bypass a conflict or repeat an unkeyed save without checking existing state.
 Do not interpret an archive request as an instruction to make a ratified node.
 When Tony corrects a readable draft, record that correction in docs/writing-style.md.
 

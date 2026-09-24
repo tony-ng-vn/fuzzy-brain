@@ -41,8 +41,11 @@ There are deliberately no node-delete or set-raw commands.
 
 ## Fusion bridge
 
-The local MCP server exposes `recall`, `read_evidence`, `list_reminders`, `get_node`, `remember`, and `mark_complete`.
+The local MCP server exposes `recall`, `read_evidence`, `list_reminders`, `get_node`, `remember`, `mark_complete`, and `read_write_receipt`.
 Its instructions tell compatible agents to query Fuzzy Brain automatically for questions about Tony's past, people, preferences, goals, deadlines, and unfinished work.
+For an approved memory write, create a UUID `request_id` before calling `remember` or `mark_complete`.
+Reuse that ID with identical arguments after an uncertain response and verify the committed result with `read_write_receipt`.
+See [the agent memory guide](docs/agents/memory-tools.md) for capture, source readback, and retry examples.
 
 The scheduled sync ingests settled Claude Code and Codex sessions into the unratified evidence store, then fills a bounded number of missing local embeddings.
 It does not promote session text into ratified nodes.
