@@ -314,7 +314,7 @@ export async function getNode(client, tables, id) {
      where n.id = $1`,
     [id],
   );
-  if (rowCount === 0) throw new Error(`no node with id ${id}`);
+  if (rowCount === 0) throw Object.assign(new Error(`no node with id ${id}`), { code: "not_found" });
   return rows[0];
 }
 

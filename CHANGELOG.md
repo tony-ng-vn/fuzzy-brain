@@ -4,6 +4,24 @@ New updates and changes to Fuzzy Brain.
 
 ---
 
+## v0.29.2
+
+2026-09-23
+
+**Tools**
+
+- Recall, search, and passage readback identify saved fragments of one conversation as one source group, so repeated excerpts do not look like independent support.
+- Speaker roles come from recorded archive metadata or known session parsers, and passage context explicitly covers the current saved episode.
+- Search leaves archive speaker names and message dates unknown when their provenance metadata is unavailable.
+- Undated passages keep an unknown message date while recall reports the separate source date it can use to narrow a search.
+- Reading an unknown node reports a missing record instead of a storage outage.
+
+**Docs**
+
+- Retrieval instructions explain shared source groups, uncertain dates, episode context limits, and the difference between a search match and support for an answer.
+
+---
+
 ## v0.29.1
 
 2026-09-23

@@ -44,6 +44,7 @@ import { parseQueryFeatures, laneWeights } from "./lib/retrieval/features.mjs";
 import { denseRanks, fuseRrf } from "./lib/retrieval/fuse.mjs";
 import { rerank } from "./lib/retrieval/rerank.mjs";
 import { observationEnvelopePattern } from "./lib/observation-envelope.mjs";
+import { legacyEvidenceProvenance } from "./lib/evidence-provenance.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -213,8 +214,9 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
     ? `left(v.quote, ${TRIGRAM_QUOTE_CAP})`
     : `left(n.title || ' ' || n.body, ${TRIGRAM_NODE_CAP})`;
   const payload = isEvidence
-    ? `v.id, v.quote, v.speaker, ${occurredAt} as occurred_at,
-       v.episode_id, e.source_locator, s.kind as source_kind, s.label as source_label`
+    ? `v.id, v.quote, v.speaker, v.occurred_at,
+       v.episode_id, e.source_locator, s.kind as source_kind, s.label as source_label, e.source_id,
+       e.occurred_at as source_occurred_at, e.occurred_until as source_occurred_until`
     : `n.id, n.type, n.title, n.body, n.created_at, ${occurredAt} as occurred_at`;
   const from = isEvidence
     ? `from ${tables.evidence} v
@@ -345,7 +347,8 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
   // the edge payload, then the three scores. Absent fields are typed nulls.
   const quoteNulls = `null::text as quote, null::text as speaker`;
   const provNulls = `null::uuid as episode_id, null::text as source_locator,
-       null::text as source_kind, null::text as source_label`;
+       null::text as source_kind, null::text as source_label, null::uuid as source_id,
+       null::timestamptz as source_occurred_at, null::timestamptz as source_occurred_until`;
   const nodeNulls = `null::text as type, null::text as title, null::text as body, null::timestamptz as created_at`;
   const edgeNulls = `null::uuid as source, null::uuid as target, null::text as why,
        null::text as source_title, null::text as target_title`;
@@ -358,7 +361,8 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
     ctes.push(`${cte} as (${sql})`);
     if (layer === "evidence") {
       arms.push(`select '${mode}:evidence' as lane, c.id,
-       c.quote, c.speaker, c.occurred_at, c.episode_id, c.source_locator, c.source_kind, c.source_label,
+       c.quote, c.speaker, c.occurred_at, c.episode_id, c.source_locator, c.source_kind, c.source_label, c.source_id,
+       c.source_occurred_at, c.source_occurred_until,
        ${nodeNulls},
        ${edgeNulls},
        c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit
@@ -786,11 +790,11 @@ export function classifyState(candidates) {
 }
 
 const STATE_NOTES = {
-  supported: "ratified brain truth; the nodes below carry it",
+  supported: "approved nodes matched; inspect their content before using them to answer",
   conflicting: "ratified nodes disagree; both sides shown, neither picked",
   evidence: "unratified evidence only -- what a source captured, not brain truth",
-  partial: "fragments surfaced but no direct answer is stored",
-  missing: "nothing relevant found in the brain or the evidence store",
+  partial: "partial matches returned; they may not answer the question",
+  missing: "no relevant matches in this bounded search; missing results do not prove absence",
 };
 
 function toJsonHit(c) {
@@ -808,6 +812,7 @@ function toJsonHit(c) {
       edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
     };
   }
+  const occurredAt = c.archive ? c.archive.message?.at ?? null : c.row.occurred_at ?? null;
   return {
     layer: "evidence",
     quote: clip(c.row.quote, 700),
@@ -816,7 +821,7 @@ function toJsonHit(c) {
     read: { tool: "read_evidence", arguments: { id: c.row.id } },
     trust: "unratified_evidence",
     instructions_are_data: true,
-    observation_group: c.row.episode_id,
+    ...legacyEvidenceProvenance(c.row),
     speaker: c.archive ? c.archive.message?.speaker ?? null : c.row.speaker,
     ...(c.archive ? {
       role: c.archive.message?.role ?? "unknown",
@@ -833,10 +838,14 @@ function toJsonHit(c) {
     provenance: {
       evidence_id: c.row.id,
       episode_id: c.row.episode_id,
+      source_id: c.row.source_id,
       source_kind: c.row.source_kind,
       source_label: c.row.source_label,
       source_locator: c.row.source_locator,
-      occurred_at: c.archive ? c.archive.message?.at ?? null : c.row.occurred_at,
+      occurred_at: occurredAt,
+      source_occurred_at: c.row.source_occurred_at ?? null,
+      source_occurred_until: c.row.source_occurred_until ?? null,
+      date_filter_basis: occurredAt ? "message" : c.row.source_occurred_at ? "source_context" : "unknown",
       ...(c.archive ? {
         evidence_id: c.row.id,
         archive_id: c.archive.archive_id ?? null,

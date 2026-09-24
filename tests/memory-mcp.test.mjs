@@ -72,4 +72,14 @@ test("MCP memory requests survive a server restart and expose safe retry errors"
     assert.equal(response.isError, true);
     assert.equal(parse(response).error.code, "not_found");
   });
+
+  await t.test("a missing node reports not_found and a later valid read still succeeds", async () => {
+    const response = await client.callTool({ name: "get_node", arguments: { id: randomUUID() } });
+    assert.equal(response.isError, true);
+    assert.equal(parse(response).error.code, "not_found");
+    assert.deepEqual(response.structuredContent, parse(response));
+    const known = await client.callTool({ name: "get_node", arguments: { id: first.id } });
+    assert.notEqual(known.isError, true);
+    assert.equal(parse(known).raw, args.raw);
+  });
 });
