@@ -66,3 +66,43 @@ test("retrieval identifies conversation fragments consistently without inventing
     assert.deepEqual(users.hits.map(hit => hit.id).sort(), specs.filter(spec => spec.role === "user").map(spec => spec.id).sort());
   });
 });
+
+test("recall separates a passage timestamp from the source date used for retrieval", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const source = randomUUID();
+  const marker = `dateline${randomUUID().replaceAll("-", "")}`;
+  await db.query("insert into brain_dev.sources(id,kind,label) values($1,'codex_session',$2)", [source, source]);
+  const cases = [
+    { at: null, from: "2026-09-05T00:00:00.000Z", until: "2026-09-06T00:00:00.000Z", basis: "source_context" },
+    { at: "2026-09-05T12:00:00.000Z", from: "2026-09-05T00:00:00.000Z", until: null, basis: "message" },
+    { at: null, from: null, until: null, basis: "unknown" },
+  ];
+  for (const item of cases) {
+    item.episode = randomUUID();
+    item.id = randomUUID();
+    await db.query("insert into brain_dev.episodes(id,source_id,raw,occurred_at,occurred_until) values($1,$2,$3,$4,$5)",
+      [item.episode, source, marker, item.from, item.until]);
+    await db.query("insert into brain_dev.evidence(id,episode_id,quote,speaker,start_offset,end_offset,occurred_at) values($1,$2,$3,'tony',0,$4,$5)",
+      [item.id, item.episode, marker, marker.length, item.at]);
+  }
+  const options = { client: db, schema: "brain_dev", embedQuery: async () => null };
+  const result = await recall(marker, options);
+  for (const item of cases) {
+    const hit = result.hits.find(hit => hit.provenance.evidence_id === item.id);
+    assert.equal(hit.provenance.occurred_at?.toISOString() ?? null, item.at);
+    assert.equal(hit.provenance.source_occurred_at?.toISOString() ?? null, item.from);
+    assert.equal(hit.provenance.source_occurred_until?.toISOString() ?? null, item.until);
+    assert.equal(hit.provenance.date_filter_basis, item.basis);
+    const read = await readEvidence(db, "brain_dev", { id: item.id });
+    assert.equal(read.evidence.at?.toISOString() ?? null, item.at);
+    assert.equal(read.evidence.source.occurred_at?.toISOString() ?? null, item.from);
+    assert.equal(read.evidence.source.occurred_until?.toISOString() ?? null, item.until);
+  }
+  const dated = await recall(`${marker} September 2026`, options);
+  assert.deepEqual(dated.hits.map(hit => hit.provenance.evidence_id).sort(), cases.slice(0, 2).map(item => item.id).sort());
+  const exactDates = await searchArchive(db, "brain_dev", { query: marker, from: "2026-09-01T00:00:00Z", until: "2026-10-01T00:00:00Z" });
+  assert.deepEqual(exactDates.hits.map(hit => hit.id), [cases[1].id], "archive date filters still require a known message timestamp");
+  assert.equal(exactDates.hits[0].source.occurred_at.toISOString(), cases[1].from);
+});
