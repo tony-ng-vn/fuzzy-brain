@@ -61,6 +61,10 @@ test("retrieval identifies conversation fragments consistently without inventing
       const hit = result.hits.find(hit => hit.id === spec.id);
       assert.equal(hit.observation_group, spec.group);
       assert.equal(hit.role, spec.role);
+      if (spec.locator?.startsWith("tbrain:")) {
+        assert.equal(hit.speaker, null, "stored archive roles are not speaker names when metadata is unavailable");
+        assert.equal(hit.archive_provenance, "unavailable");
+      }
     }
     const users = await searchArchive(db, "brain_dev", { query: marker, role: "user" });
     assert.deepEqual(users.hits.map(hit => hit.id).sort(), specs.filter(spec => spec.role === "user").map(spec => spec.id).sort());
