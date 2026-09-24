@@ -35,4 +35,4 @@ jobs:
           node scripts/migrate.mjs
           node scripts/tbrain-migrate.mjs
       - name: Verify transport, source fidelity, retries and recovery
-        run: node --test --test-concurrency=1 tests/tbrain-*.test.mjs tests/recall-archive-provenance.test.mjs tests/run-json.test.mjs
+        run: node --test --test-concurrency=1 tests/tbrain-*.test.mjs tests/agent-*.test.mjs tests/recall-archive-provenance.test.mjs tests/run-json.test.mjs tests/mcp.test.mjs tests/mcp-stdio.test.mjs tests/session-parser.test.mjs tests/codex-parser.test.mjs tests/install-agents.test.mjs

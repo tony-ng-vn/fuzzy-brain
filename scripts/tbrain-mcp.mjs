@@ -8,7 +8,8 @@ import { productionServices, residentPool } from "./fuzzy-brain-mcp.mjs";
 import { loadEnvLocal } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
-import { transferSchema, validateTransfer } from "./lib/tbrain-transfer.mjs";
+import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES } from "./lib/tbrain-transfer.mjs";
+import { evidenceReadShape, archiveSearchShape } from "./lib/tbrain-store.mjs";
 
 const brainScript = fileURLToPath(new URL("./brain.mjs", import.meta.url));
 const FAILURE_MESSAGES = Object.freeze({
@@ -32,7 +33,8 @@ function codedError(code) {
 }
 
 function result(value, isError = false) {
-  return { content: [{ type: "text", text: JSON.stringify(value) }], ...(isError ? { isError: true } : {}) };
+  const text = JSON.stringify(value);
+  return { content: [{ type: "text", text }], structuredContent: JSON.parse(text), ...(isError ? { isError: true } : {}) };
 }
 
 export function tbrainRuntimeConfig(env = process.env) {
@@ -58,6 +60,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
       archive_coverage: { exhaustive: false, note: "Ranked retrieval includes retained evidence. Use search_archive and source reads to inspect passages and revisions." },
     }),
     readReceipt: id => stored("readReceipt", id),
+    readEvidence: input => stored("readEvidence", input),
     readArchive: input => stored("readArchive", input),
     readSource: input => stored("readSource", input),
     searchArchive: input => stored("searchArchive", input),
@@ -88,6 +91,8 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       "Call transfer_format before archive_day and copy one of its authorized_source_ids exactly into source_id. Keep the conversation identity in source_key and source.conversation_id. Never invent a source_id.",
       "Report persistence only after a successful archive_day result. Verify its returned receipt with read_receipt when possible. A prepared transfer is not saved.",
       "Recall ranks existing nodes and source evidence. Use search_archive for explicit lexical and date searches; neither is exhaustive proof of absence.",
+      "Follow a hit's read instruction with read_evidence to inspect the matching passage and neighboring context. Continue long passages with next_text_offset.",
+      "Use prepare_capture to build a partial transfer from supplied messages without inventing metadata, or validate_transfer to check a hand-built packet offline. Neither tool saves or authorizes it.",
       "Repeated summaries are not independent evidence. Silence does not prove absence. Keep uncertainty and corrections visible, and report unavailable retrieval plainly.",
     ].join(" "),
   });
@@ -106,7 +111,6 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   };
   const offset = z.number().int().min(0).max(100_000).default(0);
   const limit = z.number().int().min(1).max(20).default(10);
-  const instant = z.iso.datetime({ offset: true }).nullable().optional().default(null);
   register("status", "Report archive availability, coverage, and whether capture is enabled in this server.", {}, async () => ({
     ...await services.archiveStatus(), capture_enabled: allowCapture === true,
     authorized_source_ids: [...allowed],
@@ -114,6 +118,8 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   register("recall", "Rank relevant brain records and evidence across history. Inspect source passages before drawing conclusions.", {
     question: z.string().trim().min(1).max(2000),
   }, ({ question }) => services.recall(question));
+  register("read_evidence", "Read one evidence passage by its recall or search identifier, with bounded neighboring context. Follow next_text_offset with the same id for long text. Works with legacy and archived evidence.",
+    evidenceReadShape, input => services.readEvidence(input));
   register("read_receipt", "Verify one saved archive receipt, its provenance, coverage, and persistence identifiers.", {
     id: z.uuid(),
   }, ({ id }) => services.readReceipt(id));
@@ -128,11 +134,17 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   register("transfer_format", "Read the portable transfer JSON schema and configured source identities, including when direct capture is disabled. A file is prepared, not saved.", {}, async()=>({
     format:"tbrain.transfer.v1",schema:z.toJSONSchema(transferSchema),authorized_source_ids:[...allowed],
     saved:false,import_command:"node scripts/tbrain.mjs import /absolute/path/day.json --authorize",
+    capture_enabled: allowCapture === true, max_transfer_bytes: MAX_TRANSFER_BYTES,
+    workflow: ["prepare_capture or validate_transfer", "archive_day after an authorized review", "read_receipt", "read_evidence or read_archive"],
+    preparation: { tool: "prepare_capture", required: ["source_key", "revision", "platform", "messages"],
+      message_required: ["role", "text"], source_selection: "Pass source_id when more than one is configured. Unknown metadata defaults to null; coverage stays partial." },
     identity_rule:"Reuse one source_key and revision when retrying. Unknown platform IDs and timestamps stay null. A later correction or export uses a new revision and relation to the returned receipt.",
   }));
-  register("search_archive", "Search archive passages across all recorded periods unless the question needs an explicit date range.", {
-    query: z.string().trim().min(1).max(2000), from: instant, until: instant, offset, limit,
-  }, input => {
+  register("prepare_capture", "Prepare, never save, a partial conversation transfer from genuinely supplied messages. Pass each message's actual role and exact text; use fidelity paraphrase or unknown when needed. Unknown metadata stays null. Use validate_transfer for complete source exports. Preparation does not grant capture permission.",
+    captureShape, input => ({ ...prepareCapture(input, [...allowed]), capture_enabled: allowCapture === true }));
+  register("validate_transfer", "Validate a portable transfer offline and report repairable field paths without saving, checking storage, or granting authorization. Use before archive_day or portable import.",
+    { transfer: z.unknown() }, ({ transfer }) => inspectTransfer(transfer));
+  register("search_archive", "Search retained passages with lexical cues. Optionally narrow by source_id, role, or date. Follow next_offset for more results and each hit's read instruction for context. All recorded periods are searched unless dates are supplied.", archiveSearchShape, input => {
     if (input.from && input.until && Date.parse(input.from) > Date.parse(input.until)) throw codedError("invalid");
     return services.searchArchive(input);
   });

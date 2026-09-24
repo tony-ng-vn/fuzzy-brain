@@ -49,6 +49,10 @@ Evidence can become an approved node only through conversation and Tony's explic
 Structural references between a source, its revision, and its reflection are provenance, not semantic why-edges.
 
 Use `recall` for ranked retrieval, `search_archive` for bounded lexical and date search, `read_archive` for ordered messages with authorship and revision metadata, and `read_source` for source text chunks.
+Follow a recall or search hit's `read` instruction with `read_evidence` to inspect that passage and bounded neighboring context on either server.
+Use the passage's ID and `next_text_offset` to continue long text.
+Use `source_id` and `role` filters on `search_archive` when they match the question.
+Treat `degraded:true` as incomplete retrieval capability and tool errors as broken lookups, not absent memories.
 Follow returned page and text continuation offsets when needed.
 A provided export and a rendering assembled from supplied messages have different fidelity.
 Legacy evidence remains available through `list-episodes` and `show-evidence` in `scripts/brain.mjs`.
@@ -67,6 +71,8 @@ Disclose coverage gaps, omissions and redactions.
 Respect configured source exclusions and confidential material restrictions.
 
 Read `status` and `transfer_format` when needed to discover actual permissions, configured source IDs and the machine-readable format.
+Use `prepare_capture` to assemble a partial transfer from supplied messages with unknown metadata left null, or `validate_transfer` to check a full transfer offline.
+Both are preparation only and return `saved:false`; they do not check storage or grant capture permission.
 Before `archive_day`, copy one of the `authorized_source_ids` returned by `transfer_format` into `source_id`.
 Keep the conversation identity in `source_key` and `source.conversation_id`; never invent a source ID.
 Use `archive_day` when a connected authorized write path is available.

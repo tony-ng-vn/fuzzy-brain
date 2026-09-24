@@ -71,6 +71,19 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   let server = await start({ databaseUrl, sourceId });
   const firstPid = server.pid;
 
+  await t.test("offline preparation and validation work over the real transport", async () => {
+    const prepared = await successfulCall(server, "prepare_capture", {
+      source_key: packet.source_key, revision: "1", platform: "synthetic-stdio",
+      messages: [{ role: "user", text: packet.messages[0].text }],
+    });
+    assert.equal(prepared.saved, false);
+    assert.equal(prepared.transfer.source_id, sourceId);
+    assert.equal(prepared.transfer.messages[0].at, null);
+    const checked = await successfulCall(server, "validate_transfer", { transfer: prepared.transfer });
+    assert.equal(checked.valid, true);
+    assert.equal(checked.saved, false);
+  });
+
   await t.test("a real archive tool call returns committed persistence identifiers", async () => {
     const started = performance.now();
     firstReceipt = await successfulCall(server, "archive_day", { transfer: packet });
@@ -99,6 +112,12 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
     assert.equal(archive.reflection.text_length, packet.reflection.text.length);
     assert.equal(archive.reflection.next_text_offset, null);
     assert.equal(archive.coverage.completeness, "partial");
+    const passage = await successfulCall(server, "read_evidence", { id: firstReceipt.evidence_ids[0], text_limit: 20 });
+    assert.equal(passage.evidence.text, packet.messages[0].text.slice(0, 20));
+    assert.equal(passage.evidence.next_text_offset, 20);
+    assert.equal(passage.after[0].role, packet.messages[1].role);
+    const filtered = await successfulCall(server, "search_archive", { query: marker, role: "assistant" });
+    assert.deepEqual(filtered.hits, []);
   });
 
   await t.test("unrestricted archive search retrieves an older dated passage", async () => {

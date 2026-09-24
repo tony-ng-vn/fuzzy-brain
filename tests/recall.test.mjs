@@ -267,7 +267,7 @@ test("recall: hybrid find and epistemic answer states", async (t) => {
 
     await t.test("--json carries the documented shape", () => {
       const res = recall("tangerine kayak velvet stairs");
-      assert.deepEqual(Object.keys(res).sort(), ["hits", "note", "question", "state"]);
+      assert.deepEqual(Object.keys(res).sort(), ["degraded", "exhaustive", "hits", "note", "question", "state"]);
       assert.equal(res.question, "tangerine kayak velvet stairs");
       for (const h of res.hits) {
         assert.ok(["node", "evidence"].includes(h.layer));
