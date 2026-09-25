@@ -49,7 +49,7 @@ test("session capture reports a partial save and links its child commands withou
     sourceLabel: "synthetic-claude", codexSourceLabel: "synthetic-codex", archiveRoot: join(home, "archive"),
     liveProjectsDir: join(home, "unused"), codexSessionsDir: codex }));
   await database.client.query("alter table brain_dev.episodes add constraint reject_fixture check (raw not like '%PRIVATE REJECT%')");
-  const result = await run(env);
+  const result = await run(env, ["--limit", "2"]);
   assert.equal(result.code, 1, result.stdout);
   assert.doesNotMatch(result.stderr, /PRIVATE/);
   const counts = await database.client.query("select count(*)::int n from brain_dev.evidence");
@@ -60,6 +60,7 @@ test("session capture reports a partial save and links its child commands withou
   assert.equal(parent.finish.outcome, "error");
   assert.deepEqual(parent.finish.output.failed_sources, ["claude"]);
   assert.equal(parent.finish.output.capture_sources.claude.failed, 1);
+  assert.equal(parent.finish.output.capture_sources.claude.attempted, 2);
   assert.equal(parent.finish.output.capture_sources.codex.ingested, 1);
   const writes = traces.filter(item => item.start.operation === "sync-session");
   assert.equal(writes.length, 2);
