@@ -51,11 +51,18 @@ function validLimit(limit) {
   return limit;
 }
 
+function validDuration(duration) {
+  if (duration !== null && (!Number.isSafeInteger(duration) || duration <= 0)) {
+    throw Object.assign(new Error("The indexing time allowance must be a positive whole number."), { code: "invalid" });
+  }
+  return duration;
+}
+
 export function parseSweepArgs(args) {
   const values = {};
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i], value = args[i + 1];
-    if (!["--limit", "--source-id", "--receipt-id"].includes(key) || key in values || !value || value.startsWith("--")) {
+    if (!["--limit", "--source-id", "--receipt-id", "--max-seconds"].includes(key) || key in values || !value || value.startsWith("--")) {
       throw Object.assign(new Error("Invalid index repair arguments."), { code: "invalid" });
     }
     values[key] = value;
@@ -64,11 +71,21 @@ export function parseSweepArgs(args) {
     ...(values["--source-id"] ? { source_id: values["--source-id"] } : {}),
     ...(values["--receipt-id"] ? { receipt_id: values["--receipt-id"] } : {}),
   });
-  return { scope, limit: validLimit(values["--limit"] === undefined ? null : Number(values["--limit"])) };
+  const seconds = values["--max-seconds"] === undefined ? null : validDuration(Number(values["--max-seconds"]));
+  return { scope, limit: validLimit(values["--limit"] === undefined ? null : Number(values["--limit"])),
+    ...(seconds === null ? {} : { maxDurationMs: validDuration(seconds * 1000) }),
+  };
 }
 
-export async function runEmbeddingSweep(client, { schema = "public", scope = {}, limit = null, embed = embedDocuments } = {}) {
+export async function runEmbeddingSweep(client, { schema = "public", scope = {}, limit = null, maxDurationMs = null, now = () => performance.now(), embed = embedDocuments } = {}) {
   validLimit(limit);
+  validDuration(maxDurationMs);
+  const started = now();
+  let timeLimitReached = false;
+  const shouldStop = () => {
+    if (maxDurationMs !== null && now() - started >= maxDurationMs) timeLimitReached = true;
+    return timeLimitReached;
+  };
   const resolved = await resolveIndexScope(client, schema, scope);
   const tables = schemaTables(schema);
   const selected = Boolean(resolved.scope.source_id || resolved.scope.receipt_id);
@@ -77,7 +94,7 @@ export async function runEmbeddingSweep(client, { schema = "public", scope = {},
     label: "nodes",
     selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc,id limit $1`,
     updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
-    toText: nodeText, embed,
+    toText: nodeText, embed, shouldStop,
   };
   // A large archive must not consume every slot before saved thoughts get a turn.
   const nodeShare = limit === null ? null : Math.ceil(limit / 2);
@@ -88,21 +105,21 @@ export async function runEmbeddingSweep(client, { schema = "public", scope = {},
       where v.embedding is null${filter} order by v.ingested_at desc,v.id limit $1`,
     updateSql: `update ${tables.evidence} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
     selectValues: selected ? [resolved.episodeId ?? resolved.scope.source_id] : [],
-    toText: row => row.quote, limit: remainingLimit(limit, nodes), embed,
+    toText: row => row.quote, limit: remainingLimit(limit, nodes), embed, shouldStop,
   });
   const unused = remainingLimit(limit, evidence + nodes);
   if (!selected && limit !== null && nodes === nodeShare && unused > 0) {
     nodes += await sweepTable(client, { ...nodeOptions, limit: unused });
   }
-  return { evidence, nodes };
+  return { evidence, nodes, ...(maxDurationMs === null ? {} : { time_limit_reached: timeLimitReached }) };
 }
 
-export async function sweepTable(client, { label, selectSql, selectValues = [], updateSql, toText, limit, embed = embedDocuments }) {
+export async function sweepTable(client, { label, selectSql, selectValues = [], updateSql, toText, limit, embed = embedDocuments, shouldStop = () => false }) {
   let filled = 0;
   let stalledPages = 0;
   for (;;) {
     const remaining = limit === null ? EMBED_PAGE_SIZE : Math.min(EMBED_PAGE_SIZE, limit - filled);
-    if (remaining <= 0) break;
+    if (remaining <= 0 || shouldStop()) break;
     const { rows } = await client.query(selectSql, [remaining, ...selectValues]);
     if (rows.length === 0) break;
     const pageStart = filled;
@@ -111,14 +128,16 @@ export async function sweepTable(client, { label, selectSql, selectValues = [], 
     rows.sort((a, b) => toText(a).length - toText(b).length);
     const pageVectors = [];
     for (let i = 0; i < rows.length; i += EMBED_BATCH_SIZE) {
+      if (shouldStop()) break;
       const batch = rows.slice(i, i + EMBED_BATCH_SIZE);
       const vectors = await embed(batch.map(toText));
       pageVectors.push(...vectors);
     }
+    if (!pageVectors.length) break;
     // One statement per page keeps the remote database cost bounded while
     // single-row model calls keep native inference memory bounded.
     const res = await client.query(updateSql, [
-      rows.map((r) => r.id),
+      rows.slice(0, pageVectors.length).map((r) => r.id),
       pageVectors.map(vectorLiteral),
     ]);
     filled += res.rowCount;
@@ -142,8 +161,8 @@ export async function sweepTable(client, { label, selectSql, selectValues = [], 
 
 async function main() {
   loadEnvLocal();
-  const { scope, limit } = parseSweepArgs(process.argv.slice(2));
-  await recordTraceInput({ ...scope, limit });
+  const { scope, limit, maxDurationMs = null } = parseSweepArgs(process.argv.slice(2));
+  await recordTraceInput({ ...scope, limit, max_duration_ms: maxDurationMs });
 
   // Lowest CPU priority, set before the model loads so the inference
   // threads inherit it: the fp32 backfill once saturated every core for
@@ -161,7 +180,7 @@ async function main() {
   const started = Date.now();
   try {
     await client.connect();
-    const filled = await runEmbeddingSweep(client, { schema, scope, limit });
+    const filled = await runEmbeddingSweep(client, { schema, scope, limit, maxDurationMs });
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     console.log(
       [
@@ -169,9 +188,12 @@ async function main() {
         `  evidence filled ${filled.evidence}`,
         `  nodes    filled ${filled.nodes}`,
         `  wall     ${seconds}s`,
+        ...(filled.time_limit_reached ? ["  Time allowance reached; completed vectors are saved."] : []),
       ].join("\n"),
     );
-    return { indexed_evidence: filled.evidence, indexed_nodes: filled.nodes };
+    return { indexed_evidence: filled.evidence, indexed_nodes: filled.nodes,
+      ...(maxDurationMs === null ? {} : { time_limit_reached: filled.time_limit_reached }),
+    };
   } finally {
     try {
       await client.end();
