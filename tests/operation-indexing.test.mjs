@@ -41,7 +41,7 @@ test("a direct index repair leaves a trace even when the requested receipt does 
   const directory = await mkdtemp(join(tmpdir(), "index-repair-trace-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const script = fileURLToPath(new URL("../scripts/embed-sweep.mjs", import.meta.url));
-  await assert.rejects(run(process.execPath, [script, "--receipt-id", id, "--limit", "4"], { env: {
+  await assert.rejects(run(process.execPath, [script, "--receipt-id", id, "--limit", "4", "--max-seconds", "1"], { env: {
     ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "1", TBRAIN_TRACE_DIR: directory,
     FUZZY_BRAIN_EMBED_LOCK: join(directory, "sweep.lock"),
   } }));
@@ -50,5 +50,27 @@ test("a direct index repair leaves a trace even when the requested receipt does 
   assert.equal(traces[0].start.operation, "index_repair");
   assert.equal(traces[0].start.entry_point, "index_cli");
   assert.equal(traces[0].input.input.references.receipt_id, id);
+  assert.equal(traces[0].input.input.filters.max_duration_ms, 1000);
   assert.equal(traces[0].finish.error_code, "not_found");
+});
+
+test("an empty timed index pass completes without loading a model and records its limits", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const directory = await mkdtemp(join(tmpdir(), "timed-index-trace-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("../scripts/embed-sweep.mjs", import.meta.url));
+  const result = await run(process.execPath, [script, "--limit", "256", "--max-seconds", "1"], { env: {
+    ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "1", TBRAIN_TRACE_DIR: directory,
+    FUZZY_BRAIN_EMBED_LOCK: join(directory, "sweep.lock"),
+  } });
+  assert.match(result.stdout, /evidence filled 0/);
+  const { traces } = await createOperationJournal({ directory }).list();
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0].input.input.filters.max_duration_ms, 1000);
+  assert.equal(traces[0].input.input.filters.limit, 256);
+  assert.equal(traces[0].finish.outcome, "success");
+  assert.equal(traces[0].finish.output.time_limit_reached, false);
+  assert.equal(traces[0].finish.output.indexed_evidence, 0);
+  assert.equal(traces[0].finish.output.indexed_nodes, 0);
 });
