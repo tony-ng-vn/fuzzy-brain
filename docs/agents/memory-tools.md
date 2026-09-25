@@ -27,7 +27,11 @@ Each hit has `match_strength` set to `strong` or `partial`.
 Strong matches satisfy the full-word query or the existing semantic relevance threshold.
 They appear before partial matches, both when choosing candidates and in the final results.
 Partial matches remain available as leads when there are fewer than ten strong matches.
-Use the returned order rather than sorting by `score` alone, because a partial match can have a larger score than a strong match.
+A question equal to a complete node title can match even when text search removes every word as a common word.
+Matching ignores letter case and accepts one outer pair of double quotes around the full title.
+Exact-title node matches come first, before other strong matches and then partial matches.
+Date and layer restrictions still apply.
+Use the returned order rather than sorting by `score` alone, because title and match-strength priority can put a lower score first.
 Match strength describes retrieval, not whether the passage supports an answer or has the user's approval.
 Both memory servers accept the same optional `layer`, `source_id`, `role`, `from`, and `until` arguments.
 Use `layer:"nodes"` for approved memories or `layer:"evidence"` for source passages.
@@ -215,3 +219,14 @@ See [the operation trace guide](operation-traces.md) for storage, privacy, workf
 Use `index_status` with a known archive `receipt_id` when a saved source is hard to retrieve.
 A pending vector does not prevent text search or source readback.
 See [Checking search indexing](search-indexing.md) for counts, limitations, and bounded repairs.
+
+
+## Update title lookup storage
+
+New database setup includes the exact-title lookup index.
+For an existing installation, run `BRAIN_SCHEMA=public npm run recall:migrate -- --authorize-production` during deployment.
+The command rehearses the addition in `brain_dev` before adding the index in `public`.
+It creates an index without rewriting nodes or rerunning historical data changes.
+The index stores a fixed-size hash of each lowercase title, and recall also compares the full title before accepting a match.
+This keeps long titles within index entry limits and prevents a hash collision from becoming a false match.
+Recall remains correct before the index is installed, but title lookup can require a table scan.

@@ -382,7 +382,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
 
   // A union matches its arms by POSITION, so every arm lays its columns out
   // in this exact order: lane, id, the evidence payload, the node payload,
-  // the edge payload, then the three scores. Absent fields are typed nulls.
+  // the edge payload, then the scores and exact-title flag. Absent fields are typed nulls.
   const quoteNulls = `null::text as quote, null::text as speaker`;
   const provNulls = `null::uuid as episode_id, null::text as source_locator,
        null::text as source_kind, null::text as source_label, null::uuid as source_id,
