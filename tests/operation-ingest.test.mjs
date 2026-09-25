@@ -80,6 +80,56 @@ test("capture help and invalid options return before loading capture configurati
   assert.equal(traces.find(item => item.start.operation === "session_capture").finish.error_code, "invalid");
 });
 
+test("bounded capture gives each source a turn and resumes through committed checkpoints", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const { home, env, journal } = await setup(t);
+  env.DATABASE_URL = database.url;
+  env.DATABASE_URL_DEV = database.url;
+  const project = join(home, "archive", "claude-code", "allowed");
+  const codex = join(home, "codex");
+  await mkdir(project, { recursive: true });
+  await mkdir(codex);
+  await writeFile(join(project, "000-empty.jsonl"), "");
+  await writeFile(join(codex, "000-empty.jsonl"), "");
+  for (let i = 0; i < 3; i++) {
+    const id = `11111111-1111-4111-8111-${String(i).padStart(12, "0")}`;
+    await writeFile(join(project, `${id}.jsonl`), JSON.stringify({ type: "user", sessionId: id,
+      cwd: "/synthetic/allowed", message: { role: "user", content: `PRIVATE claude ${i}` } }));
+    await writeFile(join(codex, `${id}.jsonl`), [
+      { type: "session_meta", payload: { id, cwd: "/synthetic/allowed" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `PRIVATE codex ${i}` }] } },
+    ].map(item => JSON.stringify(item)).join("\n"));
+  }
+  await writeFile(env.FUZZY_BRAIN_INGEST_CONFIG, JSON.stringify({ allowlist: ["allowed"], settledHours: 0,
+    sourceLabel: "synthetic-claude", codexSourceLabel: "synthetic-codex", archiveRoot: join(home, "archive"),
+    liveProjectsDir: join(home, "unused"), codexSessionsDir: codex }));
+  const counts = async () => (await database.client.query("select s.kind,count(v.id)::int n from brain_dev.sources s join brain_dev.episodes e on e.source_id=s.id join brain_dev.evidence v on v.episode_id=e.id group by s.kind order by s.kind")).rows;
+  const first = await run(env, ["--limit", "2"]);
+  assert.equal(first.code, 0, first.stderr);
+  assert.deepEqual((await counts()).map(row => row.n), [2, 2]);
+  const parent = (await journal.list({ limit: 100 })).traces.find(item => item.start.operation === "session_capture");
+  for (const source of ["claude", "codex"]) {
+    assert.equal(parent.finish.output.capture_sources[source].attempted, 2);
+    assert.equal(parent.finish.output.capture_sources[source].deferred, 1);
+  }
+  assert.match(first.stdout, /deferred\s+1/);
+  assert.doesNotMatch(JSON.stringify(parent), /PRIVATE/);
+  const second = await run(env, ["--limit", "2"]);
+  assert.equal(second.code, 0, second.stderr);
+  assert.deepEqual((await counts()).map(row => row.n), [3, 3]);
+  assert.equal((await run(env, ["--limit", "2"])).code, 0);
+  assert.deepEqual((await counts()).map(row => row.n), [3, 3]);
+});
+
+test("invalid capture limits fail before reading configuration", async t => {
+  const { env, journal } = await setup(t);
+  for (const args of [["--limit"], ["--limit", "0"], ["--limit", "1.5"], ["--limit", "bad"], ["--limit", "2", "--limit", "3"]]) {
+    assert.equal((await run(env, args)).code, 1);
+  }
+  for (const trace of (await journal.list()).traces) assert.equal(trace.finish.error_code, "invalid");
+});
+
 test("a failed source and a failed error logger cannot stop the other source", () => {
   const calls = [];
   const result = runSessionCapture({ settledHours: 24 }, {
