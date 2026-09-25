@@ -78,3 +78,32 @@ test("service errors keep their category without logging their private message",
     assert.doesNotMatch(await readFile(join(directory, day, file), "utf8"), /PRIVATE/);
   }
 });
+
+test("a failed reply delivery keeps the successful operation and preserves shutdown cleanup", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "tbrain-delivery-traces-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const journal = createOperationJournal({ directory });
+  let cleanup = 0;
+  const inner = { async start() {}, async send() { throw new Error("PRIVATE transport failure"); },
+    async close() { this.onclose(); }, onclose() { cleanup++; } };
+  const wrapped = traceTransport(inner, { journal, entryPoint: "tbrain_mcp", release: "0.31.0" });
+  wrapped.onmessage = () => {};
+  await wrapped.start();
+  await inner.onmessage({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "archive_day", arguments: {} } });
+  await assert.rejects(() => wrapped.send({ jsonrpc: "2.0", id: 7, result: { structuredContent: { state: "committed" }, content: [] } }), /PRIVATE transport failure/);
+  const [trace] = (await journal.list()).traces;
+  assert.equal(trace.finish.outcome, "success");
+  assert.equal(trace.delivery.state, "failed");
+  assert.doesNotMatch(JSON.stringify(trace), /PRIVATE/);
+  await wrapped.close();
+  assert.equal(cleanup, 1);
+});
+
+test("a trace completion failure does not replace the service result", async t => {
+  const journal = { async start() { return { id: "test", recorded: true }; }, async finish() { throw new Error("PRIVATE disk failure"); } };
+  const { client } = await connect(t, "tbrain", { recall: async () => ({ state: "committed" }) }, journal);
+  const result = await client.callTool({ name: "recall", arguments: { question: "synthetic" } });
+  assert.equal(parse(result).state, "committed");
+  assert.equal(result._meta["tbrain/trace"].recorded, false);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+});
