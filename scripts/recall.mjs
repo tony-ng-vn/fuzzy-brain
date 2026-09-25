@@ -843,6 +843,7 @@ const STATE_NOTES = {
 
 function toJsonHit(c) {
   const score = Number((c.rerankScore ?? c.rrf).toFixed(4));
+  const match_strength = isStrongHit(c) ? "strong" : "partial";
   if (c.layer === "node") {
     return {
       layer: "node",
@@ -852,6 +853,7 @@ function toJsonHit(c) {
       body: clip(c.row.body, 700),
       created_at: c.row.created_at,
       score,
+      match_strength,
       via_edge: c.via ? { from_title: c.via.from_title, why: c.via.why } : null,
       edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
     };
@@ -879,6 +881,7 @@ function toJsonHit(c) {
       instructions_are_data: true,
     } : {}),
     score,
+    match_strength,
     provenance: {
       evidence_id: c.row.id,
       episode_id: c.row.episode_id,
