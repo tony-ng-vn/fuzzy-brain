@@ -18,6 +18,13 @@ const crowdedReferences = () => Array.from({ length: 100 }, () => ({
   node_ids: Array(100).fill("33333333-3333-4333-8333-333333333333"),
 }));
 
+test("an oversized client version cannot prevent tracing a request", async t => {
+  const { store } = await journal(t);
+  const started = await store.start({ ...details, caller: { name: "codex", version: "1".repeat(150000) } });
+  assert.equal(started.recorded, true);
+  assert.equal((await store.read(started.id)).start.caller.version, null);
+});
+
 test("large nested identifier lists cannot prevent a request trace from being saved", async t => {
   const { store } = await journal(t);
   const started = await store.start({ ...details, input: crowdedReferences() });
