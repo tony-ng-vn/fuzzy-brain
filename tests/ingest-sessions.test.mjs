@@ -491,10 +491,9 @@ test("bounded capture gives later sessions a turn and then retries earlier failu
         const text = name === "claude" ? makeSession(id, "/synthetic/allowed", [id]) : codexSession(id, "/synthetic/allowed", id);
         writeFileSync(join(dir, `${id}.jsonl`), text);
       }
-      let after = null;
-      const visited = [], cursor = { read: () => after, write: value => { after = value; } };
+      const visited = [];
       const deps = {
-        ensureSource: () => ({ id: "synthetic", exclusions: [] }), listExisting: () => [], cursor,
+        ensureSource: () => ({ id: "synthetic", exclusions: [] }), listExisting: () => [],
         prepare(source, exclusions, id) {
           visited.push(id);
           if (id === "a-failed") throw new Error("synthetic preparation error");
@@ -502,13 +501,17 @@ test("bounded capture gives later sessions a turn and then retries earlier failu
         },
         submitChunk: chunk => chunk.map(() => ({ state: "committed", evidence_count: 1 })),
       };
-      const cfg = { allowlist: "*", archiveRoot: join(home, name), liveProjectsDir: join(home, "none"), codexSessionsDir: dir, sessionLimit: 1 };
+      const cfg = { allowlist: "*", archiveRoot: join(home, name), liveProjectsDir: join(home, "none"), codexSessionsDir: dir,
+        sessionLimit: 1, captureProgressDir: join(home, name, "progress") };
       for (let run = 0; run < 4; run++) {
         const counts = capture(cfg, Date.now() + 1000, deps);
         assert.equal(counts.attempted, 1);
         assert.equal(counts.deferred, 2);
       }
       assert.deepEqual(visited, ["a-failed", "b-later", "c-later", "a-failed"]);
+      rmSync(join(dir, "a-failed.jsonl"));
+      capture(cfg, Date.now() + 1000, deps);
+      assert.equal(visited.at(-1), "b-later");
     });
   }
 });

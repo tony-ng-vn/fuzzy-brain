@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode, SESSION_PARSER_VERSION } from "./lib/session-parser.mjs";
 import { cli, ensureSource } from "./lib/brain-cli.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
+import { createCaptureCursor } from "./lib/session-capture-cursor.mjs";
 import { runTracedCli, recordTraceInput } from "./lib/operation-cli.mjs";
 import { safeErrorCode } from "./lib/operation-metadata.mjs";
 import { loadEnvLocal } from "./recall.mjs";
@@ -77,6 +78,8 @@ export function loadConfig() {
     archiveRoot: cfg.archiveRoot ?? join(homedir(), ".fuzzy-brain", "session-archive"),
     liveProjectsDir: cfg.liveProjectsDir ?? join(homedir(), ".claude", "projects"),
     codexSessionsDir: cfg.codexSessionsDir ?? join(homedir(), ".codex", "sessions"),
+    captureProgressDir: process.env.FUZZY_BRAIN_CAPTURE_PROGRESS_DIR
+      || (process.env.BRAIN_SCHEMA === "brain_dev" ? null : join(homedir(), ".fuzzy-brain", "capture-progress")),
   };
 }
 
@@ -262,8 +265,9 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
   const buffer = [];
 
   const candidates = gatherCandidates(cfg);
+  const cursor = deps.cursor ?? progressCursor(cfg, source.id, limit);
   let lastScanned = null;
-  for (const [sessionId, cand] of candidateQueue(candidates, deps.cursor)) {
+  for (const [sessionId, cand] of candidateQueue(candidates, cursor)) {
     if (limit !== null && counts.attempted >= limit) {
       counts.deferred = candidates.size - counts.scanned;
       break;
@@ -317,7 +321,7 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
     }
   }
   flushChunk(buffer, submitChunk, counts); // the trailing partial chunk
-  if (lastScanned !== null) deps.cursor?.write(lastScanned);
+  if (lastScanned !== null) cursor?.write(lastScanned);
   return counts;
 }
 
@@ -332,8 +336,9 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
   const buffer = [];
 
   const candidates = gatherCodexCandidates(cfg);
+  const cursor = deps.cursor ?? progressCursor(cfg, source.id, limit);
   let lastScanned = null;
-  for (const [sessionId, cand] of candidateQueue(candidates, deps.cursor)) {
+  for (const [sessionId, cand] of candidateQueue(candidates, cursor)) {
     if (limit !== null && counts.attempted >= limit) {
       counts.deferred = candidates.size - counts.scanned;
       break;
@@ -382,8 +387,14 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
     }
   }
   flushChunk(buffer, submitChunk, counts);
-  if (lastScanned !== null) deps.cursor?.write(lastScanned);
+  if (lastScanned !== null) cursor?.write(lastScanned);
   return counts;
+}
+
+function progressCursor(cfg, sourceId, limit) {
+  return limit !== null && cfg.captureProgressDir
+    ? createCaptureCursor(cfg.captureProgressDir, `${process.env.BRAIN_SCHEMA || "public"}:${sourceId}`)
+    : null;
 }
 
 function candidateQueue(candidates, cursor) {
