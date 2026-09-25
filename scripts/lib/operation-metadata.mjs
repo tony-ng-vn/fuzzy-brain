@@ -10,12 +10,16 @@ const operations = new Set([
   "list_traces", "report_outcome", "trace_summary", "validate", "import", "receipt", "verify", "export", "search",
   "read", "source", "evidence", "add-node", "add-edge", "add-source", "add-episode", "add-evidence", "import-transfer",
   "show", "index", "dump", "list-sources", "list-episodes", "show-evidence", "set-readable", "add-talk",
-  "set-exclusions", "mark-sender-deleted", "help",
+  "set-exclusions", "mark-sender-deleted", "help", "get-node", "read-write-receipt", "set-deadline", "clear-deadline", "mark-complete", "list-reminders", "session-checkpoints", "sync-session",
 ]);
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const validId = value => typeof value === "string" && uuid.test(value);
 export const safeErrorCode = value => codes.has(value) ? value : "unavailable";
-export const safeOperation = value => operations.has(value) ? value : "unknown";
+export const safeOperation = value => {
+  const normalized = ["trace-status", "trace-summary", "report-outcome"].includes(value) ? value.replaceAll("-", "_")
+    : value === "traces" ? "list_traces" : value === "trace" ? "read_trace" : value;
+  return operations.has(normalized) ? normalized : "unknown";
+};
 
 export function fingerprint(value) {
   const text = JSON.stringify(value ?? null);

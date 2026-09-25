@@ -1,3 +1,4 @@
+import { operationContext } from "./operation-context.mjs";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
@@ -43,7 +44,8 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
         }));
         if (closed) return;
         pending.set(JSON.stringify(message.id), { ...start, receivedAt, tool: message.method === "tools/call" });
-        traced.onmessage?.(message, extra);
+        operationContext.run({ journal, id: start.id, workflowId: message.params?._meta?.["tbrain/workflow_id"] },
+          () => traced.onmessage?.(message, extra));
       };
       transport.onclose = () => { closed = true; pending.clear(); previousClose?.(); traced.onclose?.(); };
       transport.onerror = error => { previousError?.(error); traced.onerror?.(error); };

@@ -87,9 +87,11 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
       const start = await readEvent(join(path, `${id}.start.json`));
       let finish = null;
       try { finish = await readEvent(join(path, `${id}.finish.json`)); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      let input = null;
+      try { input = await readEvent(join(path, `${id}.input.json`)); } catch (error) { if (error.code !== "ENOENT") throw error; }
       let delivery = null;
       try { delivery = await readEvent(join(path, `${id}.delivery.json`)); } catch (error) { if (error.code !== "ENOENT") throw error; }
-      return { id, state: finish ? "finished" : "incomplete", start, finish, delivery };
+      return { id, state: finish ? "finished" : "incomplete", start, input, finish, delivery };
     } catch (error) { throw failure(error.code === "ENOENT" ? "not_found" : "unavailable"); }
   };
   const readReport = async id => {
@@ -112,7 +114,7 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
   };
   return {
     status, read, readReport,
-    async start({ entry_point, operation, release, caller, input, connection_id = null, protocol_request_id = null, workflow_id = null } = {}) {
+    async start({ entry_point, operation, release, caller, input, connection_id = null, protocol_request_id = null, workflow_id = null, parent_id = null } = {}) {
       if (!enabled) return { recorded: false, disabled: true };
       try {
         const at = new Date().toISOString();
@@ -125,9 +127,22 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
           release: typeof release === "string" && /^\d+\.\d+\.\d+(?:[-.a-zA-Z0-9]+)?$/.test(release) ? release.slice(0, 80) : null,
           caller: callerMetadata(caller), input: inputMetadata(input),
           connection_id: safeUuid(connection_id), workflow_id: safeUuid(workflow_id),
+          parent_id: typeof parent_id === "string" && idPattern.test(parent_id) ? parent_id : null,
           protocol_request_id: Number.isSafeInteger(protocol_request_id) ? protocol_request_id : null,
         };
         await durableCreate(await folder(at.slice(0, 10), true), `${id}.start.json`, event);
+        writes++;
+        return { id, recorded: true };
+      } catch { return failed(); }
+    },
+    async recordInput(id, input) {
+      if (!enabled) return { recorded: false, disabled: true };
+      try {
+        const { day } = parseId(id);
+        await read(id);
+        await durableCreate(await folder(day), `${id}.input.json`, {
+          format: "tbrain.operation.v1", event: "input", id, at: new Date().toISOString(), input: inputMetadata(input),
+        });
         writes++;
         return { id, recorded: true };
       } catch { return failed(); }

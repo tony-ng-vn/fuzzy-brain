@@ -1,3 +1,4 @@
+import { operationChildEnvironment } from "./operation-context.mjs";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +29,7 @@ export async function runJson(script, args, input, {
     let inputError;
     const child = execFile(process.execPath, [script, ...args], {
       cwd,
+      env: operationChildEnvironment(),
       encoding: "utf8",
       timeout,
       maxBuffer,

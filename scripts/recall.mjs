@@ -33,6 +33,7 @@
 //   evidence     only unratified evidence carries it -- always labeled
 //   partial      fragments surfaced but no direct answer
 //   missing      nothing relevant at all
+import { emitTracedOutput, runTracedCli } from "./lib/operation-cli.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1019,14 +1020,14 @@ async function answerQuestion(client, question, schema, embedQuery, scope) {
 async function main() {
   const { help, question, json, scope } = parseRecallArgs(process.argv.slice(2));
   if (help) {
-    console.log(JSON.stringify(recallHelp, null, 2));
+    emitTracedOutput(JSON.stringify(recallHelp, null, 2));
     return;
   }
   loadEnvLocal();
 
   try {
     const result = await recall(question, scope);
-    console.log(json ? JSON.stringify(result, null, 2) : formatHuman(result));
+    emitTracedOutput(json ? JSON.stringify(result, null, 2) : formatHuman(result));
   } finally {
     // The one place the model is torn down. A resident caller keeps it loaded
     // for the next question; this process is about to exit anyway.
@@ -1048,7 +1049,8 @@ export function loadEnvLocal() {
 
 // Only query the database when run directly; importing for tests must not.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
+  loadEnvLocal();
+  runTracedCli("recall_cli", "recall", process.argv.slice(2), main).catch((err) => {
     console.error(err.message);
     process.exit(1);
   });
