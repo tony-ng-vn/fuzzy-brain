@@ -14,6 +14,7 @@ import { schemaTables, makeClient } from "./brain.mjs";
 import { disposeEmbeddingModel, embedDocuments } from "./lib/embeddings.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
 import { parseIndexScope, resolveIndexScope } from "./lib/index-status.mjs";
+import { runTracedCli, recordTraceInput } from "./lib/operation-cli.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -135,6 +136,7 @@ export async function sweepTable(client, { label, selectSql, selectValues = [], 
 async function main() {
   loadEnvLocal();
   const { scope, limit } = parseSweepArgs(process.argv.slice(2));
+  await recordTraceInput({ ...scope, limit });
 
   // Lowest CPU priority, set before the model loads so the inference
   // threads inherit it: the fp32 backfill once saturated every core for
@@ -162,6 +164,7 @@ async function main() {
         `  wall     ${seconds}s`,
       ].join("\n"),
     );
+    return { indexed_evidence: filled.evidence, indexed_nodes: filled.nodes };
   } finally {
     try {
       await client.end();
@@ -189,7 +192,8 @@ function loadEnvLocal() {
 
 // Only sweep when run directly; importing for tests must not.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
+  loadEnvLocal();
+  runTracedCli("index_cli", "index_repair", process.argv.slice(2), main).catch((err) => {
     console.error(err.message);
     process.exit(1);
   });

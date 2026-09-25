@@ -4,7 +4,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const codes = new Set(["invalid", "not_found", "conflict", "unauthorized", "excluded", "unavailable", "cancelled"]);
 const roles = new Set(["user", "assistant", "system", "tool", "other", "unknown"]);
 const operations = new Set([
-  "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status",
+  "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status", "index_repair",
   "read_write_receipt", "status", "transfer_format", "prepare_capture", "validate_transfer", "archive_day",
   "read_receipt", "read_archive", "read_source", "read_evidence", "search_archive", "trace_status", "read_trace",
   "list_traces", "report_outcome", "trace_summary", "validate", "import", "receipt", "verify", "export", "search",
@@ -97,12 +97,17 @@ export function outputMetadata(value) {
   for (const key of ["saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more"]) {
     if (typeof output[key] === "boolean") metadata[key] = output[key];
   }
-  for (const key of ["total_messages", "next_offset", "next_text_offset", "total"]) {
+  for (const key of ["total_messages", "next_offset", "next_text_offset", "total", "indexed_evidence", "indexed_nodes"]) {
     if (finite(output[key])) metadata[key] = output[key];
   }
   if (["committed", "prepared", "verified", "failed", "ready", "missing", "partial", "evidence", "supported", "conflict", "unavailable"].includes(output.state)) metadata.state = output.state;
   if (output.evidence && typeof output.evidence === "object") {
     metadata.evidence = { ...references(output.evidence), source: references(output.evidence.source) };
+  }
+  if (["empty", "pending", "complete"].includes(output.semantic_index?.state)) {
+    const counts = value => value && ["total", "indexed", "pending"].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
+      ? { total: value.total, indexed: value.indexed, pending: value.pending } : null;
+    metadata.indexing = { state: output.semantic_index.state, evidence: counts(output.evidence), nodes: counts(output.nodes) };
   }
   if (Array.isArray(output.hits)) {
     metadata.hit_count = output.hits.length;
