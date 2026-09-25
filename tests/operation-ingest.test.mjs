@@ -100,3 +100,19 @@ test("capture error logs contain a safe category and count without child output"
   logCaptureFailure("batch", { code: "PRIVATE CODE", message: "PRIVATE MESSAGE", stdout: "PRIVATE OUTPUT" }, 8);
   assert.deepEqual(JSON.parse(lines[0]), { event: "session_capture.failed", stage: "batch", error_code: "unavailable", count: 8 });
 });
+
+test("a failed child command cannot print its private stderr before the capture logger handles it", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const { env } = await setup(t);
+  const source = `import { cli } from ${JSON.stringify(new URL("../scripts/lib/brain-cli.mjs", import.meta.url).href)};
+    import { logCaptureFailure } from ${JSON.stringify(new URL("../scripts/ingest-sessions.mjs", import.meta.url).href)};
+    try { cli("show", ["PRIVATE INVALID UUID"]); }
+    catch (error) { logCaptureFailure("startup", error); process.exitCode = 1; }`;
+  const result = await new Promise(resolve => execFile(process.execPath, ["--input-type=module", "--eval", source],
+    { env: { ...env, DATABASE_URL: database.url }, encoding: "utf8", timeout: 20000 },
+    (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr })));
+  assert.equal(result.code, 1);
+  assert.doesNotMatch(result.stderr, /PRIVATE/);
+  assert.equal(JSON.parse(result.stderr).event, "session_capture.failed");
+});
