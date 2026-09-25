@@ -872,7 +872,9 @@ function toJsonHit(c, question) {
       score,
       match_strength,
       via_edge: c.via ? { from_title: c.via.from_title, why: c.via.why } : null,
-      edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
+      edges: (c.edges ?? []).map(e => ({ source_id: e.source, target_id: e.target,
+        source_title: e.source_title, target_title: e.target_title, why: e.why,
+        read: { tool: "get_node", arguments: { id: e.source === c.row.id ? e.target : e.source } } })),
     };
   }
   const occurredAt = c.archive ? c.archive.message?.at ?? null : c.row.occurred_at ?? null;
