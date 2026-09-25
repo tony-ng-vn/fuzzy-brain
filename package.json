@@ -13,6 +13,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "memory:migrate": "node scripts/memory-migrate.mjs",
     "session:migrate": "node scripts/session-migrate.mjs",
+    "recall:migrate": "node scripts/recall-migrate.mjs",
     "clippings:sweep": "node scripts/sweep-clippings.mjs",
     "watch:sweep": "node scripts/sweep-watch-items.mjs",
     "fusion:sync": "node scripts/fusion-sync.mjs",
