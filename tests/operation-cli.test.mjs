@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createOperationJournal } from "../scripts/lib/operation-journal.mjs";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
+import { renderEpisode } from "../scripts/lib/session-parser.mjs";
 
 async function run(script, args, env, input) {
   return new Promise((resolve, reject) => {
@@ -67,4 +68,36 @@ test("trace diagnostics work through the portable CLI without a database", async
   const list = await run("tbrain.mjs", ["traces", "--limit", "1"], env);
   assert.equal(list.code, 0, list.stderr);
   assert.equal(JSON.parse(list.stdout).traces.length, 1);
+});
+
+test("a partly failed session batch keeps committed identifiers and reports the rejected item", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const { journal, env } = await setup(t);
+  const childEnv = { ...env, DATABASE_URL: database.url };
+  const source = JSON.parse((await run("brain.mjs", ["add-source"], childEnv,
+    { kind: "codex_session", label: "synthetic-batch-trace" })).stdout);
+  const rendered = renderEpisode([{ speaker: "tony", text: "PRIVATE SYNTHETIC BATCH", ts: null }]);
+  const packet = { source_id: source.id, source_locator: "PRIVATE SESSION", raw: rendered.raw,
+    file_mtime_ms: 1, file_size: Buffer.byteLength(rendered.raw),
+    evidence: rendered.spans.map(span => ({ quote: span.text, speaker: span.speaker, start_offset: span.start, end_offset: span.end })) };
+  const batch = await run("brain.mjs", ["sync-session"], childEnv, [packet, { ...packet, source_locator: "PRIVATE INVALID", evidence: [{ quote: "wrong" }] }]);
+  assert.equal(batch.code, 0, batch.stderr);
+  const results = JSON.parse(batch.stdout);
+  assert.equal(results[0].state, "committed");
+  assert.equal(results[1].error, "invalid");
+  const trace = (await journal.list()).traces.find(item => item.start.operation === "sync-session");
+  assert.equal(trace.finish.outcome, "error");
+  assert.equal(trace.finish.error_code, "invalid");
+  assert.equal(trace.finish.output.failed_item_count, 1);
+  assert.deepEqual(trace.finish.output.item_errors, { invalid: 1 });
+  assert.equal(trace.finish.output.items[0].checkpoint_id, results[0].checkpoint_id);
+  assert.equal(trace.finish.output.items[0].id, results[0].id);
+  assert.equal(trace.finish.output.items[0].evidence_count, 1);
+  assert.equal(trace.finish.output.items[0].state, "committed");
+  assert.equal(trace.input.input.item_count, 2);
+  assert.equal(trace.input.input.items[0].source_id, source.id);
+  assert.doesNotMatch(JSON.stringify(trace), /PRIVATE/);
+  const rows = await database.client.query("select count(*)::int n from brain_dev.evidence");
+  assert.equal(rows.rows[0].n, 1);
 });

@@ -37,3 +37,17 @@ test("background traces retain failed stage names without child errors", () => {
   assert.deepEqual(result.failed_stages, ["ingest", "embedding"]);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
+
+test("batch failure counts cover items beyond the bounded identifier list", () => {
+  const input = Array.from({ length: 150 }, () => ({ id: ID, raw: "PRIVATE WORDS" }));
+  input[149] = { error: "PRIVATE ERROR", source_locator: "PRIVATE LOCATION" };
+  const output = outputMetadata(input);
+  assert.equal(output.items.length, 100);
+  assert.equal(output.failed_item_count, 1);
+  assert.deepEqual(output.item_errors, { unavailable: 1 });
+  const metadata = inputMetadata(input);
+  assert.equal(metadata.item_count, 150);
+  assert.equal(metadata.items.length, 100);
+  assert.equal(metadata.items_truncated, true);
+  assert.doesNotMatch(JSON.stringify({ output, metadata }), /PRIVATE/);
+});
