@@ -4,6 +4,24 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.45.0
+
+2026-09-25
+
+**Tools**
+
+- Trace summaries now count successful, completed recall results by their returned label: supported, conflicting, evidence, partial, or missing.
+  Calls with missing or unrecognized labels count as unknown, including older traces.
+  Failed and unfinished calls keep separate totals.
+  These counts appear in the overall summary and the recall-only breakdown.
+- New trace records now keep the existing conflicting label, which earlier trace records omitted.
+
+**Docs**
+
+- The trace guide explains these counts and why a retrieval label does not judge whether an answer is correct.
+
+---
+
 ## v0.44.1
 
 2026-09-25

@@ -143,6 +143,14 @@ For example, inspect `per_operation.recall` when investigating search speed inst
 Each operation group includes its inspected count, unfinished calls, error categories, empty or degraded searches, MCP delivery counts, and duration percentiles.
 The duration sample count excludes unfinished calls and records without a valid duration.
 Diagnostic calls remain separate from these groups.
+The `recall_states` counts show the result labels returned by completed successful recall calls.
+The same counts appear inside `per_operation.recall`.
+They include `supported`, `conflicting`, `evidence`, `partial`, and `missing` when the trace retained that label.
+`unknown` counts successful recall calls without a recognized label, including older traces that did not retain it.
+Failed and unfinished calls stay in their separate counts.
+A result label describes the retrieval result, not whether it supports the caller's answer.
+Use caller feedback to inspect that separate question.
+
 These measurements describe the inspected records, not answer quality or a controlled performance comparison between releases.
 Delivery counts cover finished MCP requests only.
 A completed command-line call does not prove that another program read its output, and does not count as an unconfirmed MCP reply.
