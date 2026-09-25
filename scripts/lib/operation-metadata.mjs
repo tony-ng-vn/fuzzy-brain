@@ -15,6 +15,16 @@ const operations = new Set([
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const validId = value => typeof value === "string" && uuid.test(value);
 export const safeErrorCode = value => codes.has(value) ? value : "unavailable";
+const itemErrorCode = value => value?.error ? safeErrorCode(value.error.code ?? value.error)
+  : value?.ok === false ? "unavailable" : null;
+export function resultErrorCode(value) {
+  if (!Array.isArray(value)) return itemErrorCode(value);
+  for (const item of value) {
+    const code = itemErrorCode(item);
+    if (code) return code;
+  }
+  return null;
+}
 export const safeOperation = value => {
   const normalized = ["trace-status", "trace-summary", "report-outcome", "index-status"].includes(value) ? value.replaceAll("-", "_")
     : value === "traces" ? "list_traces" : value === "trace" ? "read_trace" : value;
@@ -37,7 +47,7 @@ export function callerMetadata(caller) {
 function references(value = {}) {
   if (!value || typeof value !== "object") value = {};
   const result = {};
-  for (const key of ["id", "source_id", "episode_id", "receipt_id", "request_id", "evidence_id", "node_id"]) {
+  for (const key of ["id", "source_id", "episode_id", "receipt_id", "checkpoint_id", "request_id", "evidence_id", "node_id"]) {
     if (validId(value[key])) result[key] = value[key].toLowerCase();
   }
   for (const key of ["evidence_ids", "node_ids"]) {
@@ -82,6 +92,7 @@ export function inputMetadata(value) {
   const transfer = input.transfer && typeof input.transfer === "object" ? input.transfer : input;
   return {
     ...fingerprint(value), filters, references: { ...references(input), ...references(transfer) },
+    ...(Array.isArray(value) ? { item_count: value.length, items: value.slice(0, 100).map(references), items_truncated: value.length > 100 } : {}),
     ...(Array.isArray(transfer.messages) ? { message_count: transfer.messages.length, capture: captureMetadata(transfer) } : {}),
   };
 }
@@ -91,8 +102,27 @@ export function outputMetadata(value) {
   const metadata = { ...fingerprint(value), references: references(output) };
   if (Array.isArray(value)) {
     metadata.item_count = value.length;
-    metadata.items = value.slice(0, 100).map(references);
+    metadata.items = value.slice(0, 100).map(item => {
+      const fields = references(item);
+      if (["committed", "prepared", "verified", "failed"].includes(item?.state)) fields.state = item.state;
+      if (typeof item?.replayed === "boolean") fields.replayed = item.replayed;
+      for (const key of ["evidence_count", "seen_count"]) {
+        if (Number.isSafeInteger(item?.[key]) && item[key] >= 0) fields[key] = item[key];
+      }
+      const code = itemErrorCode(item);
+      if (code) fields.error_code = code;
+      return fields;
+    });
     metadata.items_truncated = value.length > 100;
+    metadata.failed_item_count = 0;
+    metadata.item_errors = {};
+    for (const item of value) {
+      const code = itemErrorCode(item);
+      if (code) {
+        metadata.failed_item_count++;
+        metadata.item_errors[code] = (metadata.item_errors[code] ?? 0) + 1;
+      }
+    }
   }
   for (const key of ["ok", "saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more"]) {
     if (typeof output[key] === "boolean") metadata[key] = output[key];
