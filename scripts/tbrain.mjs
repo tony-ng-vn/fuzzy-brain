@@ -10,25 +10,11 @@ import { runJson } from "./lib/run-json.mjs";
 import { makeClient, schemaTables } from "./brain.mjs";
 import { loadEnvLocal } from "./recall.mjs";
 import { archiveError, errorCode, readArchive, readReceipt, readSource, searchArchive, archiveStatus, readEvidence, evidenceReadShape, archiveSearchShape } from "./lib/tbrain-store.mjs";
-
-const help = {
-  state: "help",
-  commands: [
-    "index-status [--source-id UUID | --receipt-id UUID]",
-    "trace-status", "trace ID [--kind operation|report]", "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports] [--workflow-id UUID] [--parent-id ID] [--operation-id ID]", "trace-summary [--day DATE] [--limit N]", "report-outcome FILE",
-    "validate FILE", "import FILE --authorize", "status", "receipt ID", "verify ID", "export ID",
-    "search QUERY [--from ISO] [--until ISO] [--source-id UUID] [--role user|assistant|system|tool|other|unknown] [--offset N] [--limit N]",
-    "read ID [OFFSET LIMIT] [--offset N] [--limit N] [--text-offset N] [--text-limit N]",
-    "source ID [OFFSET LIMIT] [--offset N] [--limit N]",
-    "evidence ID [--context N] [--text-offset N] [--text-limit N]",
-  ],
-  note: "Validation is offline and never saves. Read and search results include continuation offsets. Import requires explicit authorization.",
-};
+import { portableHelp } from "./lib/tbrain-help.mjs";
 
 function parseArgs(args) {
-  const [command = "help", value, ...rest] = args;
+  const [command, value, ...rest] = args;
   if (command === "index-status") return { command, options: parseIndexArgs(args.slice(1)) };
-  if (["help", "--help", "-h"].includes(command)) return { command: "help" };
   const commands = new Set(["validate", "import", "status", "receipt", "verify", "export", "search", "read", "source", "evidence"]);
   if (!commands.has(command) || (command !== "status" && !value) || (command === "status" && value !== undefined)) throw archiveError("invalid");
   const flagNames = {
@@ -106,11 +92,12 @@ async function traceCommand(args, journal) {
 }
 
 async function main() {
+  const help = portableHelp(process.argv.slice(2));
+  if (help) return help;
   if (["trace-status", "trace", "traces", "trace-summary", "report-outcome"].includes(process.argv[2])) {
     return traceCommand(process.argv.slice(2), operationContext.getStore().journal);
   }
   const { command, value, options } = parseArgs(process.argv.slice(2));
-  if (command === "help") return help;
   loadEnvLocal();
   if (["validate", "import"].includes(command)) {
     let input;
@@ -158,6 +145,11 @@ async function main() {
 }
 
 loadEnvLocal();
-runTracedCli("tbrain_cli", process.argv[2] || "help", process.argv.slice(2), main).then(result=>console.log(JSON.stringify(result,null,2))).catch(error=>{
-  console.error(JSON.stringify({state:"failed",saved:false,...(error.validation??{}),error:{code:errorCode(error)}}));process.exitCode=1;
+const args = process.argv.slice(2);
+const operation = !args.length || args[0] === "help" || args.some(arg => ["--help", "-h"].includes(arg)) ? "help" : args[0];
+runTracedCli("tbrain_cli", operation, args, main).then(result=>console.log(JSON.stringify(result,null,2))).catch(error=>{
+  const code = errorCode(error);
+  console.error(JSON.stringify({state:"failed",saved:false,...(error.validation??{}),error:{code,
+    ...(code === "invalid" ? { help: "Run node scripts/tbrain.mjs --help, then COMMAND --help for its arguments and JSON format." } : {}),
+  }}));process.exitCode=1;
 });

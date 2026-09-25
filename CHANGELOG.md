@@ -4,6 +4,27 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.39.0
+
+2026-09-25
+
+**Tools**
+
+- Every portable Tbrain command now accepts `--help` or `-h`, and `help COMMAND` works too.
+  Help explains arguments, limits, paging, and authorization without opening the database or reading an input file.
+- Help for `validate` and `import` shows the accepted capture-file format.
+  Help for `report-outcome` shows the accepted caller-report format.
+  Both formats come from the same rules that check the input.
+  Optional fields remain optional.
+- Invalid arguments point to help without repeating private values.
+  Traces label help requests as help rather than attempted saves.
+
+**Docs**
+
+- The Tbrain guide shows examples of command help.
+
+---
+
 ## v0.38.0
 
 2026-09-25

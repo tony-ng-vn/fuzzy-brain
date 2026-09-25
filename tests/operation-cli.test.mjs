@@ -43,6 +43,24 @@ test("portable CLI traces offline help and invalid input without changing stdout
   assert.doesNotMatch(JSON.stringify(traces), /PRIVATE QUERY/);
 });
 
+test("command help is traced as help and never executes the requested write", async t => {
+  const { journal, env } = await setup(t);
+  for (const args of [["import", "/PRIVATE_MISSING_FILE", "--authorize", "--help"], ["report-outcome", "/PRIVATE_MISSING_FILE", "-h"], ["help", "evidence"]]) {
+    const response = await run("tbrain.mjs", args, env);
+    assert.equal(response.code, 0);
+    assert.equal(JSON.parse(response.stdout).state, "help");
+    assert.equal(response.stderr, "");
+  }
+  const { traces } = await journal.list();
+  assert.equal(traces.length, 3);
+  for (const trace of traces) {
+    assert.equal(trace.start.operation, "help");
+    assert.equal(trace.finish.outcome, "success");
+  }
+  assert.deepEqual((await journal.listReports()).reports, []);
+  assert.doesNotMatch(JSON.stringify(traces), /PRIVATE_MISSING_FILE/);
+});
+
 test("controlled memory CLI records its input fingerprint and committed output identifiers", async t => {
   const database = await createTbrainTestDatabase();
   t.after(() => database.close());

@@ -5,6 +5,20 @@ Do not load all history as a default.
 Both MCP servers return JSON text and structured results for compatible clients.
 Discover the live tool list because a running client can still have an older server process after a runtime update.
 
+For the portable command, run `node scripts/tbrain.mjs --help` to list commands.
+Use `node scripts/tbrain.mjs evidence --help` or `node scripts/tbrain.mjs help evidence` for one command's arguments, limits, and continuation rules.
+Every command also accepts `-h`.
+Help works without the memory database and does not read a supplied input file or execute the requested operation.
+For example, `node scripts/tbrain.mjs import /path/to/day.json --authorize --help` only returns help.
+Trace records label this as a help request.
+
+`validate --help` and `import --help` include the accepted portable transfer JSON schema.
+`report-outcome --help` includes the caller report schema and explains the required operation or workflow identifier.
+`search --help` and `evidence --help` include their input schemas, with underscore names corresponding to hyphenated command flags.
+These schemas describe accepted inputs, so defaulted fields remain optional.
+Cross-field validation and source permissions still apply when making the actual request.
+Invalid arguments return a help pointer without repeating the rejected values.
+
 ## Find and check a memory
 
 Call `recall` with a natural-language question.
