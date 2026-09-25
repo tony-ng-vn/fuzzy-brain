@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { createOperationJournal } from "../scripts/lib/operation-journal.mjs";
+import { logCaptureFailure, runSessionCapture } from "../scripts/ingest-sessions.mjs";
 
 async function setup(t) {
   const home = await mkdtemp(join(tmpdir(), "tbrain-capture-outcome-"));
@@ -77,4 +78,25 @@ test("capture help and invalid options return before loading capture configurati
   const traces = (await journal.list()).traces;
   assert.equal(traces.length, 2);
   assert.equal(traces.find(item => item.start.operation === "session_capture").finish.error_code, "invalid");
+});
+
+test("a failed source and a failed error logger cannot stop the other source", () => {
+  const calls = [];
+  const result = runSessionCapture({ settledHours: 24 }, {
+    claude() { calls.push("claude"); throw new Error("PRIVATE failure"); },
+    codex() { calls.push("codex"); return { failed: 0, ingested: 3, evidenceRows: 7 }; },
+    onError() { throw new Error("PRIVATE logger failure"); },
+  });
+  assert.deepEqual(calls, ["claude", "codex"]);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failed_sources, ["claude"]);
+  assert.equal(result.capture_sources.codex.evidenceRows, 7);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+});
+
+test("capture error logs contain a safe category and count without child output", t => {
+  const lines = [];
+  t.mock.method(console, "error", value => lines.push(value));
+  logCaptureFailure("batch", { code: "PRIVATE CODE", message: "PRIVATE MESSAGE", stdout: "PRIVATE OUTPUT" }, 8);
+  assert.deepEqual(JSON.parse(lines[0]), { event: "session_capture.failed", stage: "batch", error_code: "unavailable", count: 8 });
 });
