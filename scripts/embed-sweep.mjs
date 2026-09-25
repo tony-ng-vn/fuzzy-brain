@@ -5,7 +5,7 @@
 // "embedding is null" guard means a filled row can never be touched again).
 // Writes stay OUT of brain.mjs's verbs and the ingest pipeline on purpose:
 // the capture path stays lean and model-free, and this catches up after.
-// BRAIN_SCHEMA=brain_dev targets the sandbox. --limit N caps rows per table.
+// BRAIN_SCHEMA=brain_dev targets the sandbox. --limit N caps the combined rows.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -73,20 +73,27 @@ export async function runEmbeddingSweep(client, { schema = "public", scope = {},
   const tables = schemaTables(schema);
   const selected = Boolean(resolved.scope.source_id || resolved.scope.receipt_id);
   const filter = resolved.episodeId ? " and v.episode_id=$2" : resolved.scope.source_id ? " and e.source_id=$2" : "";
+  const nodeOptions = {
+    label: "nodes",
+    selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc,id limit $1`,
+    updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
+    toText: nodeText, embed,
+  };
+  // A large archive must not consume every slot before saved thoughts get a turn.
+  const nodeShare = limit === null ? null : Math.ceil(limit / 2);
+  let nodes = selected ? 0 : await sweepTable(client, { ...nodeOptions, limit: nodeShare });
   const evidence = await sweepTable(client, {
     label: "evidence",
     selectSql: `select v.id, v.quote from ${tables.evidence} v join ${tables.episodes} e on e.id=v.episode_id
       where v.embedding is null${filter} order by v.ingested_at desc,v.id limit $1`,
     updateSql: `update ${tables.evidence} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
     selectValues: selected ? [resolved.episodeId ?? resolved.scope.source_id] : [],
-    toText: row => row.quote, limit, embed,
+    toText: row => row.quote, limit: remainingLimit(limit, nodes), embed,
   });
-  const nodes = selected ? 0 : await sweepTable(client, {
-    label: "nodes",
-    selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc,id limit $1`,
-    updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
-    toText: nodeText, limit: remainingLimit(limit, evidence), embed,
-  });
+  const unused = remainingLimit(limit, evidence + nodes);
+  if (!selected && limit !== null && nodes === nodeShare && unused > 0) {
+    nodes += await sweepTable(client, { ...nodeOptions, limit: unused });
+  }
   return { evidence, nodes };
 }
 
