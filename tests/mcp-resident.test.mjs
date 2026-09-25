@@ -73,7 +73,7 @@ test("recall returns the documented shape without a CLI in the middle", async ()
   assert.equal(result.note, "approved nodes matched; inspect their content before using them to answer");
   assert.equal(result.hits.length, 1);
   assert.deepEqual(Object.keys(result.hits[0]).sort(), [
-    "body", "created_at", "edges", "layer", "match_strength", "node_id", "score", "title", "type", "via_edge",
+    "body", "body_length", "body_truncated", "created_at", "edges", "layer", "match_strength", "node_id", "read", "score", "title", "type", "via_edge",
   ]);
   assert.equal(result.hits[0].node_id, NODE_ID);
   assert.equal(result.hits[0].layer, "node");
@@ -255,4 +255,18 @@ test("the pool stays warm after a call and goes cold once nobody asks", async (t
   assert.equal(pings.length, warmPings + 1);
 
   await pool.close();
+});
+
+
+test("node previews preserve source text and point to their full record", async () => {
+  for (const body of ["  exact whitespace  ", "x".repeat(699) + "\uD83D\uDE00" + "tail"]) {
+    const result = await recall("walnut desk", {
+      client: fakeBrain({ nodeRows: [{ ...NODE_ROW, body }] }), schema: "brain_dev", embedQuery: async () => null,
+    });
+    const hit = result.hits[0];
+    assert.equal(hit.body_length, body.length);
+    assert.equal(hit.body_truncated, body.length > 700);
+    assert.equal(hit.body, body.length > 700 ? body.slice(0, 699) : body);
+    assert.deepEqual(hit.read, { tool: "get_node", arguments: { id: NODE_ID } });
+  }
 });

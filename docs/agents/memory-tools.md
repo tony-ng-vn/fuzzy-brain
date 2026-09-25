@@ -48,12 +48,16 @@ For an entire day, use the next midnight minus one microsecond as the inclusive 
 Natural-language calendar ranges remain half-open, as reported by `date_filter.bounds`.
 Filters apply before candidate limits and survive fallback queries.
 
-For a node, use `get_node` on the `fuzzy-brain` server.
+For a node, follow the hit's `read` object through `get_node` on either server.
+The node preview preserves the first 700 UTF-16 code units of its readable text, or one fewer to avoid splitting a character.
+`body_length` reports the full readable length and `body_truncated` tells you whether the preview ends early.
+`get_node` returns the full original words, readable text, deadline, and completion state.
+Use the full record before treating a preview as the complete memory.
 For evidence, follow the hit's `read` object through `read_evidence` on either server.
 That returns the matching passage and one neighboring passage on each side by default.
 Use `context:0` for the matching passage alone, or up to three neighbors on each side.
 
-Recall shows an exact excerpt of up to 700 characters near matching words in a long passage.
+For evidence, recall shows an exact excerpt of up to 700 characters near matching words in a long passage.
 It compares word stems and favors a nearby group of distinct query words.
 When no words match, it shows the beginning, including for a match found only through meaning.
 The excerpt does not prove that the passage answers the question.

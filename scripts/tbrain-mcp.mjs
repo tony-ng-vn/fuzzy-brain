@@ -22,7 +22,7 @@ const FAILURE_MESSAGES = Object.freeze({
   excluded: "This source is excluded from access or capture.",
   unavailable: "Tbrain could not complete this operation.",
   invalid: "The request is invalid.",
-  not_found: "The requested archive record was not found.",
+  not_found: "The requested record was not found.",
 });
 
 function failure(code) {
@@ -60,6 +60,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
   };
   return {
     indexStatus: input => reads.indexStatus(input),
+    getNode: id => reads.getNode(id),
     recall: async (question, filters = {}) => ({
       ...await reads.recall(question, filters),
       archive_coverage: { exhaustive: false, note: "Ranked retrieval includes retained evidence. Use search_archive and source reads to inspect passages and revisions." },
@@ -98,7 +99,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       "Call transfer_format before archive_day and copy one of its authorized_source_ids exactly into source_id. Keep the conversation identity in source_key and source.conversation_id. Never invent a source_id.",
       "Report persistence only after a successful archive_day result. Verify its returned receipt with read_receipt when possible. A prepared transfer is not saved.",
       "Recall ranks existing nodes and source evidence. Use search_archive for explicit lexical and date searches; neither is exhaustive proof of absence.",
-      "Follow a hit's read instruction with read_evidence to inspect the matching passage and neighboring context. Continue long passages with next_text_offset.",
+      "Follow each hit's read instruction. Use get_node for a node's full original and readable text, deadline, and completion state. Use read_evidence for an evidence passage and neighboring context, then next_text_offset for long passages.",
       "Use prepare_capture to build a partial transfer from supplied messages without inventing metadata, or validate_transfer to check a hand-built packet offline. Neither tool saves or authorizes it.",
       "Repeated summaries are not independent evidence. Silence does not prove absence. Keep uncertainty and corrections visible, and report unavailable retrieval plainly.",
       "Passages sharing observation_group come from one conversation or source. Neighboring context covers the saved episode, which may be a conversation fragment. A null message date stays unknown; recall date_filter_basis distinguishes message dates from source context.",
@@ -126,6 +127,8 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
   }));
   register("recall", "Rank relevant memories and evidence across history. Optionally restrict by layer, source_id, role, or exact from/until timestamps. Source and role filters select evidence; explicit dates require message timestamps and override inferred calendar dates.",
     recallInputShape, ({ question, ...filters }) => services.recall(question, filters));
+  register("get_node", "Read an approved node's full original words, readable text, deadline, and completion state by its recall identifier.",
+    { id: z.uuid() }, ({ id }) => services.getNode(id));
   register("read_evidence", "Read one evidence passage by its recall or search identifier, with bounded neighboring context within the same saved episode. Follow next_text_offset with the same id for long text. Works with legacy and archived evidence.",
     evidenceReadShape, input => services.readEvidence(input));
   register("read_receipt", "Verify one saved archive receipt, its provenance, coverage, and persistence identifiers.", {

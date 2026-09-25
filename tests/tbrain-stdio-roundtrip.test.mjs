@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -70,6 +71,30 @@ test("synthetic Tbrain records survive real stdio delivery, restart, and retries
   let firstReceipt;
   let server = await start({ databaseUrl, sourceId });
   const firstPid = server.pid;
+
+  await t.test("a recalled node opens through this server with exact source layers", async () => {
+    const raw = "  original walnut restoration thought\nwith spacing  ";
+    const body = "Walnut restoration. " + "A synthetic long readable passage. ".repeat(40);
+    const created = spawnSync(process.execPath, ["scripts/brain.mjs", "add-node", "--json-errors"], {
+      encoding: "utf8", input: JSON.stringify({ request_id: randomUUID(), type: "note", title: "Walnut restoration", raw, body }),
+      env: { ...process.env, DATABASE_URL: databaseUrl, DATABASE_URL_DEV: databaseUrl, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "0" },
+    });
+    assert.equal(created.status, 0);
+    const node = JSON.parse(created.stdout);
+    assert.equal(node.state, "committed");
+    const recalled = await successfulCall(server, "recall", { question: "walnut restoration", layer: "nodes" });
+    const hit = recalled.hits.find(hit => hit.node_id === node.id);
+    assert.ok(hit);
+    assert.equal(hit.body_length, body.length);
+    assert.equal(hit.body_truncated, true);
+    assert.equal(hit.body, body.slice(0, 700));
+    assert.equal(hit.read.tool, "get_node");
+    const opened = await successfulCall(server, hit.read.tool, hit.read.arguments);
+    assert.equal(opened.raw, raw);
+    assert.equal(opened.body, body);
+    assert.equal(opened.status, "active");
+    assert.equal(opened.due_at, null);
+  });
 
   await t.test("offline preparation and validation work over the real transport", async () => {
     const prepared = await successfulCall(server, "prepare_capture", {
