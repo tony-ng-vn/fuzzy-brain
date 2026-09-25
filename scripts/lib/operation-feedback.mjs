@@ -30,6 +30,8 @@ export function summarizeOperations(traces, reports) {
     return result;
   };
   const percentile = fraction => durations.length ? durations[Math.ceil(durations.length * fraction) - 1] : null;
+  const replies = traces.filter(t => ["tbrain_mcp", "fuzzy_brain_mcp"].includes(t.start.entry_point) && t.finish);
+  const deliveryState = trace => trace.delivery?.state ?? trace.finish.delivery;
   return {
     operations: traces.length,
     diagnostics: { operations: diagnostics.length, incomplete: diagnostics.filter(t => !t.finish).length,
@@ -38,8 +40,9 @@ export function summarizeOperations(traces, reports) {
     errors: count(traces, t => t.finish?.error_code),
     empty_retrievals: traces.filter(t => ["recall", "search_archive", "search"].includes(t.start.operation) && t.finish?.output.hit_count === 0).length,
     degraded_retrievals: traces.filter(t => t.finish?.output.degraded === true).length,
-    failed_deliveries: traces.filter(t => t.delivery?.state === "failed").length,
-    unconfirmed_deliveries: traces.filter(t => t.finish && !t.delivery).length,
+    failed_deliveries: replies.filter(t => deliveryState(t) === "failed").length,
+    unconfirmed_deliveries: replies.filter(t => !["sent", "failed"].includes(deliveryState(t))).length,
+    failed_stages: count(traces.flatMap(t => t.finish?.output.failed_stages ?? []), stage => stage),
     caller_reports: reports.length, findings: count(reports, r => r.finding),
     by_release: count(traces, t => t.start.release ?? "unknown"),
     by_operation: count(traces, t => t.start.operation),
