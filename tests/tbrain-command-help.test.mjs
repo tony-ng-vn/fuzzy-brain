@@ -27,7 +27,7 @@ test("every portable command explains its use without storage or input files", (
   }
 });
 
-test("file-writing commands expose the actual JSON format without reading a supplied file", () => {
+test("file commands expose the actual JSON format without reading a supplied file", () => {
   for (const command of ["validate", "import", "report-outcome"]) {
     const result = cli([command, "/PRIVATE_MISSING_FILE", "--help"]);
     assert.equal(result.status, 0);
@@ -40,6 +40,10 @@ test("file-writing commands expose the actual JSON format without reading a supp
   const report = JSON.parse(cli(["report-outcome", "--help"]).stdout);
   assert.ok(report.input_schema.properties.finding.enum.includes("incomplete_readback"));
   assert.match(report.note, /operation_id.*workflow_id/);
+  assert.deepEqual(report.input_schema.required, ["stage", "outcome", "finding"]);
+  const evidence = JSON.parse(cli(["evidence", "--help"]).stdout);
+  assert.deepEqual(evidence.input_schema.required, ["id"]);
+  assert.equal(evidence.input_schema.properties.text_offset.maximum, Number.MAX_SAFE_INTEGER);
 });
 
 test("unknown commands remain invalid and point to offline help without echoing input", () => {
