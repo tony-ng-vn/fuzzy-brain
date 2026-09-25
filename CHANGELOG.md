@@ -4,6 +4,18 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.44.1
+
+2026-09-25
+
+**Tools**
+
+- Reading a long saved session no longer stops when a continuation passes five million characters.
+  Whole-source reads now accept any nonnegative position the system can represent exactly, while each reply stays within 12,000 characters.
+- Storage, the memory connection, the portable command, and offline source help now use the same position rule.
+
+---
+
 ## v0.44.0
 
 2026-09-25

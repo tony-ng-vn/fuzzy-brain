@@ -230,3 +230,12 @@ It creates an index without rewriting nodes or rerunning historical data changes
 The index stores a fixed-size hash of each lowercase title, and recall also compares the full title before accepting a match.
 This keeps long titles within index entry limits and prevents a hash collision from becoming a false match.
 Recall remains correct before the index is installed, but title lookup can require a table scan.
+
+
+## Continue long source reads
+
+Use `read_source` with a receipt or episode ID to inspect retained source text.
+Follow `next_offset` with the same ID until it returns null.
+The offset counts UTF-16 code units and accepts nonnegative safe integers, so long session sources remain readable beyond five million characters.
+Each reply still contains at most 12,000 code units, with 8,000 by default.
+The portable `source` command uses the same bounds, and `source --help` includes the input schema.
