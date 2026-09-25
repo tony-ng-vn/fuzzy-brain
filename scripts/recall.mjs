@@ -29,7 +29,7 @@
 // prove: classify what the hits amount to, honestly:
 //   supported    a ratified node carries it (brain truth, node named)
 //   conflicting  ratified nodes disagree -- detected ONLY through a ratified
-//                contradicts-edge why; the machine never infers disagreement
+//                explicit contradicts: why between returned nodes
 //   evidence     only unratified evidence carries it -- always labeled
 //   partial      fragments surfaced but no direct answer
 //   missing      nothing relevant at all
@@ -835,10 +835,10 @@ export function classifyState(candidates) {
   const strongNodes = candidates.filter((c) => c.layer === "node" && isStrongHit(c));
   const strongEvidence = candidates.filter((c) => c.layer === "evidence" && isStrongHit(c));
   if (candidates.length === 0) return "missing";
-  // Disagreement is never inferred by the machine: it counts only when Tony
-  // ratified it himself, as a contradicts-flavored why on an edge touching
-  // a strong node hit (the why vocabulary from the companion skill).
-  if (strongNodes.some((n) => (n.edges ?? []).some((e) => /contradict/i.test(e.why)))) return "conflicting";
+  const shownNodes = new Set(candidates.filter(c => c.layer === "node").map(c => c.row.id).filter(Boolean));
+  // Free-form mentions can negate disagreement; only an explicit approved label counts.
+  if (strongNodes.some(n => (n.edges ?? []).some(e => /^\s*contradicts\s*:\s*\S/i.test(e.why)
+    && e.source !== e.target && shownNodes.has(e.source) && shownNodes.has(e.target)))) return "conflicting";
   if (strongNodes.length > 0) return "supported";
   if (strongEvidence.length > 0) return "evidence";
   return "partial";
@@ -846,7 +846,7 @@ export function classifyState(candidates) {
 
 const STATE_NOTES = {
   supported: "approved nodes matched; inspect their content before using them to answer",
-  conflicting: "ratified nodes disagree; both sides shown, neither picked",
+  conflicting: "returned approved nodes have an explicit contradiction link; inspect both before answering",
   evidence: "unratified evidence only -- what a source captured, not brain truth",
   partial: "partial matches returned; they may not answer the question",
   missing: "no relevant matches in this bounded search; missing results do not prove absence",
@@ -872,7 +872,9 @@ function toJsonHit(c, question) {
       score,
       match_strength,
       via_edge: c.via ? { from_title: c.via.from_title, why: c.via.why } : null,
-      edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
+      edges: (c.edges ?? []).map(e => ({ source_id: e.source, target_id: e.target,
+        source_title: e.source_title, target_title: e.target_title, why: e.why,
+        read: { tool: "get_node", arguments: { id: e.source === c.row.id ? e.target : e.source } } })),
     };
   }
   const occurredAt = c.archive ? c.archive.message?.at ?? null : c.row.occurred_at ?? null;

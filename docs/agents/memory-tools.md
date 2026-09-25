@@ -57,6 +57,18 @@ The node preview preserves the first 700 UTF-16 code units of its readable text,
 `body_length` reports the full readable length and `body_truncated` tells you whether the preview ends early.
 `get_node` returns the full original words, readable text, deadline, and completion state.
 Use the full record before treating a preview as the complete memory.
+Each returned connection includes `source_id`, `target_id`, and a `read` instruction for the other node.
+Follow that instruction when the connection matters, even if the other node is absent from the ranked results.
+That direct read does not inherit the original recall date filters.
+
+Recall labels a result `conflicting` only when an approved connection starts with `contradicts:` and both distinct nodes appear in the results.
+At least one of those nodes must be a strong match.
+This is a conservative label check, not an interpretation of free-form connection text.
+A sentence such as "these memories do not contradict" does not trigger the label.
+Other approved wording remains unchanged and visible for inspection.
+Missing the label does not prove that no disagreement exists.
+The `supported` label means approved nodes matched, not that they settle the question.
+
 For evidence, follow the hit's `read` object through `read_evidence` on either server.
 That returns the matching passage and one neighboring passage on each side by default.
 Use `context:0` for the matching passage alone, or up to three neighbors on each side.
