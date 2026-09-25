@@ -12,6 +12,41 @@ async function journal(t) {
 }
 const details = { entry_point: "tbrain_mcp", operation: "recall", release: "0.31.0", input: { question: "PRIVATE QUERY", role: "user" } };
 
+const crowdedReferences = () => Array.from({ length: 100 }, () => ({
+  id: "11111111-1111-4111-8111-111111111111", raw: "PRIVATE SOURCE",
+  evidence_ids: Array(100).fill("22222222-2222-4222-8222-222222222222"),
+  node_ids: Array(100).fill("33333333-3333-4333-8333-333333333333"),
+}));
+
+test("large nested identifier lists cannot prevent a request trace from being saved", async t => {
+  const { store } = await journal(t);
+  const started = await store.start({ ...details, input: crowdedReferences() });
+  assert.equal(started.recorded, true);
+  const saved = await store.read(started.id);
+  assert.equal(saved.start.input.item_count, 100);
+  assert.equal(saved.start.input.items.length, 100);
+  assert.equal(saved.start.input.references_truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(saved.start)) <= 128 * 1024);
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE/);
+});
+
+test("large result identifier lists keep the operation outcome and all-item failure count", async t => {
+  const { store } = await journal(t);
+  const started = await store.start(details);
+  const result = crowdedReferences();
+  result.push({ error: "invalid" });
+  const finished = await store.finish(started.id, { result });
+  assert.equal(finished.recorded, true);
+  const saved = await store.read(started.id);
+  assert.equal(saved.finish.outcome, "error");
+  assert.equal(saved.finish.output.failed_item_count, 1);
+  assert.equal(saved.finish.output.item_count, 101);
+  assert.equal(saved.finish.output.items.length, 100);
+  assert.equal(saved.finish.output.references_truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(saved.finish)) <= 128 * 1024);
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE/);
+});
+
 test("a trace survives reopening and distinguishes an unfinished request from a result", async t => {
   const { store, directory } = await journal(t);
   const started = await store.start(details);
