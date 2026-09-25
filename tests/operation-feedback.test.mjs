@@ -128,3 +128,27 @@ test("summary counts each failed background step once per run without copying er
   assert.deepEqual(summary.failed_stages, { ingest: 1, embedding: 2 });
   assert.equal(JSON.stringify(summary).includes("PRIVATE"), false);
 });
+
+
+test("feedback distinguishes expected and used nodes from source evidence", async t => {
+  const journal = await setup(t);
+  const operation = await journal.start({ operation: "recall" });
+  await journal.finish(operation.id, { result: { hits: [] }, duration_ms: 1 });
+  const expected = randomUUID(), used = randomUUID(), evidence = randomUUID();
+  const input = { operation_id: operation.id, stage: "retrieval", outcome: "partial", finding: "missing_expected_node",
+    expected_node_ids: [expected], used_node_ids: [used], expected_evidence_ids: [evidence], used_evidence_ids: [evidence] };
+  const receipt = await journal.report(input);
+  const saved = await journal.readReport(receipt.id);
+  for (const key of ["expected_node_ids", "used_node_ids", "expected_evidence_ids", "used_evidence_ids"]) assert.deepEqual(saved[key], input[key]);
+  assert.equal(saved.attribution, "caller_reported");
+  assert.equal((await journal.read(operation.id)).finish.outcome, "success");
+  assert.equal((await journal.summary()).findings.missing_expected_node, 1);
+  for (const key of ["expected_node_ids", "used_node_ids"]) {
+    await assert.rejects(journal.report({ ...input, [key]: ["PRIVATE NODE TEXT"] }), error => error.code === "invalid");
+    await assert.rejects(journal.report({ ...input, [key]: Array.from({ length: 21 }, () => randomUUID()) }), error => error.code === "invalid");
+  }
+  const legacy = await journal.report({ operation_id: operation.id, stage: "reasoning", outcome: "unknown", finding: "none" });
+  const unchanged = await journal.readReport(legacy.id);
+  assert.deepEqual(unchanged.expected_node_ids, []);
+  assert.deepEqual(unchanged.used_node_ids, []);
+});

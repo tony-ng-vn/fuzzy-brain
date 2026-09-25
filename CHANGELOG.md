@@ -4,6 +4,19 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.43.0
+
+2026-09-25
+
+**Tools**
+
+- Both memory servers and the portable `report-outcome` command can now record which approved nodes a caller expected and which it used, separately from evidence passages.
+  The `missing_expected_node` category lets a caller report that recall missed a known node.
+- These reports remain unverified caller claims outside approved memory.
+  Each list accepts up to 20 node IDs in UUID format, and older callers can leave the lists out so they default to empty.
+
+---
+
 ## v0.42.0
 
 2026-09-25

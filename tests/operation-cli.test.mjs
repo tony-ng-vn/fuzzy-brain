@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,4 +142,21 @@ test("a partly failed session batch keeps committed identifiers and reports the 
   assert.doesNotMatch(JSON.stringify(trace), /PRIVATE/);
   const rows = await database.client.query("select count(*)::int n from brain_dev.evidence");
   assert.equal(rows.rows[0].n, 1);
+});
+
+
+test("portable feedback records node references separately from evidence", async t => {
+  const { directory, env, journal } = await setup(t);
+  const nodeId = randomUUID(), evidenceId = randomUUID();
+  const input = { workflow_id: randomUUID(), stage: "reasoning", outcome: "succeeded", finding: "none",
+    expected_node_ids: [nodeId], used_node_ids: [nodeId], used_evidence_ids: [evidenceId] };
+  const path = join(directory, "feedback.json");
+  await writeFile(path, JSON.stringify(input));
+  const result = await run("tbrain.mjs", ["report-outcome", path], env);
+  assert.equal(result.code, 0, result.stderr);
+  const saved = await journal.readReport(JSON.parse(result.stdout).id);
+  assert.deepEqual(saved.expected_node_ids, [nodeId]);
+  assert.deepEqual(saved.used_node_ids, [nodeId]);
+  assert.deepEqual(saved.used_evidence_ids, [evidenceId]);
+  assert.equal(saved.attribution, "caller_reported");
 });
