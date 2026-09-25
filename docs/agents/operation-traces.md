@@ -79,7 +79,7 @@ It does not rewrite the original server records.
 ## Report what worked or failed
 
 Use `report_outcome` for a concrete outcome from capture, verification, retrieval, reasoning, request construction, or setup.
-The report accepts structured categories and evidence identifiers.
+The report accepts structured categories, approved node identifiers, and source evidence identifiers.
 It does not retain free-form notes, source quotations, or private internal reasoning.
 
 Keep these checks separate.
@@ -104,6 +104,14 @@ For example, this synthetic report describes that distinction.
   "observed_at": null
 }
 ```
+
+Use `expected_node_ids` for approved nodes a search should have returned, and `used_node_ids` for nodes you used to answer.
+Use `expected_evidence_ids` and `used_evidence_ids` for source passages.
+Each list accepts at most 20 UUIDs and defaults to an empty list when omitted.
+For a missing approved node, use `finding:"missing_expected_node"`.
+Node identifiers and evidence identifiers stay separate even if a caller submits the same UUID in both lists.
+Tbrain records these references without claiming the records exist, the caller read them, or they support the answer.
+The report does not approve any new meaning or change the original operation's result.
 
 Use actual returned identifiers in a real report.
 Unknown observation times stay null.
