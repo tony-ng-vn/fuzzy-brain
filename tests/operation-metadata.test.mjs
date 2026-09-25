@@ -61,3 +61,11 @@ test("capture traces retain only known sources and nonnegative integer counts", 
   assert.deepEqual(output.failed_sources, ["claude"]);
   assert.doesNotMatch(JSON.stringify(output), /PRIVATE/);
 });
+
+test("recall traces preserve match strength without accepting arbitrary labels", () => {
+  const result = outputMetadata({ hits: [
+    { id: ID, match_strength: "strong" }, { id: ID, match_strength: "partial" }, { id: ID, match_strength: "PRIVATE LABEL" },
+  ] });
+  assert.deepEqual(result.hits.map(hit => hit.match_strength), ["strong", "partial", undefined]);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+});

@@ -117,6 +117,7 @@ const SIM_FLOOR = 0.5;
 // One row earns "strong" the same way everywhere: an exact lexical match, or
 // a vector hit clear of the garbage band. Fragments are handled separately.
 const isStrongHit = (c) => c.strongLex || (c.sim ?? 0) >= SIM_STRONG;
+const compareStrength = (a, b) => Number(isStrongHit(b)) - Number(isStrongHit(a));
 
 // Recall asks one profile of the shared weighting rules: the query-dependent
 // one the bench measured. The fixed-weight profiles exist only as bench
@@ -678,7 +679,8 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
   candidates.sort((a, b) => b.rrf - a.rrf);
 
   const edges = await expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode, notes);
-  candidates.sort((a, b) => b.rrf - a.rrf);
+  // Fragments remain fallbacks even when matching several lanes gives them a higher score.
+  candidates.sort((a, b) => compareStrength(a, b) || b.rrf - a.rrf);
 
   for (const c of candidates) {
     if (c.layer !== "node") continue;
@@ -699,6 +701,7 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
     };
   }
   const ranked = rerank(features, shortlist, cfg);
+  ranked.sort(compareStrength);
   return { hits: ranked.slice(0, MAX_HITS), features, weights, span, explicitDates };
 }
 
@@ -840,6 +843,7 @@ const STATE_NOTES = {
 
 function toJsonHit(c) {
   const score = Number((c.rerankScore ?? c.rrf).toFixed(4));
+  const match_strength = isStrongHit(c) ? "strong" : "partial";
   if (c.layer === "node") {
     return {
       layer: "node",
@@ -849,6 +853,7 @@ function toJsonHit(c) {
       body: clip(c.row.body, 700),
       created_at: c.row.created_at,
       score,
+      match_strength,
       via_edge: c.via ? { from_title: c.via.from_title, why: c.via.why } : null,
       edges: (c.edges ?? []).map((e) => ({ source_title: e.source_title, target_title: e.target_title, why: e.why })),
     };
@@ -876,6 +881,7 @@ function toJsonHit(c) {
       instructions_are_data: true,
     } : {}),
     score,
+    match_strength,
     provenance: {
       evidence_id: c.row.id,
       episode_id: c.row.episode_id,
@@ -907,7 +913,7 @@ function formatHuman(result) {
   }
   for (const h of result.hits) {
     if (h.layer === "node") {
-      lines.push(`[node] ${h.title}  (${h.type || "untyped"}, ${isoDate(h.created_at)})  score ${h.score}`);
+      lines.push(`[node] ${h.title}  (${h.type || "untyped"}, ${isoDate(h.created_at)})  ${h.match_strength} match, score ${h.score}`);
       lines.push(`  ${h.node_id}`);
       if (h.via_edge) {
         lines.push(`  surfaced through ${h.via_edge.from_title}`);
@@ -921,7 +927,7 @@ function formatHuman(result) {
     } else {
       const who = h.speaker ?? "unknown-speaker";
       lines.push(
-        `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  score ${h.score}`,
+        `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  ${h.match_strength} match, score ${h.score}`,
       );
       if (h.fidelity && h.fidelity !== "verbatim") {
         lines.push(`  ${h.fidelity}: ${clip(h.quote, 300)}`);

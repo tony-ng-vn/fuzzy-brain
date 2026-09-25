@@ -73,10 +73,11 @@ test("recall returns the documented shape without a CLI in the middle", async ()
   assert.equal(result.note, "approved nodes matched; inspect their content before using them to answer");
   assert.equal(result.hits.length, 1);
   assert.deepEqual(Object.keys(result.hits[0]).sort(), [
-    "body", "created_at", "edges", "layer", "node_id", "score", "title", "type", "via_edge",
+    "body", "created_at", "edges", "layer", "match_strength", "node_id", "score", "title", "type", "via_edge",
   ]);
   assert.equal(result.hits[0].node_id, NODE_ID);
   assert.equal(result.hits[0].layer, "node");
+  assert.equal(result.hits[0].match_strength, "strong");
 });
 
 test("recall says so in the note when the model cannot load, and still answers", async () => {

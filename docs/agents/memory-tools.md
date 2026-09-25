@@ -9,6 +9,12 @@ Discover the live tool list because a running client can still have an older ser
 
 Call `recall` with a natural-language question.
 It ranks approved nodes and unratified evidence together and labels their different authority.
+Each hit has `match_strength` set to `strong` or `partial`.
+Strong matches satisfy the full-word query or the existing semantic relevance threshold.
+They appear before partial matches, both when choosing candidates and in the final results.
+Partial matches remain available as leads when there are fewer than ten strong matches.
+Use the returned order rather than sorting by `score` alone, because a partial match can have a larger score than a strong match.
+Match strength describes retrieval, not whether the passage supports an answer or has the user's approval.
 Both memory servers accept the same optional `layer`, `source_id`, `role`, `from`, and `until` arguments.
 Use `layer:"nodes"` for approved memories or `layer:"evidence"` for source passages.
 Source and role filters select evidence automatically because approved nodes do not have those source fields.
