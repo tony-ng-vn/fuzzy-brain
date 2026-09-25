@@ -24,10 +24,25 @@ function resultError(message, value) {
 export function traceTransport(transport, { journal, entryPoint, release }) {
   const pending = new Map();
   const connectionId = randomUUID();
-  let caller = null, closed = false;
+  let caller = null, closed = false, closing = null;
+  const active = new Set();
   const previousClose = transport.onclose;
   const previousError = transport.onerror;
   const safely = action => attemptTrace(action, { onTimeout: () => journal.markTimeout?.() });
+  const track = work => {
+    active.add(work);
+    work.finally(() => active.delete(work)).catch(() => {});
+    return work;
+  };
+  const closeRecords = () => {
+    if (closing) return closing;
+    closed = true;
+    pending.clear();
+    closing = safely(() => Promise.allSettled([...active])).then(() => {
+      try { previousClose?.(); } finally { traced.onclose?.(); }
+    });
+    return closing;
+  };
   const traced = {
     get sessionId() { return transport.sessionId; },
     async start() {
@@ -46,7 +61,9 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
         operationContext.run({ journal, id: start.id, workflowId: message.params?._meta?.["tbrain/workflow_id"] },
           () => traced.onmessage?.(message, extra));
       };
-      transport.onclose = () => { closed = true; pending.clear(); previousClose?.(); traced.onclose?.(); };
+      const receive = transport.onmessage;
+      transport.onmessage = (...args) => track(receive(...args));
+      transport.onclose = closeRecords;
       transport.onerror = error => { previousError?.(error); traced.onerror?.(error); };
       await transport.start();
     },
@@ -82,7 +99,9 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
       }
       if (finished.recorded) await safely(() => journal.recordDelivery(operation.id, "sent"));
     },
-    async close() { closed = true; await transport.close(); },
+    async close() { closed = true; await transport.close(); await closeRecords(); },
   };
+  const send = traced.send;
+  traced.send = (...args) => track(send(...args));
   return traced;
 }

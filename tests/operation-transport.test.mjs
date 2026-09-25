@@ -20,7 +20,7 @@ async function connect(t, kind, overrides = {}, providedJournal) {
   const client = new Client({ name: "codex", version: "1.0.0" });
   const [left, right] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(traceTransport(right, { journal, entryPoint: `${kind}_mcp`, release: "0.31.0" })), client.connect(left)]);
-  t.after(() => client.close());
+  t.after(async () => { await client.close(); await server.close(); });
   return { client, journal, directory };
 }
 
