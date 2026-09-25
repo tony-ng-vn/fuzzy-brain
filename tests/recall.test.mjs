@@ -288,6 +288,7 @@ test("recall: hybrid find and epistemic answer states", async (t) => {
       });
       assert.match(out, /unratified/i);
       assert.match(out, /tangerine kayak/);
+      assert.match(out, /strong match/);
     });
   } finally {
     // brain_dev-only cleanup, restrict-ordered; edges cascade with nodes.
