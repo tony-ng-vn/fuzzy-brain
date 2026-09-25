@@ -259,6 +259,13 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
     const q = p.bind(ctx.question);
     laneScore = `ts_rank_cd(${a}.fts, websearch_to_tsquery('english', ${q}), ${TEXT_LENGTH_NORMALIZATION})`;
     where = `${a}.fts @@ websearch_to_tsquery('english', ${q})`;
+    if (!isEvidence) {
+      const title = p.bind(ctx.question.trim().replace(/^"([\s\S]*)"$/, "$1"));
+      const exactTitle = `md5(lower(n.title)) = md5(lower(${title})) and lower(n.title) = lower(${title})`;
+      // Literal titles can contain only stopwords; keep them ahead of incidental body matches.
+      laneScore = `case when ${exactTitle} then 1 else ${laneScore} end`;
+      where = `(${where} or (${exactTitle}))`;
+    }
     orderBy = "lane_score desc";
   } else if (mode === "or") {
     const q = p.bind(ctx.orQuery);
