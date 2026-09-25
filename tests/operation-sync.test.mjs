@@ -43,6 +43,8 @@ test("background sync and its independent index child retain linked traces", asy
   assert.equal(child.start.parent_id, parent.id);
   assert.equal(child.finish.outcome, "success");
   await assert.rejects(run(process.execPath, [script, "--misspelled-flag"], { env, timeout: 30000 }), error => error.code === 1);
+  const help = await run(process.execPath, [script, "--help"], { env, timeout: 30000 });
+  assert.equal(JSON.parse(help.stdout).state, "help");
   const after = (await createOperationJournal({ directory }).list({ limit: 100 })).traces;
   assert.equal(after.filter(trace => trace.start.operation === "index_repair").length, 1, "invalid arguments must not start capture or indexing");
 });
