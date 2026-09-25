@@ -240,3 +240,9 @@ No reminders, paid-host commitment, public personal-data endpoint or synthetic p
 Memory calls and portable commands retain private operational records outside the memory database.
 Agents can inspect failures and report expected evidence without adding personal memories.
 See [the operation trace guide](agents/operation-traces.md) for the five diagnostic tools, local storage, and recovery behavior.
+
+## Search indexing
+
+A committed source can still be waiting for semantic indexing.
+Both memory connections expose `index_status` for the whole brain, one source, or one receipt.
+See [Checking search indexing](agents/search-indexing.md) for exact-source fallbacks and bounded local repairs.

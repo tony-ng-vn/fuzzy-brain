@@ -8,7 +8,7 @@ import { createTbrainServer, productionTbrainServices, tbrainRuntimeConfig } fro
 
 const SOURCE_ID = "11111111-1111-4111-8111-111111111111";
 const RECEIPT_ID = "22222222-2222-4222-8222-222222222222";
-const READ_TOOLS = ["prepare_capture", "read_archive", "read_evidence", "read_receipt", "read_source", "recall", "search_archive", "status", "transfer_format", "validate_transfer"];
+const READ_TOOLS = ["index_status", "prepare_capture", "read_archive", "read_evidence", "read_receipt", "read_source", "recall", "search_archive", "status", "transfer_format", "validate_transfer"];
 
 function transfer() {
   return {

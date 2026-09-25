@@ -4,6 +4,26 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.0
+
+2026-09-25
+
+**Tools**
+
+- Both memory connections can now report whether saved passages are still waiting for semantic indexing.
+  The check can cover the whole brain, one source, or one archive receipt.
+- The index repair command can target one source or archive and stop after a chosen number of records.
+  It fills only missing vectors and leaves source text and existing vectors unchanged.
+- Index checks and repairs leave operation traces.
+  Callers can report pending indexing as the reason a search was incomplete.
+- The repair command rejects misspelled flags, duplicate options, and invalid limits before database work.
+
+**Docs**
+
+- The index guide explains how to check a saved archive, use text search while indexing is pending, and repair its missing vectors.
+
+---
+
 ## v0.31.0
 
 2026-09-25

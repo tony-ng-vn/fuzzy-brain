@@ -178,3 +178,9 @@ Both memory servers return a trace identifier with each tool reply.
 Use it to inspect a failure, and report a concrete capture or retrieval outcome through `report_outcome`.
 Server records and caller reports stay separate from approved memory.
 See [the operation trace guide](operation-traces.md) for storage, privacy, workflow identifiers, and commands.
+
+## Check whether a saved source is searchable
+
+Use `index_status` with a known archive `receipt_id` when a saved source is hard to retrieve.
+A pending vector does not prevent text search or source readback.
+See [Checking search indexing](search-indexing.md) for counts, limitations, and bounded repairs.

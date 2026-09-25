@@ -13,6 +13,8 @@ import os, { tmpdir } from "node:os";
 import { schemaTables, makeClient } from "./brain.mjs";
 import { disposeEmbeddingModel, embedDocuments } from "./lib/embeddings.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
+import { parseIndexScope, resolveIndexScope } from "./lib/index-status.mjs";
+import { runTracedCli, recordTraceInput } from "./lib/operation-cli.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -42,13 +44,59 @@ export function remainingLimit(limit, filled) {
   return limit === null ? null : Math.max(0, limit - filled);
 }
 
-export async function sweepTable(client, { label, selectSql, updateSql, toText, limit, embed = embedDocuments }) {
+function validLimit(limit) {
+  if (limit !== null && (!Number.isSafeInteger(limit) || limit <= 0)) {
+    throw Object.assign(new Error("--limit needs a positive integer"), { code: "invalid" });
+  }
+  return limit;
+}
+
+export function parseSweepArgs(args) {
+  const values = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const key = args[i], value = args[i + 1];
+    if (!["--limit", "--source-id", "--receipt-id"].includes(key) || key in values || !value || value.startsWith("--")) {
+      throw Object.assign(new Error("Invalid index repair arguments."), { code: "invalid" });
+    }
+    values[key] = value;
+  }
+  const scope = parseIndexScope({
+    ...(values["--source-id"] ? { source_id: values["--source-id"] } : {}),
+    ...(values["--receipt-id"] ? { receipt_id: values["--receipt-id"] } : {}),
+  });
+  return { scope, limit: validLimit(values["--limit"] === undefined ? null : Number(values["--limit"])) };
+}
+
+export async function runEmbeddingSweep(client, { schema = "public", scope = {}, limit = null, embed = embedDocuments } = {}) {
+  validLimit(limit);
+  const resolved = await resolveIndexScope(client, schema, scope);
+  const tables = schemaTables(schema);
+  const selected = Boolean(resolved.scope.source_id || resolved.scope.receipt_id);
+  const filter = resolved.episodeId ? " and v.episode_id=$2" : resolved.scope.source_id ? " and e.source_id=$2" : "";
+  const evidence = await sweepTable(client, {
+    label: "evidence",
+    selectSql: `select v.id, v.quote from ${tables.evidence} v join ${tables.episodes} e on e.id=v.episode_id
+      where v.embedding is null${filter} order by v.ingested_at desc,v.id limit $1`,
+    updateSql: `update ${tables.evidence} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
+    selectValues: selected ? [resolved.episodeId ?? resolved.scope.source_id] : [],
+    toText: row => row.quote, limit, embed,
+  });
+  const nodes = selected ? 0 : await sweepTable(client, {
+    label: "nodes",
+    selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc,id limit $1`,
+    updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
+    toText: nodeText, limit: remainingLimit(limit, evidence), embed,
+  });
+  return { evidence, nodes };
+}
+
+export async function sweepTable(client, { label, selectSql, selectValues = [], updateSql, toText, limit, embed = embedDocuments }) {
   let filled = 0;
   let stalledPages = 0;
   for (;;) {
     const remaining = limit === null ? EMBED_PAGE_SIZE : Math.min(EMBED_PAGE_SIZE, limit - filled);
     if (remaining <= 0) break;
-    const { rows } = await client.query(selectSql, [remaining]);
+    const { rows } = await client.query(selectSql, [remaining, ...selectValues]);
     if (rows.length === 0) break;
     const pageStart = filled;
 
@@ -87,12 +135,8 @@ export async function sweepTable(client, { label, selectSql, updateSql, toText, 
 
 async function main() {
   loadEnvLocal();
-  const args = process.argv.slice(2);
-  const limitIdx = args.indexOf("--limit");
-  const limit = limitIdx >= 0 ? Number(args[limitIdx + 1]) : null;
-  if (limit !== null && (!Number.isInteger(limit) || limit <= 0)) {
-    throw new Error("--limit needs a positive integer");
-  }
+  const { scope, limit } = parseSweepArgs(process.argv.slice(2));
+  await recordTraceInput({ ...scope, limit });
 
   // Lowest CPU priority, set before the model loads so the inference
   // threads inherit it: the fp32 backfill once saturated every core for
@@ -105,37 +149,22 @@ async function main() {
   }
 
   const schema = process.env.BRAIN_SCHEMA || "public";
-  const tables = schemaTables(schema);
   const releaseSweepLock = acquireSweepLock();
   const client = makeClient();
   const started = Date.now();
   try {
     await client.connect();
-    // Newest first: fresh evidence becomes findable soonest while a long
-    // backfill sweep catches up on history behind it.
-    const evidenceFilled = await sweepTable(client, {
-      label: "evidence",
-      selectSql: `select id, quote from ${tables.evidence} where embedding is null order by ingested_at desc limit $1`,
-      updateSql: `update ${tables.evidence} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
-      toText: (r) => r.quote,
-      limit,
-    });
-    const nodesFilled = await sweepTable(client, {
-      label: "nodes",
-      selectSql: `select id, title, raw, body from ${tables.nodes} where embedding is null order by created_at desc limit $1`,
-      updateSql: `update ${tables.nodes} t set embedding = v.vec::vector from (select unnest($1::uuid[]) as id, unnest($2::text[]) as vec) v where t.id = v.id and t.embedding is null`,
-      toText: nodeText,
-      limit: remainingLimit(limit, evidenceFilled),
-    });
+    const filled = await runEmbeddingSweep(client, { schema, scope, limit });
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     console.log(
       [
         `embed-sweep summary (${schema})`,
-        `  evidence filled ${evidenceFilled}`,
-        `  nodes    filled ${nodesFilled}`,
+        `  evidence filled ${filled.evidence}`,
+        `  nodes    filled ${filled.nodes}`,
         `  wall     ${seconds}s`,
       ].join("\n"),
     );
+    return { indexed_evidence: filled.evidence, indexed_nodes: filled.nodes };
   } finally {
     try {
       await client.end();
@@ -163,7 +192,8 @@ function loadEnvLocal() {
 
 // Only sweep when run directly; importing for tests must not.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
+  loadEnvLocal();
+  runTracedCli("index_cli", "index_repair", process.argv.slice(2), main).catch((err) => {
     console.error(err.message);
     process.exit(1);
   });

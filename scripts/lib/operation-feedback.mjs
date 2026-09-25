@@ -8,7 +8,7 @@ export const outcomeReportShape = {
   outcome: z.enum(["succeeded", "failed", "partial", "unknown"]),
   finding: z.enum(["none", "request_construction", "schema_rejection", "source_identity_conflict", "unavailable_storage",
     "outdated_server", "missing_expected_evidence", "irrelevant_results", "incorrect_attribution", "incomplete_readback",
-    "insufficient_support", "conflicting_evidence", "other"]),
+    "insufficient_support", "conflicting_evidence", "pending_index", "other"]),
   observed_at: z.iso.datetime({ offset: true }).nullable().default(null),
   expected_evidence_ids: z.array(z.uuid()).max(20).default([]),
   used_evidence_ids: z.array(z.uuid()).max(20).default([]),
@@ -17,7 +17,7 @@ export const outcomeReportSchema = z.strictObject(outcomeReportShape).refine(val
   "A report needs an operation or workflow identifier.");
 
 export function summarizeOperations(traces, reports) {
-  const diagnosticNames = new Set(["trace_status", "read_trace", "list_traces", "report_outcome", "trace_summary"]);
+  const diagnosticNames = new Set(["trace_status", "read_trace", "list_traces", "report_outcome", "trace_summary", "index_status"]);
   const diagnostics = traces.filter(t => diagnosticNames.has(t.start.operation));
   traces = traces.filter(t => !diagnosticNames.has(t.start.operation));
   const durations = traces.map(t => t.finish?.duration_ms).filter(value => typeof value === "number").sort((a, b) => a - b);

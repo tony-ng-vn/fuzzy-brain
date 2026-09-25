@@ -1,6 +1,7 @@
 // Portable file entry point. All capture writes still pass through brain.mjs.
 import { runTracedCli, recordTraceInput } from "./lib/operation-cli.mjs";
 import { operationContext } from "./lib/operation-context.mjs";
+import { indexStatus, parseIndexArgs } from "./lib/index-status.mjs";
 import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { inspectTransfer, MAX_TRANSFER_BYTES, digest } from "./lib/tbrain-transfer.mjs";
@@ -13,6 +14,7 @@ import { archiveError, errorCode, readArchive, readReceipt, readSource, searchAr
 const help = {
   state: "help",
   commands: [
+    "index-status [--source-id UUID | --receipt-id UUID]",
     "trace-status", "trace ID [--kind operation|report]", "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports]", "trace-summary [--day DATE] [--limit N]", "report-outcome FILE",
     "validate FILE", "import FILE --authorize", "status", "receipt ID", "verify ID", "export ID",
     "search QUERY [--from ISO] [--until ISO] [--source-id UUID] [--role user|assistant|system|tool|other|unknown] [--offset N] [--limit N]",
@@ -25,6 +27,7 @@ const help = {
 
 function parseArgs(args) {
   const [command = "help", value, ...rest] = args;
+  if (command === "index-status") return { command, options: parseIndexArgs(args.slice(1)) };
   if (["help", "--help", "-h"].includes(command)) return { command: "help" };
   const commands = new Set(["validate", "import", "status", "receipt", "verify", "export", "search", "read", "source", "evidence"]);
   if (!commands.has(command) || (command !== "status" && !value) || (command === "status" && value !== undefined)) throw archiveError("invalid");
@@ -134,6 +137,7 @@ async function main() {
   await client.connect();
   try {
     if(command==="status") return await archiveStatus(client,schema);
+    if(command==="index-status") return await indexStatus(client,schema,options);
     if(command==="read") return await readArchive(client,schema,{id:value,...options});
     if(command==="receipt") return await readReceipt(client,schema,value);
     if(command==="source") return await readSource(client,schema,{id:value,...options});
