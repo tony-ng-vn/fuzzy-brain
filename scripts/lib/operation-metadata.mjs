@@ -94,7 +94,7 @@ export function outputMetadata(value) {
     metadata.items = value.slice(0, 100).map(references);
     metadata.items_truncated = value.length > 100;
   }
-  for (const key of ["saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more"]) {
+  for (const key of ["ok", "saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more"]) {
     if (typeof output[key] === "boolean") metadata[key] = output[key];
   }
   for (const key of ["total_messages", "next_offset", "next_text_offset", "total", "indexed_evidence", "indexed_nodes"]) {
@@ -108,6 +108,10 @@ export function outputMetadata(value) {
     const counts = value => value && ["total", "indexed", "pending"].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
       ? { total: value.total, indexed: value.indexed, pending: value.pending } : null;
     metadata.indexing = { state: output.semantic_index.state, evidence: counts(output.evidence), nodes: counts(output.nodes) };
+  }
+  if (Array.isArray(output.failures)) {
+    metadata.failed_stages = [...new Set(output.failures.map(item => item?.stage)
+      .filter(stage => ["ingest", "watch-items", "embedding"].includes(stage)))];
   }
   if (Array.isArray(output.hits)) {
     metadata.hit_count = output.hits.length;
