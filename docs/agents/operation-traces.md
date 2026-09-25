@@ -29,7 +29,12 @@ Unknown client names are fingerprinted.
 Caller identity is reported by the client, not verified authentication.
 The finish record contains a safe error category or result summary, timing, and available receipt, node, source, and evidence identifiers.
 Batch records also retain up to 100 item identifiers, including session checkpoint IDs, along with saved-item states and evidence counts when returned.
-They count failed items across the complete returned batch, even when the item list is truncated.
+Nested evidence-ID and node-ID lists share a 1,000-identifier allowance across each input or output record, with at most 100 identifiers per list.
+`references_truncated: true` means the trace omitted some list entries.
+Primary identifiers for the retained items remain available, so a caller can use their receipts or checkpoints for a fuller read.
+This prevents a large batch from exceeding the journal's record-size limit and losing its trace.
+An oversized reported client version is omitted rather than preventing a trace.
+Batch summaries count failed items across the complete returned batch, even when the item list is truncated.
 An explicit `ok: false` result or any rejected batch item marks the operation as an error.
 For a partly saved batch, inspect the item records before retrying because other items may already be committed.
 The operation's error category is the first reported item error, while `item_errors` counts every returned rejection category.
