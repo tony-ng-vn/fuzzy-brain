@@ -94,3 +94,44 @@ test("legacy passage reads work without archive tables and preserve original off
   assert.equal(result.evidence.archive_id, null);
   await assert.rejects(readEvidence(db, "brain_dev", { id: evidence, context: 4 }));
 });
+
+test("a long recall passage points both memory servers to the matching source excerpt", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const source = randomUUID();
+  await db.query("insert into brain_dev.sources(id,kind,label) values($1,'agent_read_test','Excerpt test')", [source]);
+  const target = "I understand release automation best when I can explain why a change works.";
+  const text = "unrelated introductory material ".repeat(600) + target + " Some closing context.";
+  const packet = fixture({ source_id: source, source_key: randomUUID(), reflection: null,
+    messages: [{ id: null, role: "user", speaker: null, at: null, fidelity: "verbatim", text }] });
+  const receipt = await importTransfer(db, "brain_dev", packet, { authorized: true, allowedSourceIds: [source] });
+  const result = await recall("understanding release automation", { client: db, schema: "brain_dev", embedQuery: async () => null });
+  const hit = result.hits.find(item => item.provenance?.evidence_id === receipt.evidence_ids[0]);
+  assert.ok(hit);
+  assert.ok(hit.quote.includes(target), "the search excerpt must show the matching words, not only the introduction");
+  assert.ok(hit.quote_offset > 0);
+  assert.ok(hit.quote.length <= 700);
+  assert.equal(hit.quote, text.slice(hit.quote_offset, hit.quote_offset + hit.quote.length));
+  assert.equal(hit.quote_truncated, true);
+  assert.equal(hit.quote_length, text.length);
+  assert.equal(hit.read.arguments.text_offset, hit.quote_offset);
+  const oldSchema = process.env.BRAIN_SCHEMA;
+  process.env.BRAIN_SCHEMA = "brain_dev";
+  t.after(() => { if (oldSchema === undefined) delete process.env.BRAIN_SCHEMA; else process.env.BRAIN_SCHEMA = oldSchema; });
+  const pool = { withClient: fn => fn(db), close: async () => {} };
+  for (const server of [createFuzzyBrainServer(productionServices({ pool })), createTbrainServer(productionTbrainServices({ allowCapture: false, allowedSourceIds: [] }, { pool }))]) {
+    const client = new Client({ name: "excerpt-read-test", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(b), client.connect(a)]);
+    try {
+      const response = await client.callTool({ name: hit.read.tool, arguments: { ...hit.read.arguments, context: 0, text_limit: 700 } });
+      assert.notEqual(response.isError, true);
+      const readback = response.structuredContent;
+      assert.equal(readback.evidence.text, hit.quote);
+      assert.equal(readback.evidence.text_offset, hit.quote_offset);
+      assert.equal(readback.evidence.fidelity, "verbatim");
+      assert.equal(readback.trust, "unratified_evidence");
+    } finally { await client.close(); }
+  }
+});
