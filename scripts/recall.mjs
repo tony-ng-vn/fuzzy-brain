@@ -933,14 +933,16 @@ function formatHuman(result) {
         `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  ${h.match_strength} match, score ${h.score}`,
       );
       if (h.fidelity && h.fidelity !== "verbatim") {
-        lines.push(`  ${h.fidelity}: ${clip(h.quote, 300)}`);
+        lines.push(`  ${h.fidelity}: ${h.quote}`);
       } else {
-        lines.push(`  "${clip(h.quote, 300)}"`);
+        lines.push(`  "${h.quote}"`);
       }
       if (h.archive_provenance) {
         lines.push(`  archive ${h.provenance.archive_id ?? "unknown"}, revision ${h.revision ?? "unknown"}, role ${h.role}`);
         if (h.has_later_revision) lines.push("  A later revision exists; inspect it before relying on this passage.");
       }
+      lines.push(`  evidence ${h.provenance.evidence_id}`);
+      if (h.quote_truncated) lines.push(`  excerpt at text offset ${h.quote_offset} of ${h.quote_length}`);
       lines.push(`  episode ${h.provenance.episode_id}`);
     }
     lines.push("");
