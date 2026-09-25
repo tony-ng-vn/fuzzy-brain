@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { schemaTables, insertEvidenceRows } from "../brain.mjs";
-import { prepareTransfer } from "./tbrain-transfer.mjs";
+import { prepareTransfer, sourceIsAllowed } from "./tbrain-transfer.mjs";
 import { legacyEvidenceProvenance, legacyEvidenceRoleSql } from "./evidence-provenance.mjs";
 
 export function archiveError(code) { return Object.assign(new Error(`Tbrain ${code}`), { code }); }
@@ -12,7 +12,7 @@ function tables(schema) {
 }
 
 export async function importTransfer(client, schema, input, { authorized = false, allowedSourceIds = [] } = {}) {
-  if (!authorized || !allowedSourceIds.includes(input?.source_id)) throw archiveError("unauthorized");
+  if (!authorized || !sourceIsAllowed(input?.source_id, allowedSourceIds)) throw archiveError("unauthorized");
   let prepared;
   try { prepared = prepareTransfer(input); } catch { throw archiveError("invalid"); }
   const { bundle, digest, stored_digest, redactions } = prepared;
@@ -20,7 +20,7 @@ export async function importTransfer(client, schema, input, { authorized = false
   await client.query("begin");
   try {
     // Serialize revisions of one source identity, including concurrent retries.
-    await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [JSON.stringify([schema, bundle.source_id, bundle.source_key])]);
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [JSON.stringify([schema, bundle.source_id.toLowerCase(), bundle.source_key])]);
     const source = (await client.query(`select exclusions from ${t.sources} where id=$1 for share`, [bundle.source_id])).rows[0];
     if (!source) throw archiveError("not_found");
     const strings = value => typeof value === "string" ? [value] : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
@@ -38,7 +38,7 @@ export async function importTransfer(client, schema, input, { authorized = false
     if (bundle.relation) {
       const parent = (await client.query(`select source_id, source_key from ${t.records} where id=$1`, [bundle.relation.receipt_id])).rows[0];
       if (!parent) throw archiveError("not_found");
-      if (parent.source_id !== bundle.source_id || parent.source_key !== bundle.source_key) throw archiveError("conflict");
+      if (parent.source_id !== bundle.source_id.toLowerCase() || parent.source_key !== bundle.source_key) throw archiveError("conflict");
     }
     const id = randomUUID();
     const episodeId = randomUUID();

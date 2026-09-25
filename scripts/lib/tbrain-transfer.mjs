@@ -3,6 +3,10 @@ import { z } from "zod";
 import { scrubSensitivePatterns } from "../brain.mjs";
 
 export const MAX_TRANSFER_BYTES = 4 * 1024 * 1024;
+export function sourceIsAllowed(sourceId, allowedSourceIds) {
+  return z.uuid().safeParse(sourceId).success
+    && allowedSourceIds.some(id => typeof id === "string" && id.toLowerCase() === sourceId.toLowerCase());
+}
 const text = z.string().min(1).max(200000).refine(v => v.trim().length > 0);
 const label = z.string().min(1).max(500).refine(v => v.trim().length > 0);
 const instant = z.iso.datetime({ offset: true }).nullable();
@@ -100,8 +104,9 @@ export const captureShape = {
 
 export function prepareCapture(input, allowedSourceIds) {
   const value = z.object(captureShape).parse(input);
-  const sourceId = value.source_id ?? (allowedSourceIds.length === 1 ? allowedSourceIds[0] : null);
-  if (!sourceId || !allowedSourceIds.includes(sourceId)) {
+  const configured = [...new Set(allowedSourceIds.map(id => id.toLowerCase()))];
+  const sourceId = value.source_id ?? (configured.length === 1 ? configured[0] : null);
+  if (!sourceIsAllowed(sourceId, configured)) {
     throw Object.assign(new Error("Choose one configured source_id from transfer_format before preparing capture."), { code: "unauthorized" });
   }
   const transfer = {

@@ -12,7 +12,7 @@ import { productionServices, residentPool } from "./fuzzy-brain-mcp.mjs";
 import { loadEnvLocal } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
-import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES } from "./lib/tbrain-transfer.mjs";
+import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES, sourceIsAllowed } from "./lib/tbrain-transfer.mjs";
 import { evidenceReadShape, archiveSearchShape, sourceReadShape } from "./lib/tbrain-store.mjs";
 import { SourceTextCache } from "./lib/source-text-cache.mjs";
 
@@ -45,7 +45,7 @@ function result(value, isError = false) {
 export function tbrainRuntimeConfig(env = process.env) {
   const ids = (env.TBRAIN_ALLOWED_SOURCE_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
   if (ids.some(id => !z.uuid().safeParse(id).success)) throw new Error("Tbrain source configuration is invalid.");
-  return { allowCapture: env.TBRAIN_ALLOW_CAPTURE === "1", allowedSourceIds: [...new Set(ids)] };
+  return { allowCapture: env.TBRAIN_ALLOW_CAPTURE === "1", allowedSourceIds: [...new Set(ids.map(id => id.toLowerCase()))] };
 }
 
 export function productionTbrainServices(config = tbrainRuntimeConfig(), {
@@ -74,7 +74,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
     searchArchive: input => stored("searchArchive", input),
     archiveStatus: () => stored("archiveStatus"),
     async archiveDay(transfer) {
-      if (!config.allowCapture || !config.allowedSourceIds.includes(transfer.source_id)) throw codedError("unauthorized");
+      if (!config.allowCapture || !sourceIsAllowed(transfer.source_id, config.allowedSourceIds)) throw codedError("unauthorized");
       const receipt = await run(brainScript, ["import-transfer", "--authorize", "--json-errors"], transfer);
       if (receipt?.error) throw codedError(receipt.error.code);
       return receipt;
@@ -84,7 +84,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
 }
 
 export function createTbrainServer(services, { allowCapture = false, allowedSourceIds = [], journal = null } = {}) {
-  const allowed = new Set(allowedSourceIds);
+  const allowed = new Set(allowedSourceIds.map(id => id.toLowerCase()));
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
   const server = new McpServer({ name: "tbrain", version }, {
     instructions: [
@@ -164,7 +164,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
     register("archive_day", "Save an authorized review as unratified evidence and an optional assistant-authored provisional reflection. Call transfer_format first and copy one of its authorized_source_ids exactly into source_id. Keep the conversation identity in source_key and source.conversation_id. Never invent a source_id. This never creates beliefs, links, or commitments.", {
       transfer: transferSchema,
     }, ({ transfer }) => {
-      if (!allowed.has(transfer.source_id)) throw codedError("unauthorized");
+      if (!allowed.has(transfer.source_id.toLowerCase())) throw codedError("unauthorized");
       try {
         validateTransfer(transfer);
       } catch {

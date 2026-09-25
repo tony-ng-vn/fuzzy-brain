@@ -7,6 +7,7 @@ import { createTbrainServer, productionTbrainServices, tbrainRuntimeConfig } fro
 import { importTransfer, readReceipt } from "../scripts/lib/tbrain-store.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
+import { makeClient } from "../scripts/brain.mjs";
 
 const SOURCE = "abcdefab-abcd-4abc-8abc-abcdefabcdef";
 
@@ -15,15 +16,16 @@ test("capture recognizes the same source UUID in either letter case", async t =>
   t.after(() => db.close());
   await db.client.query("insert into brain_dev.sources(id,kind,label) values($1,'test','Identifier case test')", [SOURCE]);
   const packet = fixture({ source_id: SOURCE.toUpperCase(), source_key: randomUUID() });
-  let first;
   await t.test("storage authorization accepts the same identifier without changing source bytes", async () => {
-    first = await importTransfer(db.client, "brain_dev", packet, { authorized: true, allowedSourceIds: [SOURCE] });
+    const first = await importTransfer(db.client, "brain_dev", packet, { authorized: true, allowedSourceIds: [SOURCE] });
     assert.equal(first.state, "committed");
     assert.equal(first.source_id, packet.source_id);
     assert.equal((await readReceipt(db.client, "brain_dev", first.id)).digest, first.digest);
     const replay = await importTransfer(db.client, "brain_dev", packet, { authorized: true, allowedSourceIds: [SOURCE] });
     assert.equal(replay.id, first.id);
     assert.equal(replay.replayed, true);
+    const lower = { ...packet, source_id: SOURCE, source_key: randomUUID() };
+    assert.equal((await importTransfer(db.client, "brain_dev", lower, { authorized: true, allowedSourceIds: [SOURCE.toUpperCase()] })).state, "committed");
   });
   await t.test("an uppercase source can append a revision to its own saved record", async () => {
     const original = await importTransfer(db.client, "brain_dev", packet, { authorized: true, allowedSourceIds: [packet.source_id] });
@@ -31,6 +33,19 @@ test("capture recognizes the same source UUID in either letter case", async t =>
     const next = await importTransfer(db.client, "brain_dev", changed, { authorized: true, allowedSourceIds: [packet.source_id] });
     assert.equal(next.state, "committed");
     assert.notEqual(next.id, original.id);
+  });
+  await t.test("case variants share one revision lock and retain exact-packet conflict checks", async () => {
+    const clients = [makeClient({ connectionString: db.url }), makeClient({ connectionString: db.url })];
+    try {
+      await Promise.all(clients.map(client => client.connect()));
+      const source_key = randomUUID();
+      const deliveries = await Promise.allSettled(clients.map((client, index) => importTransfer(client, "brain_dev",
+        { ...packet, source_key, source_id: index ? SOURCE : SOURCE.toUpperCase() },
+        { authorized: true, allowedSourceIds: [SOURCE, SOURCE.toUpperCase()] })));
+      assert.equal(deliveries.filter(item => item.status === "fulfilled").length, 1);
+      assert.equal(deliveries.find(item => item.status === "rejected").reason.code, "conflict");
+      assert.equal((await db.client.query("select count(*)::int as n from brain_dev.archive_records where source_key=$1", [source_key])).rows[0].n, 1);
+    } finally { await Promise.all(clients.map(client => client.end())); }
   });
   await t.test("MCP preparation and capture honor configured identity rather than casing", async () => {
     const seen = [];
