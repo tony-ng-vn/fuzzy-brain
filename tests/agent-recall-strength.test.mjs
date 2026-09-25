@@ -29,8 +29,11 @@ test("strong meaning matches survive a shortlist crowded by overlapping fragment
   const ids = result.hits.slice(0, 2).map(hit => hit.node_id ?? hit.provenance?.evidence_id);
   assert.deepEqual(new Set(ids), new Set([evidence, node]), "weak overlap must not crowd out strong meaning matches before or after reranking");
   assert.equal(result.hits.length, 10, "fragments may still fill the remaining places");
+  assert.ok(result.hits.slice(0, 2).every(hit => hit.match_strength === "strong"));
+  assert.ok(result.hits.slice(2).every(hit => hit.match_strength === "partial"));
 
   const lexicalOnly = await recall("release automation understanding", { ...options, embedQuery: async () => null });
   assert.equal(lexicalOnly.state, "partial");
   assert.ok(lexicalOnly.hits.length > 0, "fragment search must still work when there is no strong match");
+  assert.ok(lexicalOnly.hits.every(hit => hit.match_strength === "partial"));
 });
