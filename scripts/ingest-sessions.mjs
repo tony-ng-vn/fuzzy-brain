@@ -262,12 +262,14 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
   const buffer = [];
 
   const candidates = gatherCandidates(cfg);
-  for (const [sessionId, cand] of candidates) {
+  let lastScanned = null;
+  for (const [sessionId, cand] of candidateQueue(candidates, deps.cursor)) {
     if (limit !== null && counts.attempted >= limit) {
       counts.deferred = candidates.size - counts.scanned;
       break;
     }
     counts.scanned++;
+    lastScanned = sessionId;
     if (cand.mtimeMs > settledBefore) {
       counts.notSettled++;
       continue;
@@ -315,6 +317,7 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
     }
   }
   flushChunk(buffer, submitChunk, counts); // the trailing partial chunk
+  if (lastScanned !== null) deps.cursor?.write(lastScanned);
   return counts;
 }
 
@@ -329,12 +332,14 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
   const buffer = [];
 
   const candidates = gatherCodexCandidates(cfg);
-  for (const [sessionId, cand] of candidates) {
+  let lastScanned = null;
+  for (const [sessionId, cand] of candidateQueue(candidates, deps.cursor)) {
     if (limit !== null && counts.attempted >= limit) {
       counts.deferred = candidates.size - counts.scanned;
       break;
     }
     counts.scanned++;
+    lastScanned = sessionId;
     if (cand.mtimeMs > settledBefore) {
       counts.notSettled++;
       continue;
@@ -377,7 +382,17 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
     }
   }
   flushChunk(buffer, submitChunk, counts);
+  if (lastScanned !== null) deps.cursor?.write(lastScanned);
   return counts;
+}
+
+function candidateQueue(candidates, cursor) {
+  if (!cursor) return candidates;
+  const entries = [...candidates].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const after = cursor.read();
+  if (after === null) return entries;
+  const next = entries.findIndex(([id]) => id > after);
+  return next < 0 ? entries : [...entries.slice(next), ...entries.slice(0, next)];
 }
 
 function printSummary(label, counts) {
