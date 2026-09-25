@@ -17,11 +17,13 @@ export const outcomeReportShape = {
   stage: z.enum(["request", "capture", "verification", "retrieval", "reasoning", "setup"]),
   outcome: z.enum(["succeeded", "failed", "partial", "unknown"]),
   finding: z.enum(["none", "request_construction", "schema_rejection", "source_identity_conflict", "unavailable_storage",
-    "outdated_server", "missing_expected_evidence", "irrelevant_results", "incorrect_attribution", "incomplete_readback",
+    "outdated_server", "missing_expected_evidence", "missing_expected_node", "irrelevant_results", "incorrect_attribution", "incomplete_readback",
     "insufficient_support", "conflicting_evidence", "pending_index", "other"]),
   observed_at: z.iso.datetime({ offset: true }).nullable().default(null),
   expected_evidence_ids: z.array(z.uuid()).max(20).default([]),
   used_evidence_ids: z.array(z.uuid()).max(20).default([]),
+  expected_node_ids: z.array(z.uuid()).max(20).default([]),
+  used_node_ids: z.array(z.uuid()).max(20).default([]),
 };
 export const outcomeReportSchema = z.strictObject(outcomeReportShape).refine(value => value.operation_id || value.workflow_id,
   "A report needs an operation or workflow identifier.");
@@ -72,6 +74,6 @@ export function summarizeOperations(traces, reports) {
     by_release: count(traces, t => t.start.release ?? "unknown"),
     by_operation: count(traces, t => t.start.operation),
     per_operation: Object.fromEntries([...groups].map(([name, group]) => [name, summarizeTraceGroup(group)])),
-    attribution: "Operation results are server-observed. Caller feedback and expected evidence are unverified reports.",
+    attribution: "Operation results are server-observed. Caller feedback and expected or used memory identifiers are unverified reports.",
   };
 }

@@ -26,7 +26,7 @@ const commands = {
   },
   "report-outcome": {
     usage: "report-outcome FILE",
-    note: "Read a JSON file of at most 16384 bytes and append unverified caller feedback to the private journal. Supply operation_id or workflow_id, or both. Use returned evidence IDs for expected or used passages. Do not include source text or private internal reasoning. This does not create an approved memory.",
+    note: "Read a JSON file of at most 16384 bytes and append unverified caller feedback to the private journal. Supply operation_id or workflow_id, or both. Use expected_node_ids and used_node_ids for approved nodes, and expected_evidence_ids and used_evidence_ids for source passages. Each list accepts at most 20 UUIDs. Do not include source text or private internal reasoning. This does not create an approved memory.",
     schema: outcomeReportSchema,
   },
   validate: {
