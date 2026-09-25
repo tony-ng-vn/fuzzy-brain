@@ -205,6 +205,11 @@ Each reconciliation commits a checkpoint with any newly appended evidence.
 Only a checkpoint for the current parser and observed file metadata permits an unchanged-file skip.
 An identical retry verifies the original committed checkpoint.
 The first run after installing this support also reconciles older sessions that have no checkpoint.
+Bounded runs remember where they stopped and resume after that session on the next run.
+They wrap around to retry earlier failures, so a failed file cannot consume the first slot forever.
+This private local position contains only a session identifier and never counts as proof of a save.
+Database checkpoints still decide whether a file can be skipped.
+An interrupted run may repeat its previous position, and losing the local position restarts the scan without removing saved data.
 See `docs/fusion-bridge.md` for the required additive checkpoint migration and operational commands.
 
 ## Operation traces

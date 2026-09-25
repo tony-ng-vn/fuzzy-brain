@@ -4,6 +4,20 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.45.2
+
+2026-09-25
+
+**Tools**
+
+- Bounded session capture now starts after the file where the previous finished run stopped.
+  It wraps around to retry earlier failures, so the same early files cannot take every hourly slot.
+- A private local marker remembers only a file or session ID and survives restarts.
+  Capture can continue if the marked file is removed.
+  It is separate from database save checkpoints and does not claim a file was saved or change which files may be captured.
+
+---
+
 ## v0.45.1
 
 2026-09-25
