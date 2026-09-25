@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { mkdir, lstat, open, link, unlink, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { outcomeReportSchema, summarizeOperations } from "./operation-feedback.mjs";
-import { callerMetadata, inputMetadata, outputMetadata, safeErrorCode, safeOperation } from "./operation-metadata.mjs";
+import { callerMetadata, inputMetadata, outputMetadata, resultErrorCode, safeErrorCode, safeOperation } from "./operation-metadata.mjs";
 
 const MAX_EVENT_BYTES = 128 * 1024;
 const idPattern = /^(\d{4}-\d{2}-\d{2})_([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
@@ -170,12 +170,13 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
       try {
         const { day } = parseId(id);
         await read(id);
-        const unsuccessful = Boolean(error || is_error || result?.error);
+        const reportedError = resultErrorCode(result);
+        const unsuccessful = Boolean(error || is_error || reportedError);
         const event = {
           format: "tbrain.operation.v1", event: "finish", id, at: new Date().toISOString(),
           duration_ms: typeof duration_ms === "number" && Number.isFinite(duration_ms) && duration_ms >= 0 ? duration_ms : null,
           outcome: unsuccessful ? "error" : "success",
-          error_code: unsuccessful ? safeErrorCode(error?.code ?? result?.error?.code) : null,
+          error_code: unsuccessful ? safeErrorCode(error?.code ?? reportedError) : null,
           delivery: ["not_attempted", "sent", "failed", "unknown"].includes(delivery) ? delivery : "unknown",
           output: outputMetadata(result),
         };
