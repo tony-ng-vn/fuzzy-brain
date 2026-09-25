@@ -14,6 +14,7 @@ import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
 import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES } from "./lib/tbrain-transfer.mjs";
 import { evidenceReadShape, archiveSearchShape, sourceReadShape } from "./lib/tbrain-store.mjs";
+import { SourceTextCache } from "./lib/source-text-cache.mjs";
 
 const brainScript = fileURLToPath(new URL("./brain.mjs", import.meta.url));
 const FAILURE_MESSAGES = Object.freeze({
@@ -52,11 +53,12 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
   run = runJson,
 } = {}) {
   const reads = productionServices({ pool, logError() {} });
+  const sourceCache = new SourceTextCache();
   const schema = () => process.env.BRAIN_SCHEMA || "public";
   // Lazy import keeps startup and authorization rejection independent of storage.
-  const stored = async (name, input) => {
+  const stored = async (name, input, options) => {
     const store = await import("./lib/tbrain-store.mjs");
-    return pool.withClient(client => store[name](client, schema(), input));
+    return pool.withClient(client => store[name](client, schema(), input, options));
   };
   return {
     indexStatus: input => reads.indexStatus(input),
@@ -68,7 +70,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
     readReceipt: id => stored("readReceipt", id),
     readEvidence: input => stored("readEvidence", input),
     readArchive: input => stored("readArchive", input),
-    readSource: input => stored("readSource", input),
+    readSource: input => stored("readSource", input, { cache: sourceCache }),
     searchArchive: input => stored("searchArchive", input),
     archiveStatus: () => stored("archiveStatus"),
     async archiveDay(transfer) {
@@ -77,7 +79,7 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
       if (receipt?.error) throw codedError(receipt.error.code);
       return receipt;
     },
-    close: () => reads.close(),
+    close: async () => { try { await reads.close(); } finally { sourceCache.clear(); } },
   };
 }
 

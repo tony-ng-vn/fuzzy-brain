@@ -4,6 +4,20 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.45.1
+
+2026-09-25
+
+**Tools**
+
+- The running Tbrain server now reads later pages of a long source without downloading the whole source again.
+  It checks for changes on every read, returns current source details, and keeps only a limited local copy.
+  If the database fails, the read fails instead of returning cached text.
+- In one live six-page comparison, the five later pages took a median of 136 milliseconds instead of 654, with the same text.
+  The first page took about as long as before.
+
+---
+
 ## v0.45.0
 
 2026-09-25

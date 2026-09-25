@@ -237,5 +237,9 @@ Recall remains correct before the index is installed, but title lookup can requi
 Use `read_source` with a receipt or episode ID to inspect retained source text.
 Follow `next_offset` with the same ID until it returns null.
 The offset counts UTF-16 code units and accepts nonnegative safe integers, so long session sources remain readable beyond five million characters.
+Successive reads in one Tbrain server process can reuse source text after checking that it still matches the database.
+Each read fetches current source details and requires a working database connection.
+The process keeps at most eight source texts within a 32 MiB text budget, and releases them when it closes.
+Larger sources remain readable but do not stay in this cache.
 Each reply still contains at most 12,000 code units, with 8,000 by default.
 The portable `source` command uses the same bounds, and `source --help` includes the input schema.
