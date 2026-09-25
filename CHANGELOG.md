@@ -4,6 +4,23 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.6
+
+2026-09-25
+
+**Tools**
+
+- A partly saved batch now records an unsuccessful memory operation instead of claiming the whole batch succeeded.
+  The record keeps saved item IDs, session checkpoint IDs, evidence counts, and counts of rejected items by category without copying source or error text.
+- A command that returns `ok: false` also records an unsuccessful memory operation, even if it does not throw an error.
+  The record keeps memory operation failures separate from failures to save the trace.
+
+**Docs**
+
+- The trace guide explains how to check which items saved before retrying a partly saved batch.
+
+---
+
 ## v0.32.5
 
 2026-09-25

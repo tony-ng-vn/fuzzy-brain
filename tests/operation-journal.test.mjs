@@ -90,6 +90,15 @@ test("failed tools keep safe error codes, references, and output counts without 
   assert.doesNotMatch(JSON.stringify(saved), /PRIVATE/);
 });
 
+test("an explicit unsuccessful result cannot produce a successful trace", async t => {
+  const { store } = await journal(t);
+  const started = await store.start(details);
+  await store.finish(started.id, { result: { ok: false } });
+  const saved = await store.read(started.id);
+  assert.equal(saved.finish.outcome, "error");
+  assert.equal(saved.finish.error_code, "unavailable");
+});
+
 test("caller names and malformed result fields cannot leak arbitrary text or prevent a trace", async t => {
   const { store } = await journal(t);
   const started = await store.start({ ...details, caller: { name: "PRIVATE NAME", version: "PRIVATE VERSION" } });
