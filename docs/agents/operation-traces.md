@@ -92,8 +92,18 @@ A repeated report is not independent evidence.
 
 `list_traces` reads one UTC day at a time and returns a bounded page.
 Use `kind: "reports"` for caller feedback.
-Follow `next_after` while `has_more` is true.
+Use `workflow_id` to find records carrying the same workflow identifier.
+For operation records, `parent_id` finds direct child calls under one operation.
+For caller reports, `operation_id` finds feedback about one operation.
+Filters combine with AND, so every supplied filter must match.
+Reports do not inherit a workflow identifier from their associated operation; the reporting caller must supply it.
+
+The limit caps inspected records before filtering, and `scanned_count` reports that number.
+A filtered page may contain no matches even when later pages have them.
+Follow `next_after` while `has_more` is true, including after an empty page.
 Results use identifier order, not event-time order, and concurrent additions can require another read.
+Use the recorded start and finish times to inspect execution order after collecting the relevant records.
+A workflow crossing UTC midnight requires a separate listing for each day.
 
 `trace_summary` reports operation counts, error categories, unfinished calls, empty or limited searches, delivery failures, failed background steps, caller findings, release counts, and duration percentiles.
 Delivery counts cover finished MCP requests only.
@@ -102,7 +112,7 @@ The `failed_stages` counts show how many background runs reported a failure in s
 Each run counts at most once per failed step.
 Session capture records `capture_sources` with counts for each configured session format and `failed_sources` when saves fail.
 Use its parent identifier to find the background cycle.
-Find save attempts in `list_traces` by matching their `parent_id` to the capture trace ID.
+Find save attempts with `list_traces` and `parent_id` set to the capture trace ID.
 Duration ends when the operation produces its result, before the finish record and reply delivery.
 It inspects at most 1,000 operations and 1,000 reports per call.
 When `exhaustive` is false, its counts and percentiles cover only the inspected records.
@@ -119,6 +129,9 @@ The portable command supports the same inspection tasks without a database conne
 ```sh
 node scripts/tbrain.mjs trace-status
 node scripts/tbrain.mjs traces --day 2026-09-25 --limit 20
+node scripts/tbrain.mjs traces --day 2026-09-25 --workflow-id WORKFLOW_UUID --limit 100
+node scripts/tbrain.mjs traces --day 2026-09-25 --parent-id TRACE_ID --limit 100
+node scripts/tbrain.mjs traces --day 2026-09-25 --kind reports --operation-id TRACE_ID --limit 100
 node scripts/tbrain.mjs trace TRACE_ID
 node scripts/tbrain.mjs trace-summary --day 2026-09-25
 node scripts/tbrain.mjs report-outcome /absolute/private/report.json

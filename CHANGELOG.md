@@ -4,6 +4,25 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.36.0
+
+2026-09-25
+
+**Tools**
+
+- Both memory servers and the portable command can list traces for one workflow ID.
+  Operation listings can also find direct child calls by parent ID, and caller reports can filter by operation ID.
+  Combined filters require every condition to match.
+- Each request inspects at most 100 records and reports that number as `scanned_count`.
+  A filtered page can have no matches and still return `next_after` for the next page.
+
+**Docs**
+
+- The trace guide explains how to follow related calls and continue past an empty page.
+  It also explains why ID order can differ from execution time and why a workflow crossing UTC midnight needs a search on each day.
+
+---
+
 ## v0.35.0
 
 2026-09-25
