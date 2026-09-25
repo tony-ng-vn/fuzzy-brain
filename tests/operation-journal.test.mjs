@@ -108,3 +108,13 @@ test("reading a missing trace or empty day does not create journal directories",
   assert.deepEqual((await store.list({ day: "2000-01-01" })).traces, []);
   assert.deepEqual(await readdir(directory), []);
 });
+
+test("disabling new recording still allows inspection of existing private records", async t => {
+  const { directory, store } = await journal(t);
+  const saved = await store.start(details);
+  const disabled = createOperationJournal({ directory, enabled: false });
+  assert.equal(disabled.status().state, "disabled");
+  assert.equal((await disabled.start(details)).recorded, false);
+  assert.equal((await disabled.read(saved.id)).id, saved.id);
+  assert.equal((await disabled.list()).traces.length, 1);
+});
