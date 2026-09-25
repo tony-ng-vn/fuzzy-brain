@@ -5,6 +5,34 @@ import { productionTbrainServices } from "../scripts/tbrain-mcp.mjs";
 import { importTransfer } from "../scripts/lib/tbrain-store.mjs";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { fixture } from "./helpers/tbrain-fixture.mjs";
+import { SourceTextCache } from "../scripts/lib/source-text-cache.mjs";
+
+test("source cache bounds retained text and evicts the least recently used entry", () => {
+  const cache = new SourceTextCache({ maxBytes: 12, maxEntries: 2 });
+  cache.set("a", "a1", "aaa");
+  cache.set("b", "b1", "bbb");
+  assert.equal(cache.get("a").text, "aaa");
+  cache.set("c", "c1", "ccc");
+  assert.equal(cache.get("b"), null);
+  assert.equal(cache.get("a").fingerprint, "a1");
+  cache.set("a", "a2", "aaaaa");
+  assert.equal(cache.get("c"), null);
+  assert.equal(cache.get("a").text, "aaaaa");
+  cache.set("a", "a3", "too long");
+  assert.equal(cache.get("a"), null);
+  cache.set("a", "a4", "a");
+  cache.set("b", "b2", "b");
+  cache.set("c", "c2", "c");
+  assert.equal(cache.get("a"), null);
+  cache.clear();
+  assert.equal(cache.get("c"), null);
+  for (const options of [{ maxBytes: 0 }, { maxEntries: 0 }]) {
+    const disabled = new SourceTextCache(options);
+    disabled.set("key", "hash", "text");
+    assert.equal(disabled.get("key"), null);
+  }
+  assert.throws(() => new SourceTextCache({ maxBytes: -1 }), RangeError);
+});
 
 test("resident source reads reuse text only after checking current storage", async t => {
   const db = await createTbrainTestDatabase();

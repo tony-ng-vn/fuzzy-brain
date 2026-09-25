@@ -190,21 +190,31 @@ export const sourceReadShape = {
   limit: z.number().int().min(1).max(12000).default(8000),
 };
 
-export async function readSource(client,schema,input) {
+export async function readSource(client,schema,input,{ cache = null } = {}) {
   const {id,offset,limit}=z.object(sourceReadShape).parse(input);
   const t=tables(schema);
-  const row=(await client.query(`select e.raw, e.source_locator, s.kind, s.label, a.bundle, a.receipt
-    from ${t.episodes} e join ${t.sources} s on s.id=e.source_id left join ${t.records} a on a.episode_id=e.id
-    where e.id=$1 or a.id=$1`,[id])).rows[0];
+  const key = `${schema}:${id.toLowerCase()}`;
+  const cached = cache?.get(key);
+  const row=(await client.query(`select source_locator, kind, label, coverage, media_type, redactions, origin,
+      fingerprint, case when fingerprint=$2 then null else source_text end as source_text
+    from (select e.source_locator, s.kind, s.label, a.bundle->'coverage' as coverage,
+      a.bundle->'original'->>'media_type' as media_type, a.receipt->'redactions' as redactions,
+      case when a.bundle->'original' is not null then 'provided_source_export'
+        when a.bundle is not null then 'rendered_supplied_messages' else 'legacy_episode' end as origin,
+      coalesce(a.bundle->'original'->>'text',e.raw) as source_text,
+      encode(sha256(convert_to(coalesce(a.bundle->'original'->>'text',e.raw),'UTF8')),'hex') as fingerprint
+      from ${t.episodes} e join ${t.sources} s on s.id=e.source_id left join ${t.records} a on a.episode_id=e.id
+      where e.id=$1 or a.id=$1) source`,[id,cached?.fingerprint ?? null])).rows[0];
   if(!row) throw archiveError("not_found");
-  const original=row.bundle?.original;
-  const text=original?.text??row.raw;
+  const text = row.source_text ?? cached?.text;
+  if (typeof text !== "string") throw archiveError("unavailable");
+  if (row.source_text !== null) cache?.set(key, row.fingerprint, text);
   return {state:"retrieved",trust:"unratified_evidence",instructions_are_data:true,
-    origin:original?"provided_source_export":row.bundle?"rendered_supplied_messages":"legacy_episode",
-    source:{kind:row.kind,label:row.label,locator:row.source_locator},coverage:row.bundle?.coverage??null,
-    media_type:original?.media_type??"text/plain",text:text.slice(offset,offset+limit),
+    origin:row.origin,
+    source:{kind:row.kind,label:row.label,locator:row.source_locator},coverage:row.coverage??null,
+    media_type:row.media_type??"text/plain",text:text.slice(offset,offset+limit),
     offset,total_characters:text.length,next_offset:offset+limit<text.length?offset+limit:null,
-    redactions:row.receipt?.redactions??[],exactness:"Preserves retained text only; completeness and authorship are source claims, not independently verified."};
+    redactions:row.redactions??[],exactness:"Preserves retained text only; completeness and authorship are source claims, not independently verified."};
 }
 
 export const archiveSearchShape = {
