@@ -1,6 +1,12 @@
 import { z } from "zod";
 
 export const traceIdShape = z.string().regex(/^\d{4}-\d{2}-\d{2}_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+export const traceListFilterShape = {
+  workflow_id: z.uuid().nullable().optional(),
+  parent_id: traceIdShape.nullable().optional(),
+  operation_id: traceIdShape.nullable().optional(),
+};
+export const traceListFilterSchema = z.strictObject(traceListFilterShape);
 export const outcomeReportShape = {
   operation_id: traceIdShape.nullable().default(null),
   workflow_id: z.uuid().nullable().default(null),

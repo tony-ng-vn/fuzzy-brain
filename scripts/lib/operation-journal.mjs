@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, lstat, open, link, unlink, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { outcomeReportSchema, summarizeOperations } from "./operation-feedback.mjs";
+import { outcomeReportSchema, summarizeOperations, traceListFilterSchema } from "./operation-feedback.mjs";
 import { callerMetadata, inputMetadata, outputMetadata, resultErrorCode, safeErrorCode, safeOperation } from "./operation-metadata.mjs";
 
 const MAX_EVENT_BYTES = 128 * 1024;
@@ -14,6 +14,19 @@ function parseId(id) {
   const match = typeof id === "string" && id.match(idPattern);
   if (!match || !validDay(match[1])) throw failure("invalid");
   return { day: match[1], id };
+}
+
+function listFilter(input, kind) {
+  const parsed = traceListFilterSchema.safeParse(input);
+  if (!parsed.success || (kind === "start" ? input.operation_id : input.parent_id)) throw failure("invalid");
+  if (input.parent_id) parseId(input.parent_id);
+  if (input.operation_id) parseId(input.operation_id);
+  return item => {
+    const record = kind === "start" ? item.start : item;
+    return (!input.workflow_id || record.workflow_id?.toLowerCase() === input.workflow_id.toLowerCase())
+      && (!input.parent_id || record.parent_id === input.parent_id)
+      && (!input.operation_id || record.operation_id === input.operation_id);
+  };
 }
 
 async function checkPrivateDirectory(path) {
@@ -116,16 +129,17 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
     try { return await readEvent(join(await folder(day), `${id}.report.json`)); }
     catch (error) { throw failure(error.code === "ENOENT" ? "not_found" : "unavailable"); }
   };
-  const listEvents = async ({ day, limit, after = null }, kind, reader) => {
+  const listEvents = async ({ day, limit, after = null }, kind, reader, matches = () => true) => {
     try {
       const suffix = `.${kind}.json`;
       const ids = (await readdir(await folder(day))).filter(name => name.endsWith(suffix))
         .map(name => name.slice(0, -suffix.length)).filter(id => idPattern.test(id) && (!after || id > after)).sort();
       const selected = ids.slice(0, limit);
-      return { day, items: await readPage(selected, reader), has_more: ids.length > limit,
+      // The cursor advances through inspected records, including those a filter excludes.
+      return { day, items: (await readPage(selected, reader)).filter(matches), scanned_count: selected.length, has_more: ids.length > limit,
         next_after: ids.length > limit ? selected.at(-1) : null, order: "identifier", exhaustive: ids.length <= limit };
     } catch (error) {
-      if (error.code === "ENOENT") return { day, items: [], has_more: false, next_after: null, order: "identifier", exhaustive: true };
+      if (error.code === "ENOENT") return { day, items: [], scanned_count: 0, has_more: false, next_after: null, order: "identifier", exhaustive: true };
       throw failure("unavailable");
     }
   };
@@ -214,14 +228,16 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
         return { id, recorded: true, attribution: "caller_reported" };
       } catch { failures++; throw failure("unavailable"); }
     },
-    async list({ day = new Date().toISOString().slice(0, 10), limit = 20, after = null } = {}) {
+    async list({ day = new Date().toISOString().slice(0, 10), limit = 20, after = null, workflow_id = null, parent_id = null, operation_id = null } = {}) {
       if (!validDay(day) || !Number.isInteger(limit) || limit < 1 || limit > 100 || (after !== null && parseId(after).day !== day)) throw failure("invalid");
-      const { items, ...page } = await listEvents({ day, limit, after }, "start", read);
+      const matches = listFilter({ workflow_id, parent_id, operation_id }, "start");
+      const { items, ...page } = await listEvents({ day, limit, after }, "start", read, matches);
       return { ...page, traces: items };
     },
-    async listReports({ day = new Date().toISOString().slice(0, 10), limit = 20, after = null } = {}) {
+    async listReports({ day = new Date().toISOString().slice(0, 10), limit = 20, after = null, workflow_id = null, parent_id = null, operation_id = null } = {}) {
       if (!validDay(day) || !Number.isInteger(limit) || limit < 1 || limit > 100 || (after !== null && parseId(after).day !== day)) throw failure("invalid");
-      const { items, ...page } = await listEvents({ day, limit, after }, "report", readReport);
+      const matches = listFilter({ workflow_id, parent_id, operation_id }, "report");
+      const { items, ...page } = await listEvents({ day, limit, after }, "report", readReport, matches);
       return { ...page, reports: items };
     },
     async summary({ day = new Date().toISOString().slice(0, 10), limit = 1000 } = {}) {

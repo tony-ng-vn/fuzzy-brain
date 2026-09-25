@@ -30,13 +30,19 @@ for (const script of ["fuzzy-brain-mcp.mjs", "tbrain-mcp.mjs"]) {
     assert.ok(rejected.content.some(block => block.text.includes(id)));
     const saved = parse(await client.callTool({ name: "read_trace", arguments: { id } }));
     assert.equal(saved.finish.error_code, "invalid");
+    const workflow = randomUUID();
     const reported = parse(await client.callTool({ name: "report_outcome", arguments: {
-      operation_id: id, stage: "request", outcome: "failed", finding: "schema_rejection", workflow_id: randomUUID(),
+      operation_id: id, stage: "request", outcome: "failed", finding: "schema_rejection", workflow_id: workflow,
     } }));
     assert.equal(reported.recorded, true);
     const report = parse(await client.callTool({ name: "read_trace", arguments: { id: reported.id, kind: "report" } }));
     assert.equal(report.attribution, "caller_reported");
     assert.equal(report.operation_id, id);
+    await client.callTool({ name: "report_outcome", arguments: { workflow_id: randomUUID(), stage: "setup", outcome: "succeeded", finding: "none" } });
+    const reports = parse(await client.callTool({ name: "list_traces", arguments: { kind: "reports", workflow_id: workflow, operation_id: id } }));
+    assert.deepEqual(reports.reports.map(item => item.id), [reported.id]);
+    const invalid = await client.callTool({ name: "list_traces", arguments: { kind: "reports", parent_id: id } });
+    assert.equal(invalid.isError, true);
     const summary = parse(await client.callTool({ name: "trace_summary", arguments: {} }));
     assert.equal(summary.errors.invalid, 1);
     assert.equal(summary.findings.schema_rejection, 1);
@@ -70,4 +76,6 @@ test("a memory save links the server request to its controlled child command", a
   assert.equal(child.finish.output.references.id, saved.id);
   assert.equal(child.input.input.references.request_id, request);
   assert.doesNotMatch(JSON.stringify(traces), /PRIVATE SYNTHETIC TRACE MEMORY/);
+  const linked = parse(await client.callTool({ name: "list_traces", arguments: { parent_id: parent.id, workflow_id: workflow } }));
+  assert.deepEqual(linked.traces.map(item => item.id), [child.id]);
 });

@@ -15,7 +15,7 @@ const help = {
   state: "help",
   commands: [
     "index-status [--source-id UUID | --receipt-id UUID]",
-    "trace-status", "trace ID [--kind operation|report]", "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports]", "trace-summary [--day DATE] [--limit N]", "report-outcome FILE",
+    "trace-status", "trace ID [--kind operation|report]", "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports] [--workflow-id UUID] [--parent-id ID] [--operation-id ID]", "trace-summary [--day DATE] [--limit N]", "report-outcome FILE",
     "validate FILE", "import FILE --authorize", "status", "receipt ID", "verify ID", "export ID",
     "search QUERY [--from ISO] [--until ISO] [--source-id UUID] [--role user|assistant|system|tool|other|unknown] [--offset N] [--limit N]",
     "read ID [OFFSET LIMIT] [--offset N] [--limit N] [--text-offset N] [--text-limit N]",
@@ -73,14 +73,14 @@ async function traceCommand(args, journal) {
   const [command, ...rest] = args;
   const options = {};
   let value;
-  const allowed = command === "trace" ? ["kind"] : command === "traces" ? ["day", "limit", "after", "kind"] : command === "trace-summary" ? ["day", "limit"] : [];
+  const allowed = command === "trace" ? ["kind"] : command === "traces" ? ["day", "limit", "after", "kind", "workflow-id", "parent-id", "operation-id"] : command === "trace-summary" ? ["day", "limit"] : [];
   for (let i = 0; i < rest.length; i++) {
     if (!rest[i].startsWith("--")) {
       if (!["trace", "report-outcome"].includes(command) || value !== undefined) throw archiveError("invalid");
       value = rest[i];
     } else {
-      const key = rest[i].slice(2), item = rest[++i];
-      if (!allowed.includes(key) || key in options || item === undefined || item.startsWith("--")) throw archiveError("invalid");
+      const flag = rest[i].slice(2), key = flag.replaceAll("-", "_"), item = rest[++i];
+      if (!allowed.includes(flag) || key in options || item === undefined || item.startsWith("--")) throw archiveError("invalid");
       options[key] = key === "limit" ? Number(item) : item;
     }
   }

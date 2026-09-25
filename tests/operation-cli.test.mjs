@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +69,22 @@ test("trace diagnostics work through the portable CLI without a database", async
   const list = await run("tbrain.mjs", ["traces", "--limit", "1"], env);
   assert.equal(list.code, 0, list.stderr);
   assert.equal(JSON.parse(list.stdout).traces.length, 1);
+});
+
+test("portable trace listing filters linked calls and reports without opening the database", async t => {
+  const { env, journal } = await setup(t);
+  const workflow = randomUUID();
+  const parent = await journal.start({ operation: "recall", workflow_id: workflow });
+  const child = await journal.start({ operation: "search", workflow_id: workflow, parent_id: parent.id });
+  await journal.start({ operation: "recall", workflow_id: randomUUID() });
+  const report = await journal.report({ operation_id: child.id, workflow_id: workflow, stage: "retrieval", outcome: "succeeded", finding: "none" });
+  const options = { ...env, TBRAIN_TRACE: "0" };
+  const linked = await run("tbrain.mjs", ["traces", "--workflow-id", workflow, "--parent-id", parent.id], options);
+  assert.equal(linked.code, 0, linked.stderr);
+  assert.deepEqual(JSON.parse(linked.stdout).traces.map(item => item.id), [child.id]);
+  const reports = await run("tbrain.mjs", ["traces", "--kind", "reports", "--operation-id", child.id], options);
+  assert.equal(reports.code, 0, reports.stderr);
+  assert.deepEqual(JSON.parse(reports.stdout).reports.map(item => item.id), [report.id]);
 });
 
 test("a partly failed session batch keeps committed identifiers and reports the rejected item", async t => {
