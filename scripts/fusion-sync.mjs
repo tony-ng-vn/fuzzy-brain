@@ -137,8 +137,14 @@ export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
 }
 
 async function main() {
-  if (process.argv.length > 3 || (process.argv[2] && !["--install", "--print-plist"].includes(process.argv[2]))) {
+  if (process.argv.length > 3 || (process.argv[2] && !["--install", "--print-plist", "--help", "-h"].includes(process.argv[2]))) {
     throw Object.assign(new Error("Unknown background sync option."), { code: "invalid" });
+  }
+  if (["--help", "-h"].includes(process.argv[2])) {
+    const help = { state: "help", commands: ["Run without arguments for one sync cycle.", "--install installs the configured background job.", "--print-plist prints its configuration without installing it."],
+      note: "Each cycle attempts session capture, pasted transcripts, and a bounded index pass independently." };
+    console.log(JSON.stringify(help, null, 2));
+    return help;
   }
   if (process.argv.includes("--install")) {
     console.log(JSON.stringify(await installLaunchAgent(), null, 2));
@@ -158,7 +164,8 @@ async function main() {
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   loadEnvLocal();
-  const operation = process.argv[2] === "--install" ? "sync_install" : process.argv[2] === "--print-plist" ? "sync_config" : "sync";
+  const operation = process.argv[2] === "--install" ? "sync_install" : process.argv[2] === "--print-plist" ? "sync_config"
+    : ["--help", "-h"].includes(process.argv[2]) ? "help" : "sync";
   runTracedCli("sync_cli", operation, process.argv.slice(2), main).catch((error) => {
     logSyncFailure("startup", error);
     process.exit(1);
