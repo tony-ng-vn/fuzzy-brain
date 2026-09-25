@@ -8,7 +8,7 @@ import { createTbrainServer, productionTbrainServices, tbrainRuntimeConfig } fro
 
 const SOURCE_ID = "11111111-1111-4111-8111-111111111111";
 const RECEIPT_ID = "22222222-2222-4222-8222-222222222222";
-const READ_TOOLS = ["index_status", "prepare_capture", "read_archive", "read_evidence", "read_receipt", "read_source", "recall", "search_archive", "status", "transfer_format", "validate_transfer"];
+const READ_TOOLS = ["get_node", "index_status", "prepare_capture", "read_archive", "read_evidence", "read_receipt", "read_source", "recall", "search_archive", "status", "transfer_format", "validate_transfer"];
 
 function transfer() {
   return {
@@ -159,4 +159,22 @@ test("Tbrain production capture uses the authorized CLI and preserves safe error
   const disabled = productionTbrainServices({ allowCapture: false, allowedSourceIds: [SOURCE_ID] }, { run });
   await assert.rejects(disabled.archiveDay(transfer()), { code: "unauthorized" });
   assert.equal(calls.length, 2);
+});
+
+
+test("Tbrain opens approved nodes and safely reports missing records", async t => {
+  const node = { id: RECEIPT_ID, raw: "  exact original words  ", body: "Readable words.", status: "active", due_at: null };
+  const client = await connected(t, { getNode: async id => {
+    if (id === RECEIPT_ID) return node;
+    throw Object.assign(new Error("private node details"), { code: "not_found" });
+  } });
+  const tool = (await client.listTools()).tools.find(tool => tool.name === "get_node");
+  assert.equal(tool?.annotations.readOnlyHint, true);
+  assert.deepEqual(parsed(await client.callTool({ name: "get_node", arguments: { id: RECEIPT_ID } })), node);
+  const missing = await client.callTool({ name: "get_node", arguments: { id: SOURCE_ID } });
+  assert.equal(missing.isError, true);
+  assert.equal(parsed(missing).error.code, "not_found");
+  assert.doesNotMatch(JSON.stringify(missing), /private/);
+  assert.equal((await client.callTool({ name: "get_node", arguments: { id: "bad-id" } })).isError, true);
+  assert.match(client.getInstructions(), /get_node/);
 });
