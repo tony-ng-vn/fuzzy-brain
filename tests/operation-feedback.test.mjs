@@ -65,3 +65,36 @@ test("summary separates empty retrieval, service errors, unfinished calls, and c
   assert.equal(limited.operations, 2);
   assert.equal(limited.exhaustive, false);
 });
+
+test("delivery counts describe MCP replies without treating CLI completion as a lost reply", async t => {
+  const journal = await setup(t);
+  for (const entry_point of ["tbrain_cli", "recall_cli", "brain_cli", "index_cli", "sync_cli", "unknown"]) {
+    const operation = await journal.start({ entry_point, operation: "recall", input: {} });
+    await journal.finish(operation.id, { result: { hits: [] }, duration_ms: 1 });
+  }
+  for (const state of ["sent", "failed", null]) {
+    const operation = await journal.start({ entry_point: "tbrain_mcp", operation: "recall", input: {} });
+    await journal.finish(operation.id, { result: { hits: [] }, duration_ms: 1 });
+    if (state) await journal.recordDelivery(operation.id, state);
+  }
+  const legacy = await journal.start({ entry_point: "fuzzy_brain_mcp", operation: "remember", input: {} });
+  await journal.finish(legacy.id, { result: { saved: true }, duration_ms: 1, delivery: "sent" });
+  await journal.start({ entry_point: "fuzzy_brain_mcp", operation: "recall", input: {} });
+  const summary = await journal.summary({ day: legacy.id.slice(0, 10) });
+  assert.equal(summary.failed_deliveries, 1);
+  assert.equal(summary.unconfirmed_deliveries, 1);
+  assert.equal(summary.incomplete, 1);
+});
+
+test("summary counts each failed background step once per run without copying errors", async t => {
+  const journal = await setup(t);
+  const first = await journal.start({ entry_point: "sync_cli", operation: "sync", input: [] });
+  await journal.finish(first.id, { result: { ok: false, error: "PRIVATE ERROR", failures: [
+    { stage: "ingest", message: "PRIVATE ERROR" }, { stage: "ingest" }, { stage: "embedding" }, { stage: "PRIVATE STAGE" },
+  ] }, duration_ms: 2 });
+  const second = await journal.start({ entry_point: "sync_cli", operation: "sync", input: [] });
+  await journal.finish(second.id, { result: { ok: false, failures: [{ stage: "embedding" }] }, duration_ms: 1 });
+  const summary = await journal.summary({ day: first.id.slice(0, 10) });
+  assert.deepEqual(summary.failed_stages, { ingest: 1, embedding: 2 });
+  assert.equal(JSON.stringify(summary).includes("PRIVATE"), false);
+});

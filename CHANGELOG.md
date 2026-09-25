@@ -4,6 +4,23 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.4
+
+2026-09-25
+
+**Tools**
+
+- The trace summary counts missing or failed replies only for finished MCP calls.
+  Command-line work does not affect those reply counts.
+- The summary also counts background runs that failed during agent session capture, pasted video capture, or search indexing.
+  Each step counts at most once per run.
+
+**Docs**
+
+- The trace guide explains which calls have reply records and what the background failure counts mean.
+
+---
+
 ## v0.32.3
 
 2026-09-25
