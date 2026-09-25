@@ -13,7 +13,7 @@ import { loadEnvLocal } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
 import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES } from "./lib/tbrain-transfer.mjs";
-import { evidenceReadShape, archiveSearchShape } from "./lib/tbrain-store.mjs";
+import { evidenceReadShape, archiveSearchShape, sourceReadShape } from "./lib/tbrain-store.mjs";
 
 const brainScript = fileURLToPath(new URL("./brain.mjs", import.meta.url));
 const FAILURE_MESSAGES = Object.freeze({
@@ -139,9 +139,8 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
     text_offset:z.number().int().min(0).max(200000).default(0),
     text_limit:z.number().int().min(1).max(8000).default(4000),
   }, input => services.readArchive(input));
-  register("read_source", "Inspect provided source export text or an episode rendering in bounded chunks. Works with archive receipt or legacy episode identifiers.", {
-    id:z.uuid(),offset:z.number().int().min(0).max(5000000).default(0),limit:z.number().int().min(1).max(12000).default(8000),
-  },input=>services.readSource(input));
+  register("read_source", "Inspect provided source export text or an episode rendering in bounded chunks. Works with archive receipt or legacy episode identifiers. Follow next_offset with the same id to continue long source text.",
+    sourceReadShape, input => services.readSource(input));
   register("transfer_format", "Read the portable transfer JSON schema and configured source identities, including when direct capture is disabled. A file is prepared, not saved.", {}, async()=>({
     format:"tbrain.transfer.v1",schema:z.toJSONSchema(transferSchema),authorized_source_ids:[...allowed],
     saved:false,import_command:"node scripts/tbrain.mjs import /absolute/path/day.json --authorize",

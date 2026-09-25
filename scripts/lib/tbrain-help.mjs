@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { transferSchema } from "./tbrain-transfer.mjs";
 import { outcomeReportSchema } from "./operation-feedback.mjs";
-import { archiveSearchShape, evidenceReadShape } from "./tbrain-store.mjs";
+import { archiveSearchShape, evidenceReadShape, sourceReadShape } from "./tbrain-store.mjs";
 
 const commands = {
   "index-status": {
@@ -66,7 +66,8 @@ const commands = {
   },
   source: {
     usage: "source ID [OFFSET LIMIT] [--offset N] [--limit N]",
-    note: "Read retained source text by receipt or episode UUID. Offset defaults to 0, maximum 5000000; limit defaults to 8000, maximum 12000. Follow next_offset. The origin field distinguishes a supplied source export, rendered messages, and legacy text. Retained text does not prove source completeness.",
+    note: "Read retained source text by receipt or episode UUID. Offset defaults to 0 and accepts nonnegative safe integers; limit defaults to 8000, maximum 12000. Follow next_offset. The origin field distinguishes a supplied source export, rendered messages, and legacy text. Retained text does not prove source completeness.",
+    schema: z.object(sourceReadShape),
   },
   evidence: {
     usage: "evidence ID [--context N] [--text-offset N] [--text-limit N]",

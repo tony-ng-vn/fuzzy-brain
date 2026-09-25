@@ -9,7 +9,7 @@ import { z } from "zod";
 import { runJson } from "./lib/run-json.mjs";
 import { makeClient, schemaTables } from "./brain.mjs";
 import { loadEnvLocal } from "./recall.mjs";
-import { archiveError, errorCode, readArchive, readReceipt, readSource, searchArchive, archiveStatus, readEvidence, evidenceReadShape, archiveSearchShape } from "./lib/tbrain-store.mjs";
+import { archiveError, errorCode, readArchive, readReceipt, readSource, searchArchive, archiveStatus, readEvidence, evidenceReadShape, archiveSearchShape, sourceReadShape } from "./lib/tbrain-store.mjs";
 import { portableHelp } from "./lib/tbrain-help.mjs";
 
 function parseArgs(args) {
@@ -46,10 +46,9 @@ function parseArgs(args) {
   }
   if (command === "evidence") z.object(evidenceReadShape).parse({ id: value, ...options });
   if (["read", "source", "receipt", "verify", "export"].includes(command)) z.uuid().parse(value);
-  if (["read", "source"].includes(command)) {
-    const maxOffset = command === "read" ? 100000 : 5000000;
-    const maxLimit = command === "read" ? 20 : 12000;
-    z.object({ offset: z.number().int().min(0).max(maxOffset).optional(), limit: z.number().int().min(1).max(maxLimit).optional(),
+  if (command === "source") z.object(sourceReadShape).parse({ id: value, ...options });
+  if (command === "read") {
+    z.object({ offset: z.number().int().min(0).max(100000).optional(), limit: z.number().int().min(1).max(20).optional(),
       text_offset: z.number().int().min(0).max(200000).optional(), text_limit: z.number().int().min(1).max(8000).optional() }).parse(options);
   }
   return { command, value, options };

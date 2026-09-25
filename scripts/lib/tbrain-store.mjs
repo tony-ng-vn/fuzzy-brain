@@ -184,8 +184,14 @@ export async function readArchive(client, schema, input) {
     original_available:!!bundle.original, redactions:receipt.redactions };
 }
 
+export const sourceReadShape = {
+  id: z.uuid(),
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  limit: z.number().int().min(1).max(12000).default(8000),
+};
+
 export async function readSource(client,schema,input) {
-  const {id,offset,limit}=z.object({id:z.uuid(),offset:z.number().int().min(0).max(5000000).default(0),limit:z.number().int().min(1).max(12000).default(8000)}).parse(input);
+  const {id,offset,limit}=z.object(sourceReadShape).parse(input);
   const t=tables(schema);
   const row=(await client.query(`select e.raw, e.source_locator, s.kind, s.label, a.bundle, a.receipt
     from ${t.episodes} e join ${t.sources} s on s.id=e.source_id left join ${t.records} a on a.episode_id=e.id
