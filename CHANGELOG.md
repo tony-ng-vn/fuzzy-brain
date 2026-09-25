@@ -4,6 +4,24 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.36.1
+
+2026-09-25
+
+**Tools**
+
+- Large batches now keep their request and result traces even when evidence or node ID lists are long.
+  Traces keep the main IDs for up to 100 items and the full batch counts and errors.
+  They set `references_truncated` when list IDs are omitted.
+  List IDs share a 1,000-ID allowance across the batch, with a 100-ID limit for each list.
+- Client version text longer than 64 characters is now omitted so its request trace can still save.
+
+**Docs**
+
+- The trace guide explains these limits and how to read saved receipts or checkpoints for more detail.
+
+---
+
 ## v0.36.0
 
 2026-09-25

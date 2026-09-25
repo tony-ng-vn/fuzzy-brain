@@ -27,6 +27,27 @@ test("batch outputs keep bounded record identifiers without source content", () 
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
 
+test("the shared list allowance leaves space for every retained item's primary identifiers", () => {
+  const primary = Object.fromEntries(["id", "source_id", "episode_id", "receipt_id", "checkpoint_id", "request_id", "evidence_id", "node_id"].map(key => [key, ID]));
+  const item = { ...primary, evidence_ids: Array(100).fill(ID), node_ids: Array(100).fill(ID), raw: "PRIVATE WORDS" };
+  const items = Array.from({ length: 100 }, () => ({ ...item }));
+  const variants = [inputMetadata(items), outputMetadata(items), outputMetadata({ ...item, evidence: { ...item, source: item }, hits: items.map(hit => ({ ...hit, provenance: item })) })];
+  const countListIds = value => {
+    if (!value || typeof value !== "object") return 0;
+    return Object.entries(value).reduce((total, [key, child]) => total
+      + (["evidence_ids", "node_ids"].includes(key) ? child.length : countListIds(child)), 0);
+  };
+  for (const result of variants) {
+    assert.ok(countListIds(result) <= 1000);
+    assert.equal(result.references_truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) < 100 * 1024, "leave room for the surrounding journal event");
+    const last = (result.items ?? result.hits).at(-1);
+    for (const key of Object.keys(primary)) assert.equal(last[key], ID);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+  }
+  assert.equal(inputMetadata(item).references.evidence_ids.length, 100);
+});
+
 test("background traces retain failed stage names without child errors", () => {
   const result = outputMetadata({ ok: false, failures: [
     { stage: "ingest", message: "PRIVATE source text" },
