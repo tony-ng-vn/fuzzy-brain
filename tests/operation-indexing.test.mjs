@@ -8,10 +8,21 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { createOperationJournal } from "../scripts/lib/operation-journal.mjs";
-import { outputMetadata } from "../scripts/lib/operation-metadata.mjs";
+import { inputMetadata, outputMetadata } from "../scripts/lib/operation-metadata.mjs";
 import { outcomeReportSchema, summarizeOperations } from "../scripts/lib/operation-feedback.mjs";
 const run = promisify(execFile);
 const id = "11111111-1111-4111-8111-111111111111";
+
+test("index repair traces distinguish a time-limited pass from an indexing failure", () => {
+  const input = inputMetadata({ limit: 256, max_duration_ms: 30000, text: "PRIVATE" });
+  const output = outputMetadata({ indexed_evidence: 83, indexed_nodes: 2, time_limit_reached: true, text: "PRIVATE" });
+  assert.equal(input.filters.max_duration_ms, 30000);
+  assert.equal(output.time_limit_reached, true);
+  assert.equal(output.indexed_evidence, 83);
+  assert.doesNotMatch(JSON.stringify({ input, output }), /PRIVATE/);
+  assert.equal(outputMetadata({ time_limit_reached: false }).time_limit_reached, false);
+  assert.equal(outputMetadata({ time_limit_reached: "PRIVATE" }).time_limit_reached, undefined);
+});
 
 test("index diagnostics retain safe counts and accept a pending-index finding", () => {
   const result = outputMetadata({ scope: { receipt_id: id }, evidence: { total: 7, indexed: 3, pending: 4, text: "PRIVATE" }, nodes: null,
