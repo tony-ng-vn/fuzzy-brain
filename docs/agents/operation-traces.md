@@ -90,7 +90,11 @@ Use `kind: "reports"` for caller feedback.
 Follow `next_after` while `has_more` is true.
 Results use identifier order, not event-time order, and concurrent additions can require another read.
 
-`trace_summary` reports operation counts, error categories, unfinished calls, empty or limited searches, delivery failures, caller findings, release counts, and duration percentiles.
+`trace_summary` reports operation counts, error categories, unfinished calls, empty or limited searches, delivery failures, failed background steps, caller findings, release counts, and duration percentiles.
+Delivery counts cover finished MCP requests only.
+A completed command-line call does not prove that another program read its output, and does not count as an unconfirmed MCP reply.
+The `failed_stages` counts show how many background runs reported a failure in session capture, pasted video capture, or indexing.
+Each run counts at most once per failed step.
 Duration ends when the operation produces its result, before the finish record and reply delivery.
 It inspects at most 1,000 operations and 1,000 reports per call.
 When `exhaustive` is false, its counts and percentiles cover only the inspected records.
