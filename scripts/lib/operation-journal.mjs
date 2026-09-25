@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, lstat, open, link, unlink, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { outcomeReportSchema, summarizeOperations } from "./operation-feedback.mjs";
 import { callerMetadata, inputMetadata, outputMetadata, safeErrorCode, safeOperation } from "./operation-metadata.mjs";
 
 const MAX_EVENT_BYTES = 128 * 1024;
@@ -91,8 +92,26 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
       return { id, state: finish ? "finished" : "incomplete", start, finish, delivery };
     } catch (error) { throw failure(error.code === "ENOENT" ? "not_found" : "unavailable"); }
   };
+  const readReport = async id => {
+    const { day } = parseId(id);
+    try { return await readEvent(join(await folder(day), `${id}.report.json`)); }
+    catch (error) { throw failure(error.code === "ENOENT" ? "not_found" : "unavailable"); }
+  };
+  const listEvents = async ({ day, limit, after = null }, kind, reader) => {
+    try {
+      const suffix = `.${kind}.json`;
+      const ids = (await readdir(await folder(day))).filter(name => name.endsWith(suffix))
+        .map(name => name.slice(0, -suffix.length)).filter(id => idPattern.test(id) && (!after || id > after)).sort();
+      const selected = ids.slice(0, limit);
+      return { day, items: await Promise.all(selected.map(reader)), has_more: ids.length > limit,
+        next_after: ids.length > limit ? selected.at(-1) : null, order: "identifier", exhaustive: ids.length <= limit };
+    } catch (error) {
+      if (error.code === "ENOENT") return { day, items: [], has_more: false, next_after: null, order: "identifier", exhaustive: true };
+      throw failure("unavailable");
+    }
+  };
   return {
-    status, read,
+    status, read, readReport,
     async start({ entry_point, operation, release, caller, input, connection_id = null, protocol_request_id = null, workflow_id = null } = {}) {
       if (!enabled) return { recorded: false, disabled: true };
       try {
@@ -146,20 +165,39 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
         return { id, recorded: true };
       } catch { return failed(); }
     },
+    async report(input) {
+      const parsed = outcomeReportSchema.safeParse(input);
+      if (!parsed.success) throw failure("invalid");
+      const report = parsed.data;
+      if (report.operation_id) await read(report.operation_id);
+      try {
+        const at = new Date().toISOString();
+        const id = `${at.slice(0, 10)}_${randomUUID()}`;
+        await durableCreate(await folder(at.slice(0, 10), true), `${id}.report.json`, {
+          format: "tbrain.outcome.v1", id, reported_at: at, attribution: "caller_reported", ...report,
+        });
+        writes++;
+        return { id, recorded: true, attribution: "caller_reported" };
+      } catch { failures++; throw failure("unavailable"); }
+    },
     async list({ day = new Date().toISOString().slice(0, 10), limit = 20, after = null } = {}) {
       if (!validDay(day) || !Number.isInteger(limit) || limit < 1 || limit > 100 || (after !== null && parseId(after).day !== day)) throw failure("invalid");
-      try {
-        const path = await folder(day);
-        const ids = (await readdir(path)).filter(name => name.endsWith(".start.json"))
-          .map(name => name.slice(0, -11)).filter(id => idPattern.test(id) && (!after || id > after)).sort();
-        const selected = ids.slice(0, limit);
-        const traces = await Promise.all(selected.map(read));
-        return { day, traces, has_more: ids.length > limit, next_after: ids.length > limit ? selected.at(-1) : null,
-          order: "identifier", exhaustive: ids.length <= limit };
-      } catch (error) {
-        if (error.code === "ENOENT") return { day, traces: [], has_more: false, next_after: null, order: "identifier", exhaustive: true };
-        throw failure("unavailable");
-      }
+      const { items, ...page } = await listEvents({ day, limit, after }, "start", read);
+      return { ...page, traces: items };
+    },
+    async listReports({ day = new Date().toISOString().slice(0, 10), limit = 20, after = null } = {}) {
+      if (!validDay(day) || !Number.isInteger(limit) || limit < 1 || limit > 100 || (after !== null && parseId(after).day !== day)) throw failure("invalid");
+      const { items, ...page } = await listEvents({ day, limit, after }, "report", readReport);
+      return { ...page, reports: items };
+    },
+    async summary({ day = new Date().toISOString().slice(0, 10), limit = 1000 } = {}) {
+      if (!validDay(day) || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw failure("invalid");
+      const [traces, reports] = await Promise.all([
+        listEvents({ day, limit }, "start", read), listEvents({ day, limit }, "report", readReport),
+      ]);
+      return { day, ...summarizeOperations(traces.items, reports.items), exhaustive: traces.exhaustive && reports.exhaustive,
+        scan_limit_per_kind: limit, next_operation: traces.next_after, next_report: reports.next_after,
+        note: "Counts and percentiles describe only the inspected records. New concurrent records may need another read." };
     },
   };
 }
