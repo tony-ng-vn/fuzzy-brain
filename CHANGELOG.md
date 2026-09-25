@@ -1,6 +1,30 @@
 # Changelog
 
-New updates and changes to Fuzzy Brain.
+Changes to Fuzzy Brain.
+
+---
+
+## v0.30.0
+
+2026-09-24
+
+**Tools**
+
+- Recall can limit results by source, speaker role, saved layer, and exact time.
+  It applies those limits before choosing candidates, so unrelated records cannot crowd out the material you asked for.
+- A date you provide takes priority over a date inferred from your question.
+  Dated evidence must have a known message timestamp.
+- Recall rejects invalid or conflicting filters before it opens storage or loads the search model.
+  If its usual search fails, the backup search keeps your filters.
+- Both memory servers accept the same recall filters and show which limits they applied.
+- Exact time filters keep the requested instant and microsecond precision when converting to UTC.
+- The recall command accepts the same filters and shows help without a connection.
+  It rejects unknown or repeated options before connecting.
+
+**Docs**
+
+- The memory guide explains how to limit recall by source, speaker role, and exact time, including commands for callers without MCP.
+- Older changelog entries now describe what changed in plainer language while keeping the release facts and measurements.
 
 ---
 
@@ -10,14 +34,14 @@ New updates and changes to Fuzzy Brain.
 
 **Tools**
 
-- Dated recall keeps connected memory hits inside the requested period, including when retrieval falls back after a query failure.
-- Out-of-range connections no longer fill the candidate limit and hide matching memories.
-- Calendar boundaries use UTC consistently instead of changing with the database connection timezone.
-- Dated results report the applied bounds and explain which timestamps they filter.
+- When you ask about a period, recall keeps connected memories within that period, even if its usual search fails.
+- Connections outside the requested period no longer take slots from matching memories.
+- Calendar boundaries now use UTC, regardless of the database connection timezone.
+- Dated results show the time bounds used and which timestamps those bounds apply to.
 
 **Docs**
 
-- The memory guide explains UTC calendar bounds, node creation dates, and connections that provide context outside the requested period.
+- The memory guide explains UTC calendar dates, node creation dates, and when a connection outside the requested period may appear as context.
 
 ---
 
@@ -27,15 +51,19 @@ New updates and changes to Fuzzy Brain.
 
 **Tools**
 
-- Recall, search, and passage readback identify saved fragments of one conversation as one source group, so repeated excerpts do not look like independent support.
-- Speaker roles come from recorded archive metadata or known session parsers, and passage context explicitly covers the current saved episode.
-- Search leaves archive speaker names and message dates unknown when their provenance metadata is unavailable.
-- Undated passages keep an unknown message date while recall reports the separate source date it can use to narrow a search.
-- Reading an unknown node reports a missing record instead of a storage outage.
+- Recall, search, and passage reads identify fragments from the same conversation as one source.
+  Repeated excerpts no longer look like independent support.
+- Speaker roles come from recorded archive details or a parser that knows the session format.
+  Passage context covers only the saved episode being read.
+- Search reports speaker names and message dates as unknown when the archive did not record them.
+- An undated passage still has an unknown message date.
+  Recall separately shows the source date it used to narrow the search.
+- Reading a node that does not exist now reports a missing record, not a storage outage.
 
 **Docs**
 
-- Retrieval instructions explain shared source groups, uncertain dates, episode context limits, and the difference between a search match and support for an answer.
+- The retrieval guide explains shared sources, uncertain dates, and the limits of passage context.
+  It also explains why a search match alone may not support an answer.
 
 ---
 
@@ -45,17 +73,19 @@ New updates and changes to Fuzzy Brain.
 
 **Data**
 
-- Rendering a supplied conversation preserves trailing message whitespace so evidence offsets still return the exact quote.
+- Supplied conversations now keep spaces at the ends of messages, so saved quote positions still point to the exact words.
 
 **Tools**
 
-- Capturing many messages uses bounded database batches instead of one insert per message, while failed captures still roll back completely.
-- Direct evidence batches keep their original result order and redaction behavior.
-- Portable archives batch both evidence and source-message associations while preserving receipt identifiers, ordered readback, and all-or-nothing saves.
+- Capturing many messages now sends them to the database in limited batches instead of one at a time.
+  A failed capture still saves none of them.
+- Evidence saved in batches keeps its original order and redaction behavior.
+- Portable archives save evidence and its links to source messages in batches.
+  Receipts keep their identifiers, reading returns the original order, and a failed archive saves nothing.
 
 **Docs**
 
-- Capture guides explain batch limits, rollback behavior, and measured reductions in database calls.
+- The capture guides explain batch limits, what happens on failure, and the measured reduction in database calls.
 
 ---
 
@@ -65,17 +95,21 @@ New updates and changes to Fuzzy Brain.
 
 **Data**
 
-- Session capture records an immutable checkpoint in the same transaction as new evidence, so interrupted or concurrent runs can retry safely.
+- Session capture saves a permanent record of its progress together with new evidence.
+  Interrupted or concurrent runs can then retry safely.
 
 **Tools**
 
-- Session reconciliation compares stored message occurrences instead of turn counts, preserving repeated messages and recovering gaps after parser changes.
-- Session writes check exclusions against the whole supplied conversation before redaction, then render scrubbed text with matching evidence offsets.
-- Automatic sync checks legacy sessions once, then skips unchanged files only when their current parser and file metadata match a committed checkpoint.
+- Session sync compares each saved appearance of a message instead of counting turns.
+  It keeps repeated messages and recovers gaps left by earlier parser changes.
+- Before saving a session, capture checks the whole supplied conversation against source exclusions.
+  It then removes sensitive text while keeping saved quote positions accurate.
+- Automatic sync checks older sessions once.
+  After that, it skips an unchanged file only when the parser and file details match its saved progress record.
 
 **Docs**
 
-- The sync guide explains historical gap recovery, repeated messages, the initial reconciliation pass, and checkpoint deployment.
+- The sync guide explains how to recover earlier gaps, keep repeated messages, run the first comparison, and deploy saved progress records.
 
 ---
 
@@ -85,17 +119,19 @@ New updates and changes to Fuzzy Brain.
 
 **Data**
 
-- Approved memory writes can retain an immutable request receipt in the same transaction as the saved memory or completion.
+- An approved memory save or completion can include a permanent receipt, saved together with the change.
 
 **Tools**
 
-- Reusing a memory write request ID returns its original result, while changed requests conflict instead of duplicating or overwriting memories.
-- Concurrent completion commands append one event per node, including older callers without request IDs.
-- Memory tools accept stable request IDs and expose receipt readback after reconnecting, with distinct conflict and missing-record errors.
+- Retrying a memory write with the same request ID returns its original result.
+  Changing the request while reusing that ID reports a conflict instead of duplicating or overwriting a memory.
+- If completion commands run at the same time, the brain records one completion per node, including for older callers that do not send request IDs.
+- Memory tools accept request IDs and let callers read receipts after reconnecting.
+  They report conflicts and missing records separately.
 
 **Docs**
 
-- The memory guide and companion instructions explain verified saves, safe retries, receipt migration, and backup coverage.
+- The memory guide and companion instructions explain how to verify a save, retry safely, move to receipts, and include them in backups.
 
 ---
 
@@ -105,21 +141,25 @@ New updates and changes to Fuzzy Brain.
 
 **Data**
 
-- Session capture no longer attributes known machine observation envelopes to the human speaker.
+- Session capture no longer labels known machine observations as human speech.
 
 **Tools**
 
-- Refreshing the pinned runtime skips dependency installation when only the project release version changed.
-- Archive search can narrow by source and message role, and the CLI supports pagination, passage reads, offline help, and actionable validation errors.
-- Agents can prepare partial captures from supplied messages and validate full transfers offline, with explicit unsaved state and repairable field errors.
-- Both memory servers return structured data alongside compatible text results.
-- Agents can read a matching evidence passage and its neighbors through either memory server, with continuation for long text and clear source attribution.
-- Conversational recall filters old machine observation envelopes without changing stored history, and reports broken or degraded retrieval without exposing internal errors.
-- Recall results include passage identifiers and truncation details so agents can verify the source before answering.
+- Refreshing the agent runtime no longer reinstalls dependencies when only the project version changed.
+- Archive search can limit results by source and speaker role.
+  The command can page through results, read passages, show help offline, and explain invalid input.
+- Agents can prepare a partial capture from supplied messages and check a full transfer offline.
+  The result says when it has not been saved and identifies fields that need repair.
+- Both memory servers return data that programs can read along with the existing text result.
+- Either memory server can read a matching passage and nearby passages.
+  Long text can continue in another request, and each passage names its source.
+- Conversational recall omits older machine observations from results without changing saved history.
+  It reports a broken or limited search without showing internal errors.
+- Recall results include passage IDs and say when text was cut short, so agents can check the source before answering.
 
 **Docs**
 
-- The agent memory guide explains source readback, partial capture, retries, failure recovery, and updating installed clients.
+- The agent memory guide explains how to read sources, prepare partial captures, retry failures, recover, and update installed clients.
 
 ---
 
@@ -129,11 +169,12 @@ Sep 11, 2026
 
 **Tools**
 
-- Tbrain now tells conversation clients to fetch and reuse a registered source ID before saving a review, and an authorization failure gives the same recovery step.
+- Tbrain tells conversation clients to find and reuse a registered source ID before saving a review.
+  An authorization failure gives the same recovery step.
 
 **Docs**
 
-- The capture instructions now keep the registered source ID separate from the conversation's own identity.
+- The capture instructions distinguish a registered source ID from the conversation's own ID.
 
 ---
 
@@ -143,7 +184,7 @@ Sep 10, 2026
 
 **Docs**
 
-- The Tbrain runbook now records the verified production migration, private ChatGPT tunnel, development-schema round trip and production backup restore evidence.
+- The Tbrain runbook records the checked production migration, private ChatGPT connection, test database round trip, and production backup restore.
 
 ---
 
@@ -153,7 +194,8 @@ Sep 10, 2026
 
 **Tools**
 
-- Full backups now accept the validated `pgbouncer` and `uselibpqcompat` hints used by the managed database URL, while unknown connection overrides remain blocked.
+- Full backups now accept the tested `pgbouncer` and `uselibpqcompat` options in the managed database URL.
+  They still reject unknown connection options.
 
 ---
 
@@ -163,26 +205,32 @@ Sep 9, 2026
 
 **Data**
 
-- A close-of-day capture keeps supplied source messages, coverage, authorship and corrections separate from provisional reflections and approved memories.
-- Repeated transfers return the same durable receipt, while changed text under the same revision is rejected.
-- Private database backups include source evidence and capture receipts, with a restore path restricted to empty local test databases.
+- A close-of-day capture keeps the supplied messages, what they cover, who wrote them, and later corrections separate from draft reflections and approved memories.
+- Sending the same transfer again returns its original saved receipt.
+  Changing the text while keeping the same revision is rejected.
+- Private database backups include source evidence and capture receipts.
+  The restore command works only with an empty local test database.
 
 **Tools**
 
-- Compatible clients can capture an authorized day, inspect original passages, search older evidence and verify receipts through a private connection.
-- A validated portable JSON file supports one-command import when the conversation client cannot write directly.
-- Local memory writes now deliver their input to the child process and report bounded failures without exposing private output.
-- The agent installer registers both the existing Fuzzy Brain server and the new Tbrain server through the same pinned runtime.
-- Patched browser, URL parsing and archive dependencies replace the vulnerable versions reported by the release audit. Four upstream findings in the local embedding stack still have no published fix.
+- Compatible clients can save an authorized day, read original passages, search older evidence, and check receipts through a private connection.
+- When a conversation client cannot save directly, it can prepare a checked JSON file for import with one command.
+- Local memory writes pass their input to the command that saves it.
+  Failures stop within a set limit and do not reveal private output.
+- The agent installer connects both memory servers through the same fixed agent runtime.
+- The release updates browser, URL parsing, and archive packages that had reported security issues.
+  Four issues in the local search model packages still have no published fix.
 
 **UI**
 
-- The product title is now Tbrain; existing local configuration names and launchers still work.
+- The app title is now Tbrain.
+  Existing local configuration names and launch commands still work.
 
 **Docs**
 
-- The companion now retrieves context for the current question and preserves nightly evidence without automatically approving meanings or commitments.
-- The operating guide distinguishes local verification, account setup and production migration approval.
+- The companion now reads memory relevant to the current question and keeps nightly source material.
+  It does not treat draft meanings or commitments as approved.
+- The operating guide separates local checks, account setup, and approval for a production database change.
 
 ---
 
@@ -192,7 +240,11 @@ Aug 31, 2026
 
 **Tools**
 
-- A question whose words the brain was asked about in the last ten minutes skips the vocabulary round trip, so a warm question costs two round trips instead of three. Word frequencies move at the speed of the brain, not the question, and questions inside one session share words, so this lands on most follow-ups. Measured against the real brain: re-asking a question fell from about 230 milliseconds to 145. The honest caveat: for up to ten minutes a just-saved word can still be weighted as rare or unknown, which only nudges ranking; the search lanes always read live data, so the memory itself is found either way.
+- For ten minutes, recall reuses the word counts from an earlier question.
+  A follow-up then needs two database round trips instead of three.
+  Re-asking a question against the real brain fell from about 230 milliseconds to 145.
+  For up to ten minutes, a newly saved word may still be treated as rare or unknown when ranking results.
+  Search still reads current data, so the saved memory remains available.
 
 ---
 
@@ -202,7 +254,10 @@ Aug 31, 2026
 
 **Tools**
 
-- The first question after a quiet stretch no longer pays a fresh database handshake. The MCP server used to drop its connection after 30 seconds idle, so coming back to an agent after a coffee meant the next answer spent half a second to a second and a half just reconnecting. The server now pings the connection every 25 seconds to keep it warm, but only for half an hour after the last real call: a server nobody is talking to stands its heartbeat down and holds nothing open, and the first question after that pays the one reconnect it always did.
+- The first question after a short break no longer needs a fresh database connection.
+  Previously, after 30 seconds idle, reconnecting added about 0.5 to 1.5 seconds.
+  The server now checks its connection every 25 seconds for half an hour after the last real call.
+  After half an hour idle, it stops those checks and the next question reconnects once.
 
 ---
 
@@ -212,8 +267,12 @@ Aug 31, 2026
 
 **Tools**
 
-- Security update: Next.js moves from 16.2.10 to 16.3.3, which closes a middleware authorization bypass and the postcss and nanoid advisories that came in through it, and `npm audit fix` takes the brace-expansion and js-yaml patches. That clears five of the nine high-severity advisories the audit reported.
-- The four that remain all live under the local embedding stack (`@huggingface/transformers` pulling old `sharp`, `onnxruntime-node` pulling old `adm-zip`) and have no released fix. They only process Tony's own local model files, never untrusted input, so the practical risk is low; they will clear when the upstream packages update.
+- Updated Next.js from 16.2.10 to 16.3.3 to fix an authorization bypass and security issues in postcss and nanoid.
+  Updates to brace-expansion and js-yaml fix two more issues.
+  Together, these changes clear five of the nine high-severity issues reported by the audit.
+- Four issues remain in the local search model packages.
+  `@huggingface/transformers` still depends on an older `sharp`, and `onnxruntime-node` still depends on an older `adm-zip`; no fix has been released.
+  Those packages process Tony's own local model files and do not receive untrusted input.
 
 ---
 
@@ -223,8 +282,12 @@ Aug 31, 2026
 
 **Tools**
 
-- Asking the brain a question is about twice as fast, and re-asking one is about four times as fast. A recall used to send ten to fifteen small queries to the database one after another, and with the brain living behind a managed Postgres, each of them paid the network's round trip before doing any work. All the search lanes, the matching edges, and the node rows behind them now travel in one statement, so an ordinary question costs three round trips: one to weigh the question's words against the brain's vocabulary, one to search, one to walk the ratified edges out of the hits. Measured back to back on the same network against the real brain: first asks fell from about 1.4 seconds to 0.7, repeated asks from about 0.9 to 0.23, with identical answers.
-- If the combined statement ever fails, recall falls back to the old one-query-per-lane path and says so in the answer's note, so a broken extension still costs one lane instead of the whole answer.
+- Recall now combines its search work into one database request instead of sending ten to fifteen small requests in sequence.
+  An ordinary question needs three round trips: count its words, search the memories, and read approved connections.
+  Against the real brain on the same network, a first question fell from about 1.4 seconds to 0.7.
+  Repeated questions fell from about 0.9 seconds to 0.23, with the same answers.
+- If the combined database request fails, recall uses its older separate searches and says so in the answer note.
+  A failure in one search path does not lose the whole answer.
 
 ---
 
@@ -234,12 +297,21 @@ Aug 30, 2026
 
 **Tools**
 
-- Asking the brain a question from an agent is now about twice as fast. The MCP server used to start a whole new Node process for every question, and each one loaded the local embedding model from scratch before it could search anything. It now does the work in its own process, so the model loads once and stays loaded. Measured against `brain_dev` over ten questions in one server: the first question still costs about 1.9 seconds, every question after it takes a median of 898 milliseconds, against a flat 2.0 to 2.4 seconds per question before.
-- Reminders and single nodes come back almost instantly: about 85 milliseconds instead of about 900. Nothing about those two was slow; they were paying for a process start and a fresh database handshake every time. That 85 milliseconds assumes a connection left open by a recent question. Connections are dropped after 30 seconds idle, so the first question after a quiet stretch reconnects before it can answer.
-- A failed model load no longer sticks. Because the server now stays up, one bad load would have left the meaning-based search dead for the life of the server, with every answer quietly falling back to text search. It retries on the next question instead, which is what the old one-process-per-question setup did by accident.
-- Honest note on the query cache. It caches now that the server lives long enough for it to matter, but re-asking the same question only saves about 80 milliseconds. Once the model is loaded, embedding a question is cheap. Nearly all of the win is the model staying put.
-- Writing to the brain is unchanged. `remember` and `mark_complete` still go through `scripts/brain.mjs` as separate processes, so the one ratified write path stays exactly where it was.
-- `recall` is now importable as a function as well as a command. The command prints exactly what it printed before, byte for byte, so anything parsing its `--json` output keeps working.
+- Questions from an agent now take about half as long after the first question.
+  The memory server keeps the local search model loaded instead of starting a new process for every question.
+  In ten questions against `brain_dev`, the first still took about 1.9 seconds.
+  Later questions took a median of 898 milliseconds, down from 2.0 to 2.4 seconds each.
+- Reading reminders or one node fell from about 900 milliseconds to about 85.
+  The old path started a process and opened a database connection for every call.
+  The 85 millisecond measurement assumes a recent call left the connection open.
+  After 30 seconds idle, the next call reconnects.
+- If the search model fails to load, the server tries again on the next question.
+  Otherwise, a single failure could leave meaning-based search unavailable until the server restarted.
+- Reusing a question saves about 80 milliseconds.
+  Most of the speed gain comes from keeping the search model loaded.
+- `remember` and `mark_complete` still save through `scripts/brain.mjs` as separate processes.
+- Programs can now call `recall` as a function.
+  The command output, including `--json`, stays byte for byte the same.
 
 ---
 
@@ -249,14 +321,23 @@ Aug 30, 2026
 
 **Tools**
 
-- Coding agents now run a pinned copy of the repo at `~/.fuzzy-brain/runtime` instead of whatever branch your working checkout happens to be sitting on. Before this, an afternoon spent on a feature branch quietly made that half-finished branch every agent's brain, and moving or deleting the checkout broke all of them at once. The runtime is a local clone parked on `main`, so the git objects are hardlinks and cost almost nothing; its `node_modules` is a real second copy at roughly 1 GB.
-- `npm run agents:install` refuses to build the runtime from a checkout with no local `main`, or from a `main` that is behind `origin/main`, and prints the exact command that fixes it. Both mean the runtime would pin a state nobody has agreed is good. Your working tree never blocks it, because the clone reads committed `main` and your edits cannot reach the runtime anyway; you get a warning saying they stay behind, plus one if `main` is ahead of `origin/main` and the agents would be running unpushed code. Every install ends by printing the runtime's commit and subject, so which version the agents are on is never a guess.
-- New `--runtime-only` flag refreshes the runtime after you land something on `main` without touching a single agent config, and only reinstalls dependencies when the lockfile actually changed. It works mid-change, so you do not have to stash whatever you are in the middle of. New `--dev` flag points the agents back at your working checkout for debugging, with a warning at the top and bottom of the output saying what that costs. `--dry-run` still writes nothing at all, the runtime directory included.
-- `npm run fusion:install` follows the pinned runtime too. Installing the scheduled sync from a feature branch used to drag every agent onto that branch through the same launcher.
+- Coding agents now use a fixed copy of the repository at `~/.fuzzy-brain/runtime`.
+  Working on another branch no longer changes the version they run, and moving the working checkout no longer breaks them.
+  The fixed copy uses `main` and shares Git data with the checkout, but its dependencies take roughly 1 GB of extra disk space.
+- `npm run agents:install` stops if local `main` is missing or behind `origin/main` and prints a repair command.
+  Uncommitted work does not block installation because the agent runtime reads committed `main`.
+  The installer warns that those edits stay out of the runtime, and it warns if `main` has commits that have not been pushed.
+  It prints the installed commit and subject.
+- `--runtime-only` updates the fixed agent copy after a change lands on `main` without changing agent settings.
+  It reinstalls dependencies only when the lockfile changes, and it works while the checkout has uncommitted edits.
+  `--dev` points agents at the working checkout for debugging and prints a warning at the start and end.
+  `--dry-run` writes nothing, including to the runtime directory.
+- `npm run fusion:install` also uses the fixed runtime.
+  Installing scheduled sync from another branch no longer switches agents to that branch.
 
 **Docs**
 
-- The README's "Connect a coding agent" section explains the runtime: why the agents no longer follow your checkout, what it costs in disk, how to refresh it after a merge, and what `--dev` does.
+- The README explains why agents use the fixed runtime, its disk cost, how to update it after a merge, and how to use `--dev`.
 
 ---
 
@@ -266,13 +347,20 @@ Aug 30, 2026
 
 **API**
 
-- New POST /api/companion route: a bridge to the brain companion that runs a local Claude Code session on your subscription, so talking to the brain from the app costs nothing beyond the subscription you already have. The route feeds the whole brain to the session as text and gives it an empty tool set with slash commands turned off, so the session can only talk and propose; it cannot run commands, read files, reach the network, or write to the database on its own. It answers on localhost only and needs a custom header, matching the sync route's guards.
-- The dev and start servers now bind to 127.0.0.1 (localhost only) instead of every network interface, so nothing off your machine can reach the app. If you used to open the brain from your phone on the same wifi, that no longer works by default; this is the real boundary that keeps the companion bridge from being driven by another device.
+- The new `POST /api/companion` route lets the app talk to a local Claude Code session using the existing subscription.
+  It sends the brain as text and gives the session no tools or slash commands, so the session can talk and propose but cannot run commands, read files, use the network, or save memories itself.
+  The route accepts requests only on localhost and requires a custom header.
+- The development and production servers now listen on `127.0.0.1`, so other devices cannot reach the app by default.
+  Opening the brain from a phone on the same Wi-Fi no longer works without changing that setting.
 
 **UI**
 
-- New "talk" button opens a chat panel where you can think out loud and the companion picks up the thread, the same core loop that used to live only in the terminal. When something is worth keeping it proposes a node as a save card showing both layers (your verbatim words and the readable draft); nothing is saved until you click, and saving goes through the same add-node path the form already uses. The conversation stays one continuous session across messages, which also keeps each turn cheap.
-- A node that will not save now says why in plain words. A connection pointing at a node that no longer exists comes back as exactly that, instead of the raw database error the page used to print, which named tables and constraints.
+- The new "talk" button opens a chat with the brain companion in the app.
+  When you want to keep a thought, it proposes a save card with your exact words and a readable draft.
+  Nothing saves until you click, and the card uses the existing add-node path.
+  The chat stays in one session across messages.
+- When a node cannot save, the app explains why in plain words.
+  A connection to a missing node now reports the missing node instead of showing a database error.
 
 ---
 
@@ -282,27 +370,58 @@ Aug 30, 2026
 
 **Data**
 
-- Edge why sentences are indexed for full-text search, and `pg_trgm` plus two trigram indexes back the new typo lane. All additive; the migration rehearses on `brain_dev` before touching the real tables, as always. The trigram indexes cover the first 2,000 characters of a quote and the first 4,000 of a node, which bounds them at about 36MB instead of letting the corpus decide.
+- Search can now find the approved "why" sentence on a connection and tolerate misspellings through `pg_trgm` and two new text similarity indexes.
+  The new indexes cover the first 2,000 characters of a quote and 4,000 of a node, limiting their size to about 36 MB.
+  The database change adds to existing data and runs in `brain_dev` before touching the real tables.
 
 **Tools**
 
-- `recall` now runs the retrieval design the recall bench proved, instead of the two-lane sketch it grew from. On the bench's frozen 50,000-memory corpus that design took Recall@10 from 0.697 to 0.977, and the whole schema-independent half of it now lives in `scripts/lib/retrieval/`, imported by both the bench harness and `scripts/recall.mjs`, so the two cannot drift apart.
-- Four lanes per layer instead of two: exact full text, fragments, vector meaning, and trigram similarity for a question you mistyped. Which lanes matter is decided per question -- a short question whose words are not in the brain at all leans on trigrams, a long reworded one leans on meaning -- and the lanes are fused and then reranked rather than simply added up.
-- A mistyped question finds its answer. "securty vulnerabilites reviw" used to come back with nothing at all; it now returns the security-review span it was asking for. Measured against the real store, real typos score 0.44 to 0.69 on trigram similarity against their own answer and letter soup tops out at 0.25, so the cutoff sits at 0.40, in the gap.
-- A question that names a month or a year filters every lane by date. "what happened to the brass lantern in march 2024" now excludes the September span instead of ranking it. Bare month names are deliberately not a date signal, because "may" and "march" are ordinary words.
-- Ratified edge whys are searchable, and hits walk one hop. Ask about the words in a why sentence and both nodes it joins come back. Find a node any other way and its ratified neighbours come with it, each carrying the why that surfaced it, so an answer can always say why something is in front of you. A node that arrived through an edge never counts as a strong hit, so it can never make a question look answered when it is not.
-- The five answer states mean exactly what they meant before, and letter soup still answers "missing": twenty randomized nonsense questions returned zero hits each. The rule that keeps them out is unchanged in substance -- a vector score on its own is only trusted above 0.70, and below that a row has to have been matched by something that reads actual words.
-- The trade-off worth knowing: a question now costs roughly 150ms more, and a mistyped one costs about two seconds against the full evidence store, because trigram matching is expensive. That lane only runs when a question looks mistyped, so ordinary questions do not pay for it.
-- That 0.70 is itself a change. The cosine score that counts as a strong vector hit moved from 0.65, because 0.65 sat right on top of the noise rather than above it. Measured against brain_dev (451 embedded spans of real session text), 150 random letter-soup questions scored a median of 0.61 and a maximum of 0.651 against their nearest neighbour: a nonsense question never scores near zero, it just lands somewhere in the middle of the corpus. So about one junk question in fifty came back labelled "evidence" when the honest answer was "missing". Real answers and paraphrases score 0.72 to 0.87, so nothing at all lives in the gap the new threshold sits in.
-- That threshold move is a real answer-state change, not only a nonsense filter. A span that scores between 0.65 and 0.70 against your question used to come back as "evidence"; now it comes back as "partial". If a recall that used to answer starts saying "fragments surfaced but no direct answer is stored", that band is why, and the threshold is one named constant near the top of `scripts/recall.mjs`.
-- Query embeddings now run through a small bounded LRU cache (500 entries, keyed by trimmed/lowercased text): a cache hit skips the ~20ms model call and measured under 0.01ms on this machine. `scripts/recall.mjs` is wired to it, but that script is a one-shot CLI process (it embeds one question, then exits), so its cache is empty on every run and this does not yet speed up that command. The win lands whenever a caller of `embedQueryCached` stays resident across questions -- a long-lived server process, not this CLI.
-- The recall benchmark refuses to run itself into the ground. A load run now checks the working set against available RAM, the connection count against the core count, and whether the machine is already swapping, and it stops mid-run if the run itself starts swapping. This follows a 10M benchmark that took this laptop to 15.6GB of swap and load average 72 and made the desktop unusable; `--force` overrides it on a machine that can take it.
-- Added `scripts/bench-embed.mjs`, a rerunnable benchmark for query-embedding latency (cold model load, warm p50/p95 over realistic 5-30 word questions, and the cache-hit path), printing load average before and after since this machine is shared and often under heavy contention.
-- Looked into whether a faster ONNX backend exists for the query-embedding model on this Apple Silicon Mac. CoreML execution (`device: "coreml"`) was clearly slower, not faster (cold model load roughly 3x, warm p50 roughly 4x versus plain CPU), likely from unsupported-op fallback overhead on a small encoder at batch size 1. The q8-quantized weights were about 2.5x faster warm, but the minimum cosine similarity against the fp32 embeddings across 20 sample questions came out to 0.964, under the 0.99 bar needed to trust it as the same retrieval signal, so it stays out. The query path keeps the default CPU/fp32 backend.
+- `recall` now uses the search design tested on a fixed set of 50,000 memories.
+  In that test, the share of expected answers found in the first ten results rose from 0.697 to 0.977.
+  The test and live command share the same search code in `scripts/lib/retrieval/`.
+- Recall now searches exact text, text fragments, vector meaning, and misspellings for each saved layer.
+  It weighs those methods for the question and then ranks the combined results.
+- A question with typos can now find its answer.
+  "securty vulnerabilites reviw" now returns the security review passage.
+  Against the real store, real typos scored 0.44 to 0.69 on text similarity, while random letters reached at most 0.25.
+  The cutoff is 0.40.
+- When a question names a month with a year, recall limits every search method by date.
+  "what happened to the brass lantern in march 2024" no longer returns the September passage.
+  A month name alone does not trigger a date limit because words such as "may" and "march" also have other meanings.
+- Recall can search approved connection reasons.
+  A match in a reason returns both connected nodes.
+  A node found in another way brings directly connected nodes and their reasons as context.
+  Those connected nodes cannot, by themselves, make recall claim it found an answer.
+- The five answer states keep their earlier meanings.
+  All 20 random nonsense questions returned no results and the "missing" state.
+  A meaning score alone counts as strong support only above 0.70; below that, a result also needs a match to actual words.
+- The extra search work adds roughly 150 milliseconds to a question.
+  A mistyped question takes about two seconds against the full evidence store because typo matching is expensive.
+  Recall runs that search only for questions that look mistyped.
+- The score needed for a strong meaning match rose from 0.65 to 0.70.
+  In `brain_dev`, 150 random nonsense questions scored a median of 0.61 and a maximum of 0.651 against 451 real passages.
+  The old cutoff made about one nonsense question in fifty look like evidence.
+  Real answers and reworded questions scored 0.72 to 0.87 in that test.
+- A passage with a meaning score from 0.65 to 0.70 now yields "partial" rather than "evidence".
+  Recall may say "fragments surfaced but no direct answer is stored" for a question it previously treated as answered.
+  The cutoff is defined near the top of `scripts/recall.mjs`.
+- A caller that stays open can reuse the search model's result for up to 500 earlier questions, matched after trimming spaces and lowercasing the question.
+  In a local measurement, a reused result took under 0.01 milliseconds instead of a model call of about 20 milliseconds.
+  The one-shot `scripts/recall.mjs` command starts with an empty cache each time, so it does not yet gain this speedup.
+- The recall load test now checks available memory, database connections, CPU cores, and existing swap use before it starts.
+  It stops if the run begins using swap.
+  A previous 10 million item test drove this laptop to 15.6 GB of swap and a load average of 72.
+  `--force` overrides these limits.
+- Added `scripts/bench-embed.mjs` to measure first model load, typical and slow question times for 5 to 30 word questions, and reuse of cached results.
+  It prints system load before and after the test.
+- Tested other ways to run the question search model on this Apple Silicon Mac.
+  CoreML took about three times as long to load and four times as long for a typical question compared with the CPU setting.
+  Smaller q8 model weights answered about 2.5 times faster after loading, but their lowest similarity to the current model across 20 questions was 0.964, below the required 0.99.
+  Search therefore keeps the existing CPU model and full-precision weights.
 
 **Docs**
 
-- `experiments/recall-bench/PRODUCT-RECALL.md` records the port: what is shared, every tunable that had to change and the measurement behind it, and the same eighteen real questions run before and after.
+- `experiments/recall-bench/PRODUCT-RECALL.md` records the shared search code, each setting that changed and why, and results for the same 18 real questions before and after.
 
 ---
 
@@ -312,16 +431,16 @@ Aug 30, 2026
 
 **Tools**
 
-- `npm run agents:install` registers the fuzzy-brain MCP server with every coding agent on this Mac in one step: Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code if it is already set up for MCP.
+- `npm run agents:install` connects the Fuzzy Brain server to Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop, and VS Code when each is set up for MCP.
   It skips and reports on any agent it does not find, and prints a plain JSON snippet at the end for anything else.
   `--dry-run` previews every change without writing, and `--only` limits it to specific agents.
-- Every agent config, and the scheduled sync's launchd job, now points at `~/.fuzzy-brain/bin/brain-run`, a small launcher the repo ships and the installer keeps pointed at the current checkout, rather than at a path inside a git worktree.
-  Moving the checkout, including deleting the worktree it used to live in, is a rerun of the installer from the new location; nothing else needs to change by hand.
-  Existing hand-edited agent configs and the sync launch agent are safe to rewrite: each config is merged or backed up before being touched, never wholesale replaced.
+- Agent settings and scheduled sync now point to `~/.fuzzy-brain/bin/brain-run`, which the installer updates to the current checkout.
+  After moving or deleting a checkout, rerun the installer from the new location.
+  The installer merges or backs up hand-edited settings before changing them.
 
 **Docs**
 
-- The fusion bridge guide and the README now point at `npm run agents:install` instead of the old by-hand `codex mcp add ... "$PWD/..."` command, which broke the moment the checkout it was run from moved or was deleted.
+- The fusion guide and README now use `npm run agents:install` instead of a manual command tied to the old checkout path.
 
 ---
 
@@ -331,9 +450,9 @@ Aug 12, 2026
 
 **Tools**
 
-- Notes captured through the share sheet are now attributed the same way notes from every other source are, so recall treats them as Tony's own words and weighs them accordingly.
-  They were labelled with a capital T, which recall did not recognise, so those notes had been quietly missing the boost since the clippings sweep was written.
-  Notes already stored keep their old label, since evidence is never rewritten; anything captured from now on gets the boost.
+- Notes shared into the brain now carry Tony's speaker label, so recall gives his words the intended weight.
+  The earlier label used a capital T that recall did not recognize.
+  Earlier notes keep their saved label; newly shared notes get the corrected one.
 
 ---
 
@@ -343,12 +462,13 @@ Aug 12, 2026
 
 **Tools**
 
-- Video transcripts pasted into the todo app now land in the brain's evidence store on their own, one episode per video, with the title, channel, link, and the date it was watched kept alongside them.
-- Each transcript is stored in pieces cut at its own timestamps, so every piece opens with the moment it was said and a quote can be traced straight back to that point in the video.
-- Notes written about a video are stored as Tony's own words, which is the attribution recall leans on when it decides what is worth bringing up.
-- The hourly sync now runs this sweep between session ingest and embeddings, so a transcript pasted on the phone is searchable by the next cycle.
-  If the todo app's backend cannot be reached, that step is skipped and the rest of the sync still finishes.
-- Re-running is always safe: a video already captured is never stored twice, and a run that landed a transcript but never got to tell the app about it finishes that half on its next pass.
+- Video transcripts pasted into the todo app now reach the brain as source material, with one record per video and its title, channel, link, and watched date.
+- The brain splits each transcript at its timestamps, so a quote can lead back to its point in the video.
+- Notes about a video keep Tony's speaker label, which recall uses when ranking results.
+- The hourly sync now saves video transcripts after agent sessions and before preparing them for search, so a transcript pasted on the phone can be found by the next cycle.
+  If the todo app cannot be reached, the video step is skipped and the rest of the sync still finishes.
+- Running the video sync again does not duplicate a saved video.
+  If it saves a transcript but cannot update the todo app, it finishes that step on the next run.
 - `npm run watch:sweep` runs the sweep by hand, and `--dry-run` reports what would land without writing anything anywhere.
 
 ---
@@ -359,21 +479,26 @@ Aug 6, 2026
 
 **Data**
 
-- Deadlines and completion status now live in an append-only temporal event ledger, so the brain can know what is overdue, upcoming, or finished without rewriting old nodes or their raw words.
-- Automatic deadlines now require explicit deadline language and a current or future date, can be cleared through another append-only event, and render with the correct Los Angeles calendar date.
+- The brain now records deadlines and completions as new events, leaving older nodes and Tony's original words intact.
+  It can show what is overdue, coming up, or finished.
+- An automatic deadline requires clear deadline words and a date that is today or later.
+  Another event can clear it, and the app shows the right Los Angeles calendar date.
 - The two completed August goals are recorded as finished, and the Stripe Atlas offer remains active through August 5, 2027.
 
 **API**
 
-- A local MCP server now gives Codex and other compatible agents five guarded tools for recall, reminders, node reads, explicit memory capture, and explicit completion.
-- MCP writes now require matching explicit user command language in addition to the trusted local-client boundary.
-- The in-app and command-line node paths now recognize clear deadline language and create temporal metadata in the same transaction as the node.
+- A local memory server gives compatible agents five guarded actions: recall, reminders, node reads, explicit saves, and explicit completions.
+- Agents can save or complete a memory only when the user explicitly asks and the call comes from a trusted local client.
+- The app and command line now recognize clear deadline language and save its date together with the node.
 
 **Tools**
 
-- A macOS LaunchAgent can now ingest settled Claude Code and Codex sessions every hour into the unratified evidence store, then fill a bounded number of local embeddings; absolute executable paths and a cross-process lock keep scheduled and manual runs reliable.
-- Resumed sessions now append only their unseen turns, and malformed allowlists or settlement windows fail closed before any cloud write.
-- Embedding sweeps now process one document at a time, release native tensors, and refuse overlapping runs so unattended sync cannot exhaust the Mac.
+- A macOS scheduled job can save settled Claude Code and Codex sessions as unapproved source material every hour.
+  It then prepares a limited number of local search records.
+  Fixed command paths and a shared lock keep scheduled and manual runs from colliding.
+- A resumed session saves only new turns.
+  Invalid project lists or settling periods stop capture before any cloud write.
+- Search preparation handles one document at a time, releases model memory, and stops overlapping runs so unattended sync cannot exhaust the Mac.
 
 **Docs**
 
@@ -388,7 +513,10 @@ Jul 21, 2026
 
 **Docs**
 
-- New `digest-article` skill: hand it a URL and it lands the article whole in the evidence store, teaches it back to you live so you actually learn it, and lets takeaways precipitate into the brain in your own words. The brain stores what reading did to you, with a pointer back to what you read -- never the article's text as brain truth. Zero takeaways is a normal outcome; the article just sits in evidence.
+- The new `digest-article` skill saves an article from a URL as source material, then discusses it with you.
+  You can save takeaways in your own words.
+  The brain keeps your approved takeaway with a link to the article; it does not treat the article text as your belief.
+  Zero takeaways is a normal outcome; the article just sits in evidence.
 
 ---
 
@@ -398,8 +526,11 @@ Jul 22, 2026
 
 **Docs**
 
-- There is now a single living Polygres knowledge base at docs/reference/polygres.md. It gathers what we know about the Polygres platform and the Evokoa extensions (pgGraph, pgContext, and the new Pocket product) into one place that other AI sessions and other projects can reference, records that pgGraph is already pre-registered on the live brain tables but not yet built, notes that pgContext cannot yet coexist with pgvector, and holds the standing decisions about when to adopt each.
-- Added a BACKLOG.md at the repo root for capturing fuzzy, half-formed thoughts before they get lost -- things to come back to later, no structure or polish required.
+- `docs/reference/polygres.md` brings together research on Polygres, pgGraph, pgContext, and Pocket for later work.
+  It records that pgGraph is registered on the live brain tables but has not been built, and that pgContext cannot yet run alongside pgvector.
+  It also keeps the decisions about when to adopt each product.
+- Added `BACKLOG.md` for rough thoughts to revisit later.
+  They do not need a fixed format or polish.
 
 ---
 
@@ -409,8 +540,11 @@ Jul 21, 2026
 
 **Tools**
 
-- No script can silently run forever anymore. Every database connection now gives up loudly instead of hanging on a bad link (15s to connect, 2 minutes per query), and every sweeper's call into brain.mjs now has a 5-minute cap. This closes the class of failure where an ingest run once stalled for hours with no output; a failed call now lands in the run's counters and retries safely on the next run.
-- The embedding sweep now runs at the lowest CPU priority, so a long backfill can no longer starve the whole machine the way the first one did. It also stops itself if it detects it is making no progress (for example when a second sweep is filling the same rows), instead of looping.
+- Database calls and sweep commands now have time limits instead of hanging without an end.
+  Connecting has a 15 second limit, each query has a two minute limit, and each sweep call into `brain.mjs` has a five minute limit.
+  A failed call appears in the run count and can retry on the next run.
+- The embedding sweep now runs at the lowest CPU priority, so a long backfill can no longer starve the whole machine the way the first one did.
+  It also stops itself if it detects it is making no progress (for example when a second sweep is filling the same rows), instead of looping.
 - The session and clipping sweepers now share one helper for talking to brain.mjs, so their safety limits can never drift apart.
 
 ---
@@ -421,7 +555,12 @@ Jul 21, 2026
 
 **Tools**
 
-- New capture path from phone and Mac, no terminal needed. Share or highlight anything, tap the "Brain" Shortcut, and it lands in the evidence store as a `clipping` episode. A new sweeper (`npm run clippings:sweep`) moves clips from an iCloud Drive inbox folder into the brain through the existing `add-episode` verb, so the sensitive-pattern scrub, source exclusions, and dedupe-by-content guards all apply automatically. Nothing captures on its own: a clip exists only because Tony shared it. Processed clips are archived, never deleted, and failed clips stay in the inbox and retry on the next run.
+- Phone and Mac shares can now reach the brain without a terminal.
+  Share or highlight anything, tap the "Brain" Shortcut, and it lands in the evidence store as a `clipping` episode.
+  `npm run clippings:sweep` moves clips from an iCloud Drive inbox into the brain.
+  It applies the existing sensitive text filter, source exclusions, and duplicate check.
+  A clip is captured only when Tony shares it.
+  Processed clips are archived, never deleted, and failed clips stay in the inbox and retry on the next run.
 
 **Docs**
 
@@ -435,8 +574,12 @@ Jul 16, 2026
 
 **Docs**
 
-- The core open question -- how raw data becomes ratified node knowledge -- now has a written development plan: hand-cut real cases with Tony first, then retrieval over evidence, then the proposer, then typed claims once reality actually needs them. Full ladder: docs/superpowers/specs/2026-07-16-processing-layer-development.md.
-- Phase 3 was reviewed and rescoped to evidence-first retrieval, since the ratified brain is still far too small to need its own retrieval yet; the corrections are recorded on issues #4 and #10.
+- A new plan describes how source material may become approved memory.
+  It starts with real cases reviewed with Tony, then source search, suggested memories, and typed claims only if needed.
+  The plan is in `docs/superpowers/specs/2026-07-16-processing-layer-development.md`.
+- The Phase 3 plan now starts by searching source material.
+  The set of approved memories is still too small to need its own search system.
+  Issues #4 and #10 record the change.
 
 ---
 
@@ -446,13 +589,17 @@ Jul 14, 2026
 
 **API**
 
-- The sync-sessions route no longer freezes the whole app while it runs. It used to block every other request for up to ten minutes per click; it now runs the ingest without blocking, and a second click (or a terminal import running at the same time) is safely turned away instead of racing the database.
-- Error messages shown after a failed sync are safe to display now. File paths, database details, and quoted session text used to be able to leak into the browser; the full detail goes to the server log instead, and the button shows a plain explanation of what went wrong.
+- The sync-sessions route no longer freezes the whole app while it runs.
+  A click used to block other requests for up to ten minutes.
+  Session import now runs without blocking them, and the app turns away a second click or a simultaneous terminal import so the two do not race to save the same data.
+- Error messages shown after a failed sync are safe to display now.
+  File paths, database details, and quoted session text used to be able to leak into the browser; the full detail goes to the server log instead, and the button shows a plain explanation of what went wrong.
 - The route now requires a small custom header on its request, so another browser tab or page can't silently trigger a sync just by loading in the background.
 
 **UI**
 
-- Fixed the sync result panel hiding other panels underneath it. Opening "+ add node" or selecting a node/connection while a sync result was showing now closes the sync panel first, matching how those panels already behaved with each other.
+- Fixed the sync result panel hiding other panels underneath it.
+  Opening "+ add node" or selecting a node/connection while a sync result was showing now closes the sync panel first, matching how those panels already behaved with each other.
 
 ---
 
@@ -462,11 +609,14 @@ Jul 14, 2026
 
 **UI**
 
-- Added a "sync sessions" button in the app header, next to "+ add node": one click runs the same session ingester the terminal command runs, and the result -- what got pulled in, what got skipped and why -- shows in a dismissible panel. No new write path: the button, the API route, and the CLI all share one script.
+- Added a "sync sessions" button next to "+ add node" in the app header.
+  One click runs the same session import as the terminal command, and a panel shows what was saved or skipped and why.
+  The button, app route, and terminal command all use the same save script.
 
 **Data**
 
-- Corrected a wrong claim from earlier the same day: the ChatGPT desktop app's "Codex" tab and the Codex CLI read the same underlying session store (`~/.codex/`), confirmed by finding an identical session title in both. Anything run through the desktop app's Codex surface was already being captured; no extra work needed there.
+- Corrected a wrong claim from earlier the same day: the ChatGPT desktop app's "Codex" tab and the Codex CLI read the same underlying session store (`~/.codex/`), confirmed by finding an identical session title in both.
+  Sessions in the desktop app's Codex tab were already being captured.
 
 ---
 
@@ -476,7 +626,9 @@ Jul 14, 2026
 
 **Docs**
 
-- The companion learned to talk like a person from Tony's first real feedback session: it now greets with a plain hello instead of reciting what it remembers, keeps gently asking on heavy shares instead of closing early (Tony ends the digging, never the companion), proposes a breakdown of candidate keepers before drafting any node instead of one whole-day mega-node, and reads everything up front so no file chatter interrupts the talk.
+- After Tony's first feedback session, the companion opens with a plain hello and keeps asking when he shares something heavy.
+  Tony decides when to stop that conversation.
+  Before drafting a memory, it proposes which thoughts to keep as separate nodes and reads needed files up front.
 - The full correction is logged in FEEDBACK.md so the pattern is on record, same as the July 9 entry.
 
 ---
@@ -487,20 +639,36 @@ Jul 14, 2026
 
 **Data**
 
-- The first life-source is flowing: agent sessions (Claude Code and Codex) now ingest automatically into the evidence store. Every session becomes an episode holding the conversation only -- tool noise collapses into "[N tool calls omitted]" markers, and each turn becomes an evidence span with speaker and timestamp. First real run: 47 Claude Code sessions, 444 evidence spans, all from the allowlisted project.
-- Capture is split from parsing on purpose: a SessionEnd hook copies every transcript into a local archive (~/.fuzzy-brain/session-archive) with no parsing and no network, so a parser bug can never lose data and Claude Code's 30-day cleanup can never eat a session again (1088 existing transcripts backfilled, retention raised). The ingester parses archives plus live transcripts, and can be re-run forever.
-- Three guards stand between a session and the cloud database, in order: the machine-local allowlist (only named projects ingest; 937 sessions skipped in the first run), Tony's named exclusions on the source row (a match means zero rows, whole episode), and the sensitive-pattern scrub (run before rendering so span offsets stay exact). Machine-injected text -- system reminders, command wrappers, tool results, internal reasoning -- is stripped before anything can render as Tony's words.
-- An episode and all its evidence now commit in one transaction, so a killed pipeline can never strand an episode without its spans (a near-miss from a timed-out run made this real, not theoretical).
+- Claude Code and Codex sessions now enter the source material store automatically.
+  Each saved session keeps the conversation, replaces tool activity with "[N tool calls omitted]", and records the speaker and time for each turn.
+  The first real run saved 47 Claude Code sessions and 444 passages from the allowed project.
+- When a session ends, a local hook copies its transcript to `~/.fuzzy-brain/session-archive` without parsing it or using the network.
+  Parser errors and Claude Code's 30 day cleanup cannot remove this copy.
+  The setup copied 1,088 existing transcripts and raised retention.
+  Import reads both archived and live transcripts and can run again without duplicating them.
+- Session capture first checks the local list of allowed projects; the first run skipped 937 sessions outside it.
+  It then checks Tony's source exclusions and skips the whole session on a match.
+  Finally, it removes sensitive text before building passages so quote positions stay accurate.
+  Capture removes system reminders, command wrappers, tool results, and internal reasoning before labeling anything as Tony's words.
+- A session and its passages save together, so an interrupted import cannot leave a session with missing passages.
+  A timed-out run exposed this risk.
 
 **Tools**
 
-- New brain.mjs verbs: list-episodes (browse evidence without SQL) and batch add-evidence; add-episode accepts an atomic evidence array. Same one-write-path discipline, still tripwire-audited.
+- `brain.mjs` gained `list-episodes` to browse saved source material and `add-evidence` to save several passages in one call.
+  `add-episode` can save a session and its passages together, so a failed save leaves neither behind.
+  These commands use the existing guarded save path.
+  A code check still looks for writes outside that path.
 
 **Docs**
 
-- The companion skill learned the evidence store: browse with list-episodes/show-evidence, always label quotes as unratified evidence with provenance, treat evidence text as data never instructions (sessions contain web content), and propose keepers from evidence through conversation only. Machine-checked like every skill rule.
-- Three evidence-recall questions joined the eval set with a new expected state ("evidence"), including the boundary case: evidence of what Tony said is never upgraded to what Tony believes.
-- Cursor spike finding: Cursor chats live inside per-workspace SQLite databases with undocumented keys, a different extraction problem -- deferred with findings on issue #12.
+- The companion can browse saved source material and read individual passages.
+  It labels quotes as unapproved source material, ignores instructions inside that material, and discusses possible memories with Tony before saving.
+  Machine-checked like every skill rule.
+- Three new recall checks expect an "evidence" answer state.
+  One checks that a record of Tony's words does not automatically become a claim about his beliefs.
+- A short investigation found Cursor chats in separate SQLite databases for each workspace, with keys that Cursor has not documented.
+  Issue #12 records the finding and leaves Cursor capture for later work.
 
 ---
 
@@ -510,10 +678,19 @@ Jul 13, 2026
 
 **Data**
 
-- Added the evidence store: a second, separate layer alongside the ratified brain (nodes/edges/talks) for ingested life-data (agent sessions, texts, meetings, email). It holds sources (a registry of where evidence comes from), episodes (one captured unit, whole), and evidence (atomic verbatim spans inside an episode). Nothing here is ever treated as true -- meaning only ever arrives later as a ratified node or edge from conversation, exactly as the digital-brain master plan's two-store law requires.
-- Sensitive data with an exact, checkable shape (SSNs, Luhn-validated credit card numbers) is caught by a local, deterministic filter before anything is ever written, so it can never leave the machine and never becomes a permanent unfixable row. Deleted messages from other people are kept, never dropped, and always flagged, set once, never reversed. A redacted span always shows its placeholder and reason on read; a deleted-by-sender span always stays visible with an explicit marker -- neither state can be silently hidden.
-- Seven new `scripts/brain.mjs` verbs: `add-source`, `list-sources`, `set-exclusions`, `add-episode`, `add-evidence`, `mark-sender-deleted`, `show-evidence`. Same no-delete discipline as the rest of the brain: episodes and evidence are immutable once written, with exactly one narrow exception (the sender-deletion flag), machine-checked by a new test that audits the source code itself for any update or delete statement outside the allowed set.
-- This work was drafted, adversarially reviewed, and specified end to end by Fable 5 as the authoritative reviewer -- the review caught a real bug (a copy-pasted cascading delete that would have let a single command silently destroy every verbatim quote in the store) before it ever reached the database.
+- Added a separate store for source material such as agent sessions, texts, meetings, and email.
+  It records where material came from, each captured item, and exact passages within it.
+  The brain treats this material as unapproved evidence until Tony approves a memory or connection in conversation.
+- A local filter catches Social Security numbers and valid credit card numbers before saving, so those values do not leave the Mac or enter the permanent store.
+  Deleted messages from other people are kept, never dropped, and always flagged, set once, never reversed.
+  A passage with removed text shows a placeholder and reason when read.
+  A message deleted by its sender stays visible with a deletion marker.
+- Seven new `scripts/brain.mjs` verbs: `add-source`, `list-sources`, `set-exclusions`, `add-episode`, `add-evidence`, `mark-sender-deleted`, `show-evidence`.
+  Saved source material cannot be edited or deleted, except to mark a message deleted by its sender.
+  A test checks the code for forbidden database updates or deletes.
+- Fable 5 drafted the design and served as the final reviewer.
+  Its review found a copied database rule that could have deleted every saved quote after one delete command.
+  The rule was removed before it reached the database.
 
 ---
 
@@ -523,8 +700,13 @@ Jul 13, 2026
 
 **Docs**
 
-- Ratified the digital-brain plan's Phase 0 decisions, walked through and decided in conversation with Tony: no fixed rule for splitting a message into multiple nodes (discuss it live each time, same as edges already work); the companion's own notes live in a separate schema in the same database, isolated by Postgres itself, and an AI's own guess about Tony never becomes true about him until he says it in his own words; deleted messages from other people are kept but flagged as deleted, never silently dropped or silently kept looking intact; sensitive data with an exact shape (SSN, credit cards) gets caught by a local filter before it ever reaches an AI, while anything fuzzier is excluded by Tony naming it ahead of time.
-- Recorded the three non-M4 decisions as ADR 0002; M4 is resolved directly in the node-structuring notebook. Phase 0 of the master plan is complete, so Phase 1 (the evidence store) can begin.
+- Tony approved the first decisions in the digital brain plan.
+  He and the companion will decide in conversation when to split a message into multiple memories.
+  The companion's own notes stay separate, and its guesses about Tony do not become approved truth unless he says them in his own words.
+  Deleted messages from others remain visible with a deletion marker.
+  A local filter catches Social Security and credit card numbers, while Tony names less predictable material to exclude.
+- Recorded the three non-M4 decisions as ADR 0002; M4 is resolved directly in the node-structuring notebook.
+  Phase 0 of the master plan is complete, so Phase 1 (the evidence store) can begin.
 
 ---
 
@@ -534,9 +716,14 @@ Jul 13, 2026
 
 **Docs**
 
-- Added the digital-brain master plan (docs/superpowers/specs/2026-07-13-digital-brain-master-plan.md): Tony's vision -- one brain that brings his whole life together -- turned into seven gated phases built on one rule: the evidence store scales mechanically and is never true, while the ratified core grows only at conversation speed through the meaning rule.
-- Added the internal audit (what already exists, layer by layer, verified live) and the external landscape research (17 adversarially verified claims plus locally confirmed facts; interruption and coverage gaps stated plainly). Highlights: a May 2026 paper independently derives the raw/readable/ratified split; no product anywhere ships human-ratified meaning; the Rewind/Roam/Recall graveyard supplies the failure modes the plan designs against.
-- Filed the plan into the tracker: umbrella #10, evidence store #11, agent-sessions ingestion skeleton #12, brain-as-MCP-server #13, privacy threat model #14, with dependencies wired to the existing #3-#9.
+- Added `docs/superpowers/specs/2026-07-13-digital-brain-master-plan.md` with seven phases for Tony's broader brain.
+  Source material can grow through automated capture, while approved memories grow through conversation with Tony.
+- Added an audit of what the brain already has and research with 17 checked outside claims.
+  Both records name gaps in coverage and work that was interrupted.
+  The research cites a May 2026 paper with a similar raw, readable, and approved split.
+  It found no product offering human-approved meaning and used lessons from Rewind, Roam, and Recall.
+- Filed the overall plan as issue #10, the source material store as #11, initial agent session capture as #12, the memory server as #13, and the privacy plan as #14.
+  The tracker also records dependencies on existing issues #3 through #9.
 
 ---
 
@@ -546,12 +733,17 @@ Jul 11, 2026
 
 **Tools**
 
-- The companion gains the labeled-read guard: on feelings and meaning, it may offer a read only when explicitly labeled as its own, and "in your own words" is earned only by verbatim quoting. This is the direct fix for the tidy-theme reflex run 001 proved lives in the harness, and it is machine-checked by the skill tests.
+- When the companion offers an interpretation of a feeling or meaning, it now labels it as its own.
+  It says "in your own words" only when quoting Tony exactly.
+  Evaluation run 001 found that the companion added tidy themes even without memory records, so skill tests now check this rule.
 
 **Docs**
 
-- All four verdict-flip proposals from run 001 were ratified under Tony's delegation: ablation arms are graded against their own materials, a precise "partial" label never fails a delivered fact, Q17 is expected partial going forward, and the labeled-read clause joined the eval rubric. Sonnet 5's corrected A/B tally is 5/5, so the daily companion seat pilots on Sonnet 5 while Opus 4.8 keeps the boundary and meaning-gate seats.
-- Filed the eval-runner hardening issue so output degeneracies (the truncated Q03, the literal "test" Q10) get caught and retried before scoring in run 002.
+- Tony's delegation approved four scoring changes from run 001.
+  Each comparison uses only the material available to it, a precise "partial" label does not fail a stated fact, Q17 now expects "partial", and the interpretation label is part of the scoring guide.
+  Sonnet 5 scored 5/5 after those corrections and pilots the daily companion role.
+  Opus 4.8 keeps the roles that check boundaries and meaning.
+- Filed an issue to retry broken evaluation output before scoring run 002, including a cut-off Q03 answer and a Q10 answer that only said "test".
 
 ---
 
@@ -561,13 +753,17 @@ Jul 11, 2026
 
 **Docs**
 
-- Ran the first recall eval (run 001): 24 questions against the live brain, a five-question three-way ablation, and a Sonnet 5 companion A/B, executed as a multi-agent workflow under the PRD #8 seat policy. Headline: 20/24 answers claimed the right footing, and only 2 of 165 claims about Tony survived adjudication as invented.
-- The ablation settled the knowledge-vs-harness question with data: every brain-specific reference (22 of them) disappears without the brain, while the voice, safety posture, and capture instinct survive with an empty brain. The tidy-theme interpretation reflex fired even with zero nodes, proving it lives in the harness, where it can be tuned.
-- Added the run record at docs/evals/runs/ with machine-readable front matter naming the model in every seat, plus the run-log entry in the eval set. Four verdict-flip proposals await Tony's ratification inside the record.
+- The first recall evaluation asked 24 questions of the live brain, compared three setups on five questions, and compared two Sonnet 5 companion runs under the roles set by PRD #8.
+  In the review, 20 of 24 answers named the right support level, and two of 165 claims about Tony were judged invented.
+- Without the brain, all 22 references to specific memories disappeared, while the companion's voice, caution, and capture behavior remained.
+  It still added a tidy interpretation with no nodes, which located that behavior in the companion instructions.
+- Added the run record at docs/evals/runs/ with machine-readable front matter naming the model in every seat, plus the run-log entry in the eval set.
+  The record includes four proposed changes to earlier scoring decisions for Tony to approve.
 
 **Data**
 
-- A new contract test freezes the run-record format (model per seat, single ablation-arms model, per-question expected-vs-claimed rows, never-empty skipped section), so future runs stay comparable and a silent model change in a seat is structurally impossible.
+- A test checks that every evaluation record names each model, uses one model across comparison setups, lists expected and claimed results by question, and includes a skipped section even when nothing was skipped.
+  This keeps later runs comparable and exposes a model change.
 
 ---
 
@@ -577,14 +773,19 @@ Jul 11, 2026
 
 **Tools**
 
-- The companion now tells you which footing an answer stands on: supported by a node, simply not in the brain yet, held in two conflicting nodes, or blocked by a broken lookup. A failed search will never be dressed up as "you never told me that", and a missing answer becomes a question back to you instead of a generic guess.
-- When the companion drafts a connection's why for you to ratify, it now makes the kind of relationship explicit in the sentence (learned-from, happened-during, person-in) and dates it when time matters, so today's whys stay answerable as the graph grows.
+- The companion now says whether an answer has a saved memory behind it, is missing, has conflicting memories, or is blocked by a failed lookup.
+  A failed search does not become "you never told me that".
+  When a memory is missing, the companion asks Tony instead of guessing.
+- A draft connection reason now says how the two memories relate, such as "learned from", "happened during", or "person in".
+  It includes a date when time matters.
 
 **Docs**
 
-- Added the recall eval set: 25 questions the brain should eventually answer, each with its expected footing today, so personalization is measured against your evidence instead of vibes. The unanswerable ones double as the capture roadmap.
-- Recorded the architecture decision (ADR 0001): adopt the answer-state epistemics now, defer the heavy retrieval machinery (typed edge columns, recall controller, claims layer, Polygres activation) behind explicit triggers, tracked as GitHub issues #2 through #7.
-- The node structuring lab notebook gains mechanism M5, the typed-why drafting convention.
+- Added 25 recall questions with the answer state expected today, so later checks can compare answers with saved evidence.
+  The unanswerable ones double as the capture roadmap.
+- ADR 0001 adopts clear answer states now and waits on typed connection fields, a recall controller, a claims layer, and Polygres activation.
+  Issues #2 through #7 track the conditions for taking those steps.
+- The node structuring notebook now includes M5, a rule for naming the kind of relationship in a draft connection reason.
 
 ---
 
@@ -598,22 +799,27 @@ Jul 10, 2026
 
 **Data**
 
-- Added an isolated Polygres recall lab in `brain_dev` that models evidence, entities, typed claims, time, authority, search projections, resolution paths, and recall traces without changing the public brain.
-- Added synthetic sentence, graph, and hybrid fixtures that exercise full-text search, pgvector, HNSW, typed multi-hop traversal, and supported, missing, and conflicting knowledge states.
-- Added a disposable pgGraph 0.1.8 named-graph probe that verifies direct typed claim hops and returns each relationship's reason and evidence without registering sandbox tables in the real brain graph.
-- Made every sandbox test, seed, and companion table reference explicitly target `brain_dev`, so a pooled database connection cannot silently fall back to the public brain when it discards a session setting.
+- Added a Polygres search lab in `brain_dev` to test source passages, people and things, specific claims, time, source authority, search results, and the steps behind an answer.
+  It does not change the real brain.
+- Added made-up test cases for full text search, pgvector and HNSW meaning search, multi-step connections, and supported, missing, or conflicting answers.
+- Added a temporary pgGraph 0.1.8 test that follows one claim connection and returns its reason and source.
+  It does not add test tables to the real brain graph.
+- Tests, sample data, and companion tables now name `brain_dev` directly, so a reused database connection cannot accidentally use the real brain.
 
 **Tools**
 
-- Fixed the space so "go to nearest portrait" actually resolves the face. Portraits are now baked for the exact spot that button flies you to: every dot is placed along the line of sight from there, so the face snaps together at the viewing point and reads as scattered chaos from anywhere else -- the anamorphic effect the space was built for. Before, the depth scatter only lined up in the studio preview, and the parked view stayed a jumbled cloud.
+- Fixed the space so "go to nearest portrait" actually resolves the face.
+  Each portrait dot now lines up from the place the button reaches, so the face forms there and looks scattered from other positions.
+  Before, the depth scatter only lined up in the studio preview, and the parked view stayed a jumbled cloud.
 - Portraits already saved in the browser are upgraded automatically the next time the space loads; nothing needs to be re-added.
-- Made the Codex brain companion skill the single canonical copy and linked Claude to it, so both agents now follow the same raw, readable, recap, and brain-safety ritual without drifting apart.
-- Added a reusable recall policy and sandbox runner that diagnose why an answer is missing or contradictory, select only authorized next actions, and rerun comparisons without special-casing one life example.
+- Codex and Claude now read the same brain companion instructions for raw words, readable drafts, recaps, and save rules.
+- Added reusable recall checks that explain missing or conflicting answers, choose allowed next steps, and repeat comparisons without code for one specific example.
 
 **Docs**
 
-- Added primary-source research on universal personal AI memory, Polygres retrieval and operational limits, and companion identity, separating what Fuzzy Brain can reuse from the human-ratified, cross-agent architecture it may uniquely contribute.
-- Added an interactive Recall Observatory playbook with the technical priority map, live Polygres readiness audit, failure-repair states, and a replayable node-traversal animation.
+- Added research on personal AI memory, Polygres search and operating limits, and companion identity.
+  It separates ideas Fuzzy Brain can reuse from its proposed human approval rules across agents.
+- Added a Recall Observatory guide with priorities, a current Polygres check, ways to recover from failures, and an animation that replays a path through nodes.
 
 ---
 
@@ -623,9 +829,13 @@ Jul 9, 2026
 
 **Data**
 
-- Every node now keeps two layers: your raw words exactly as you gave them (never edited, not even typos, and no tool can change them), and a readable layer that guides you back into the thought. Existing nodes carried their stored text over as their raw.
-- Added a talks table: at the end of a talking session the companion drafts a short factual recap, you approve it, and the next session's greeting picks up exactly where you left off.
-- Added a brain_dev sandbox schema: tests, seeds, and experiments run there and are locked out of the real brain, and every migration rehearses on the sandbox before touching your real nodes.
+- Every node now keeps Tony's exact words, including typos, and a separate readable version.
+  No tool can change the original words.
+  Existing nodes carried their stored text over as their raw.
+- After a talking session, the companion can draft a short factual recap for Tony to approve.
+  The next session can use that approved recap to pick up the conversation.
+- Tests and experiments use the separate `brain_dev` database area.
+  Each database change runs there before it reaches real nodes.
 
 **API**
 
@@ -633,7 +843,8 @@ Jul 9, 2026
 
 **Tools**
 
-- brain.mjs learned the two layers and new verbs: set-readable (re-ratify a readable), add-talk (save an approved recap), and dump (a full JSON snapshot of the brain in your own hands). It still has no delete, clear, or set-raw on purpose.
+- `brain.mjs` now supports both text layers and commands to approve a revised readable version, save an approved recap, and export a full JSON copy of the brain.
+  It still has no delete, clear, or set-raw on purpose.
 - The visual-QA seed script now refuses to run anywhere but the sandbox.
 
 **UI**
@@ -642,7 +853,9 @@ Jul 9, 2026
 
 **Docs**
 
-- The ritual grew the meaning rule: the readable describes and quotes but never interprets; meaning enters the brain only through you. The structure pass retired in favor of the readable pass, and a new rule bans destructive SQL against the real brain.
+- The writing rule now says that readable text may describe and quote but must not interpret Tony's words.
+  Tony approves any meaning saved in the brain.
+  The structure pass retired in favor of the readable pass, and a new rule bans destructive SQL against the real brain.
 
 ---
 
@@ -652,8 +865,12 @@ Jul 9, 2026
 
 **Map**
 
-- Fixed a crash in the map view where grabbing a node dot -- pressing on it, whether you then dragged it or just let go -- could throw "undefined is not an object (evaluating 'position.x')" and blank the view. The map's camera controls no longer trip over a pointer they never finished tracking.
-- Node dots now feel alive: a dot brightens and swells while it moves (as the layout settles or when you drag it) and eases back once it comes to rest, and the whole field breathes gently when idle so the sky never looks frozen. All of this is turned off automatically if you have reduced motion enabled.
+- Pressing a node dot in the map could blank the view with "undefined is not an object (evaluating 'position.x')".
+  The map no longer crashes when a press ends without a completed drag.
+  The map's camera controls no longer trip over a pointer they never finished tracking.
+- A node dot now brightens and grows while it moves, then returns to normal when it stops.
+  The field moves gently while idle.
+  All of this is turned off automatically if you have reduced motion enabled.
 
 ---
 
@@ -663,8 +880,10 @@ Jul 9, 2026
 
 **Tools**
 
-- Added the brain companion: talk the way you would to someone who remembers everything, and your thoughts become nodes as the conversation goes -- no form to fill out. It loads your whole brain, opens by picking up where you left off, runs the structure pass on what you share, and offers connections for you to approve before anything is linked.
-- Added `scripts/brain.mjs`, the tool the companion runs on: `index` for the whole brain at a glance, `show` for the full text of a node on demand, and `add-node` / `add-edge` for writing, with the database "why" rule as the final gate.
+- Added the brain companion so Tony can talk through thoughts and save them as nodes without filling out a form.
+  It loads your whole brain, opens by picking up where you left off, runs the structure pass on what you share, and offers connections for you to approve before anything is linked.
+- Added `scripts/brain.mjs` with commands to list the brain, read a node, and save nodes or connections.
+  The database still requires a reason for each connection.
 
 ---
 
@@ -674,7 +893,8 @@ Jul 8, 2026
 
 **Tools**
 
-- Added "the space" (tools/space): a full-screen studio that turns any photo into an anamorphic portrait, plus a 3D space you can fly through where portraits sit in a ring. It runs on its own, separate from the main brain map, so the brain stays the default.
+- Added "the space" at `tools/space`, with a full-screen photo-to-portrait studio and a 3D room where portraits sit in a ring.
+  It runs on its own, separate from the main brain map, so the brain stays the default.
 - Fly with the arrow keys or WASD, and hold shift with up or down to rise and fall.
 - "Go to nearest portrait" now carries you all the way to a crisp head-on view of the closest face; leaving that view eases you right up to the face instead of dropping you far away.
 - Portraits can be deleted, each carries a numbered sign you can navigate to, and they are saved in the browser so they survive a reload.
@@ -687,7 +907,7 @@ Jul 8, 2026
 
 **Face**
 
-- Added the anamorphic face-reveal view: a 3D point cloud built from a real photo, where each node lights exactly one point in the actual face.
+- Added a 3D face made of photo-derived points, where each memory node lights one point and the face forms from one viewing position.
 - Strung faint connection lines between lit points, so existing whys stay visible in the face view too.
 - Made the face view the default view on load; the map is one toggle away.
 
@@ -700,12 +920,12 @@ Jul 8, 2026
 **UI**
 
 - Removed the animated galaxy background in favor of a solid night sky.
-- Added a motion pass: a tweened camera snap on "front", slow idle drift on the face view, staggered fades on load, a breathing halo on the selected node, and hover tooltips with a brief of the node body.
+- Added movement when the camera returns to "front", gentle drift in the face view, fades on load, a halo around the selected node, and short descriptions on hover.
 - Made all movement respect `prefers-reduced-motion`; buttons now acknowledge presses with a subtle scale.
 
 **Tools**
 
-- Added `tools/face-scatter.html`, a local, offline studio that turns a photo into the face-reveal point cloud, with a live 3D preview and tunable spacing, scatter depth, brightness, and contrast.
+- Added `tools/face-scatter.html`, an offline photo studio with a live 3D preview and controls for spacing, depth, brightness, and contrast.
 - Committed the ratified portrait asset (3,809 points).
 
 **Docs**
@@ -720,7 +940,8 @@ Jul 7, 2026
 
 **Docs**
 
-- Proposed "The Ratified Galaxy" brain architecture: a machine-suggests, human-decides model for connections and abstraction layers. Not yet approved for build.
+- Proposed "The Ratified Galaxy", where the program suggests connections and broader concepts and Tony decides what to approve.
+  Not yet approved for build.
 
 ---
 
@@ -740,18 +961,18 @@ Jul 2, 2026
 
 **Data**
 
-- Added the Polygres data layer: schema, a connection pool cached across dev reloads, and `GET /api/health` and `GET /api/graph`.
+- Added Polygres database tables, reusable connections during development, and `GET /api/health` and `GET /api/graph`.
 - Added integration tests that run against the real database inside rolled-back transactions.
 
 **Map**
 
-- Built the first map: a force-directed 2D graph with glow, a detail panel, and a type legend.
+- Built the first 2D map with connected nodes, a glow effect, a detail panel, and a legend for node types.
 
 **API**
 
 - Added in-app node creation: an add-node panel and `POST /api/nodes`.
 - Allowed `127.0.0.1` as a dev origin.
-- Made node type optional, so untyped capture stays first-class.
+- A node no longer needs a type when it is created.
 
 **UI**
 

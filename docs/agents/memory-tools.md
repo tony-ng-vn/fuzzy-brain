@@ -9,6 +9,25 @@ Discover the live tool list because a running client can still have an older ser
 
 Call `recall` with a natural-language question.
 It ranks approved nodes and unratified evidence together and labels their different authority.
+Both memory servers accept the same optional `layer`, `source_id`, `role`, `from`, and `until` arguments.
+Use `layer:"nodes"` for approved memories or `layer:"evidence"` for source passages.
+Source and role filters select evidence automatically because approved nodes do not have those source fields.
+Combining a node-only request with a source or role filter is invalid.
+The returned `scope` shows the effective filters.
+
+For example, `{"question":"pottery class", "source_id":"SOURCE_UUID", "role":"user"}` searches that source's recorded user messages with the ranked retrieval lanes.
+Copy the source UUID from a known result; do not invent it.
+An absent archive role remains unknown rather than being inferred from a speaker name.
+If archive role metadata is unavailable, recall reports degraded results and keeps the requested filter.
+
+Explicit `from` and `until` timestamps are inclusive, accept timezone offsets, and preserve up to six fractional second digits.
+They override calendar dates inferred from the question.
+They filter evidence by known message timestamps and nodes by creation timestamps.
+An undated message cannot satisfy an explicit timestamp bound through its containing episode's date.
+For an entire day, use the next midnight minus one microsecond as the inclusive upper bound.
+Natural-language calendar ranges remain half-open, as reported by `date_filter.bounds`.
+Filters apply before candidate limits and survive fallback queries.
+
 For a node, use `get_node` on the `fuzzy-brain` server.
 For evidence, follow the hit's `read` object through `read_evidence` on either server.
 That returns the matching passage and one neighboring passage on each side by default.
@@ -109,6 +128,9 @@ These receipts cover approved node creation and completion, not every older writ
 ## Use the CLI without MCP
 
 ```sh
+node scripts/recall.mjs --help
+node scripts/recall.mjs "pottery class" --json --source-id SOURCE_UUID --role user
+node scripts/recall.mjs "pottery class" --json --layer evidence --from 2026-09-01T00:00:00Z --until 2026-09-30T23:59:59.999999Z
 node scripts/tbrain.mjs --help
 node scripts/tbrain.mjs validate /absolute/private/day.json
 node scripts/tbrain.mjs import /absolute/private/day.json --authorize

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { recallInputShape } from "./lib/recall-scope.mjs";
 import { productionServices, residentPool } from "./fuzzy-brain-mcp.mjs";
 import { loadEnvLocal } from "./recall.mjs";
 import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
@@ -55,8 +56,8 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
     return pool.withClient(client => store[name](client, schema(), input));
   };
   return {
-    recall: async question => ({
-      ...await reads.recall(question),
+    recall: async (question, filters = {}) => ({
+      ...await reads.recall(question, filters),
       archive_coverage: { exhaustive: false, note: "Ranked retrieval includes retained evidence. Use search_archive and source reads to inspect passages and revisions." },
     }),
     readReceipt: id => stored("readReceipt", id),
@@ -116,9 +117,8 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
     ...await services.archiveStatus(), capture_enabled: allowCapture === true,
     authorized_source_ids: [...allowed],
   }));
-  register("recall", "Rank relevant brain records and evidence across history. Inspect source passages before drawing conclusions.", {
-    question: z.string().trim().min(1).max(2000),
-  }, ({ question }) => services.recall(question));
+  register("recall", "Rank relevant memories and evidence across history. Optionally restrict by layer, source_id, role, or exact from/until timestamps. Source and role filters select evidence; explicit dates require message timestamps and override inferred calendar dates.",
+    recallInputShape, ({ question, ...filters }) => services.recall(question, filters));
   register("read_evidence", "Read one evidence passage by its recall or search identifier, with bounded neighboring context within the same saved episode. Follow next_text_offset with the same id for long text. Works with legacy and archived evidence.",
     evidenceReadShape, input => services.readEvidence(input));
   register("read_receipt", "Verify one saved archive receipt, its provenance, coverage, and persistence identifiers.", {
