@@ -125,6 +125,18 @@ It returns checkpoint and episode identifiers with counts, without echoing conve
 `brain.mjs list-session-checkpoints SOURCE_ID` returns file and parser metadata for the most recent checkpoint of each session.
 The usual installed sync handles both commands automatically.
 
+Bounded session capture rotates through files in stable identifier order.
+After a run finishes, it saves the last examined identifier under `~/.fuzzy-brain/capture-progress`.
+The next run starts after that identifier and wraps around, so repeated failures cannot hold later files behind the attempt limit.
+Removing a file does not invalidate the saved position.
+The private progress file contains only a format version and session identifier, with a separate file for each source and database schema.
+It records scan order, not successful persistence.
+An interrupted run can retry its prior position, and malformed progress restarts from the beginning.
+The database checkpoint, allowlist, exclusions, and settled-file checks still apply to every candidate.
+Unbounded capture does not use this position.
+Set `FUZZY_BRAIN_CAPTURE_PROGRESS_DIR` to choose another private directory.
+Development runs do not use a progress directory unless that variable is set.
+
 ## Reminder behavior
 
 Deadline inference requires deadline language such as `by`, `due`, `expires`, `through`, or `until` plus a current or future date.
