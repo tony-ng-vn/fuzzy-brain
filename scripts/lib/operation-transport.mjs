@@ -61,7 +61,16 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
       })) : { recorded: false, ...(operation.disabled ? { disabled: true } : { error_code: "trace_unavailable" }) };
       const trace = { ...(operation.id ? { id: operation.id } : {}), ...finished };
       let outgoing = message;
-      if (operation.tool && message.result) outgoing = { ...message, result: { ...message.result, _meta: { ...message.result._meta, "tbrain/trace": trace } } };
+      if (operation.tool && message.result) {
+        const result = { ...message.result, _meta: { ...message.result._meta, "tbrain/trace": trace } };
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          result.structuredContent = { ...value, trace };
+          result.content = [{ type: "text", text: JSON.stringify(result.structuredContent) }];
+        } else {
+          result.content = [...(result.content ?? []), { type: "text", text: JSON.stringify({ trace }) }];
+        }
+        outgoing = { ...message, result };
+      }
       if (message.error) outgoing = { ...message, error: { ...message.error, data: { ...message.error.data, "tbrain/trace": trace } } };
       pending.delete(key);
       try {

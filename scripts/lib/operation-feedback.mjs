@@ -17,6 +17,9 @@ export const outcomeReportSchema = z.strictObject(outcomeReportShape).refine(val
   "A report needs an operation or workflow identifier.");
 
 export function summarizeOperations(traces, reports) {
+  const diagnosticNames = new Set(["trace_status", "read_trace", "list_traces", "report_outcome", "trace_summary"]);
+  const diagnostics = traces.filter(t => diagnosticNames.has(t.start.operation));
+  traces = traces.filter(t => !diagnosticNames.has(t.start.operation));
   const durations = traces.map(t => t.finish?.duration_ms).filter(value => typeof value === "number").sort((a, b) => a - b);
   const count = (values, key) => {
     const result = {};
@@ -29,6 +32,8 @@ export function summarizeOperations(traces, reports) {
   const percentile = fraction => durations.length ? durations[Math.ceil(durations.length * fraction) - 1] : null;
   return {
     operations: traces.length,
+    diagnostics: { operations: diagnostics.length, incomplete: diagnostics.filter(t => !t.finish).length,
+      errors: count(diagnostics, t => t.finish?.error_code) },
     incomplete: traces.filter(t => !t.finish).length,
     errors: count(traces, t => t.finish?.error_code),
     empty_retrievals: traces.filter(t => ["recall", "search_archive", "search"].includes(t.start.operation) && t.finish?.output.hit_count === 0).length,

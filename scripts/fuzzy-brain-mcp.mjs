@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { configuredOperationJournal, registerTraceTools } from "./lib/operation-tools.mjs";
+import { traceTransport } from "./lib/operation-transport.mjs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { recallInputShape, parseRecallScope } from "./lib/recall-scope.mjs";
@@ -203,13 +205,14 @@ function serverVersion() {
 
 export function createFuzzyBrainServer(
   services = productionServices(),
-  { logError = (error) => console.error("[fuzzy-brain] tool failed:", error) } = {},
+  { logError = (error) => console.error("[fuzzy-brain] tool failed:", error), journal = null } = {},
 ) {
   const server = new McpServer(
     { name: "fuzzy-brain", version: serverVersion() },
     {
       instructions: [
         "This is Tony's canonical personal memory, separate from the host application's saved context.",
+        ...(journal ? ["Every tool reply includes trace persistence status. Use its trace.id to inspect an operation. Report concrete failures or useful evidence with report_outcome; caller feedback never approves a memory. Pass a UUID in request metadata tbrain/workflow_id to connect steps."] : []),
         "Before answering questions about Tony's past, people, goals, deadlines, reminders, preferences, decisions, or unfinished work, call the relevant Fuzzy Brain tool.",
         "Use list_reminders for broad questions such as what Tony needs to remember; do not require him to name the deadline first.",
         "Call remember or mark_complete only after Tony explicitly asks to remember, save, add, or mark something complete.",
@@ -285,6 +288,7 @@ export function createFuzzyBrainServer(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, ({ node_ids, raw, request_id }) => services.markComplete({ nodeIds: node_ids, raw, requestId: request_id }), logError);
 
+  registerTraceTools(server, { journal, release: serverVersion() });
   return server;
 }
 
@@ -293,7 +297,8 @@ async function main() {
   // A resident server reads it once, here, or it has no DATABASE_URL at all.
   loadEnvLocal();
   const services = productionServices();
-  const server = createFuzzyBrainServer(services);
+  const journal = configuredOperationJournal();
+  const server = createFuzzyBrainServer(services, { journal });
 
   const transport = new StdioServerTransport();
   // Set before connect: the SDK chains an existing handler rather than
@@ -302,7 +307,7 @@ async function main() {
   transport.onclose = () => {
     void releaseResources(services);
   };
-  await server.connect(transport);
+  await server.connect(traceTransport(transport, { journal, entryPoint: "fuzzy_brain_mcp", release: serverVersion() }));
 }
 
 async function releaseResources(services) {
