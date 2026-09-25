@@ -4,6 +4,18 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.2
+
+2026-09-25
+
+**Tools**
+
+- Recall now accounts for document length when ranking text matches.
+  Repeated incidental words in a long paste no longer push a focused passage out of the search candidates as easily.
+- Long sources remain searchable, and source text stays unchanged.
+
+---
+
 ## v0.32.1
 
 2026-09-25

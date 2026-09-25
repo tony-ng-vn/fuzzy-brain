@@ -53,6 +53,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const LANE_LIMIT = 24; // per-lane candidates before fusion
 const RERANK_TOP_K = 25; // fused candidates the reranker sees
 const MAX_HITS = 10; // hits shown after reranking
+// Long pastes repeat incidental terms; divide text ranks by document length.
+const TEXT_LENGTH_NORMALIZATION = 2;
 
 // The question's own words are asked about only this many at a time. A
 // question longer than this is already answered by its first dozen content
@@ -253,14 +255,14 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   let orderBy;
   if (mode === "and") {
     const q = p.bind(ctx.question);
-    laneScore = `ts_rank_cd(${a}.fts, websearch_to_tsquery('english', ${q}))`;
+    laneScore = `ts_rank_cd(${a}.fts, websearch_to_tsquery('english', ${q}), ${TEXT_LENGTH_NORMALIZATION})`;
     where = `${a}.fts @@ websearch_to_tsquery('english', ${q})`;
     orderBy = "lane_score desc";
   } else if (mode === "or") {
     const q = p.bind(ctx.orQuery);
     const lex = p.bind(ctx.lexemes);
     const bar = p.bind(ctx.fragmentBar);
-    laneScore = `ts_rank_cd(${a}.fts, to_tsquery('english', ${q}))`;
+    laneScore = `ts_rank_cd(${a}.fts, to_tsquery('english', ${q}), ${TEXT_LENGTH_NORMALIZATION})`;
     // A row counts as a fragment only when it holds at least two of the
     // question's lexemes (all of them for a one-word question): one stray
     // shared word inside a big machine span is corpus noise, not a fragment.
@@ -322,7 +324,7 @@ function buildEdgeSql(mode, tables, ctx, p = paramBag()) {
   return {
     sql: `select ed.id, ed.source, ed.target, ed.why,
             ns.title as source_title, nt.title as target_title,
-            ts_rank_cd(ed.fts, ${match}) as lane_score
+            ts_rank_cd(ed.fts, ${match}, ${TEXT_LENGTH_NORMALIZATION}) as lane_score
      from ${tables.edges} ed
      join ${tables.nodes} ns on ns.id = ed.source
      join ${tables.nodes} nt on nt.id = ed.target
