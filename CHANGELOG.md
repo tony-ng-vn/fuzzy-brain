@@ -4,6 +4,22 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.5
+
+2026-09-25
+
+**Tools**
+
+- Session capture and search indexing now claim the right to run in one step, so a background job and a manual command cannot do the same work at once.
+- Each run writes a unique owner file inside its lock directory, and cleanup removes only that run's file.
+  A late cleanup cannot unlock a newer process, while recovery after a crash still works.
+
+**Docs**
+
+- The search indexing guide explains how overlapping jobs and lock directories with unknown owners are handled.
+
+---
+
 ## v0.32.4
 
 2026-09-25
