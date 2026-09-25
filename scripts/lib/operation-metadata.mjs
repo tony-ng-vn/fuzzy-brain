@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const codes = new Set(["invalid", "not_found", "conflict", "unauthorized", "excluded", "unavailable", "cancelled"]);
 const roles = new Set(["user", "assistant", "system", "tool", "other", "unknown"]);
-const operations = new Set([
+export const operationNames = Object.freeze([
   "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status", "index_repair", "sync", "sync_install", "sync_config", "session_capture", "list-session-checkpoints",
   "read_write_receipt", "status", "transfer_format", "prepare_capture", "validate_transfer", "archive_day",
   "read_receipt", "read_archive", "read_source", "read_evidence", "search_archive", "trace_status", "read_trace",
@@ -12,6 +12,7 @@ const operations = new Set([
   "show", "index", "dump", "list-sources", "list-episodes", "show-evidence", "set-readable", "add-talk",
   "set-exclusions", "mark-sender-deleted", "help", "get-node", "read-write-receipt", "set-deadline", "clear-deadline", "mark-complete", "list-reminders", "session-checkpoints", "sync-session",
 ]);
+const operations = new Set(operationNames);
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const validId = value => typeof value === "string" && uuid.test(value);
 export const safeErrorCode = value => codes.has(value) ? value : "unavailable";

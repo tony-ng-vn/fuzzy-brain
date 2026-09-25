@@ -1,10 +1,14 @@
 import { z } from "zod";
+import { operationNames } from "./operation-metadata.mjs";
 
 export const traceIdShape = z.string().regex(/^\d{4}-\d{2}-\d{2}_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 export const traceListFilterShape = {
   workflow_id: z.uuid().nullable().optional(),
   parent_id: traceIdShape.nullable().optional(),
   operation_id: traceIdShape.nullable().optional(),
+  operation: z.enum([...operationNames, "unknown"]).nullable().optional().describe("Operations only. Exact action name from a trace's start record."),
+  outcome: z.enum(["success", "error", "incomplete"]).nullable().optional().describe("Operations only. Incomplete means no finish record, not a proven failure."),
+  min_duration_ms: z.number().min(0).max(Number.MAX_SAFE_INTEGER).nullable().optional().describe("Operations only. Inclusive minimum recorded duration. Unfinished calls and missing timings cannot match."),
 };
 export const traceListFilterSchema = z.strictObject(traceListFilterShape);
 export const outcomeReportShape = {
