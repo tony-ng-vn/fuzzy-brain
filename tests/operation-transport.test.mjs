@@ -117,3 +117,22 @@ test("a stuck journal cannot hold a successful tool reply indefinitely", async t
   assert.equal(response._meta["tbrain/trace"].recorded, false);
   assert.ok(performance.now() - started < 2500);
 });
+
+test("graceful shutdown waits for an outstanding delivery record", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const journal = { async start() { return { id: "test", recorded: true }; }, async finish() { return { recorded: true }; }, recordDelivery() { return gate; } };
+  const inner = { async start() {}, async send() {}, async close() { this.onclose?.(); } };
+  const wrapped = traceTransport(inner, { journal, entryPoint: "tbrain_mcp", release: "0.31.0" });
+  wrapped.onmessage = () => {};
+  await wrapped.start();
+  await inner.onmessage({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "recall", arguments: {} } });
+  const sent = wrapped.send({ jsonrpc: "2.0", id: 7, result: { content: [], structuredContent: { hits: [] } } });
+  await new Promise(resolve => setImmediate(resolve));
+  let closed = false;
+  const close = wrapped.close().then(() => { closed = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, false);
+  } finally { release({ recorded: true }); await Promise.all([sent, close]); }
+});
