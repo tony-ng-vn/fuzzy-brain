@@ -86,7 +86,9 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
       const start = await readEvent(join(path, `${id}.start.json`));
       let finish = null;
       try { finish = await readEvent(join(path, `${id}.finish.json`)); } catch (error) { if (error.code !== "ENOENT") throw error; }
-      return { id, state: finish ? "finished" : "incomplete", start, finish };
+      let delivery = null;
+      try { delivery = await readEvent(join(path, `${id}.delivery.json`)); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      return { id, state: finish ? "finished" : "incomplete", start, finish, delivery };
     } catch (error) { throw failure(error.code === "ENOENT" ? "not_found" : "unavailable"); }
   };
   return {
@@ -126,6 +128,20 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
           output: outputMetadata(result),
         };
         await durableCreate(await folder(day), `${id}.finish.json`, event);
+        writes++;
+        return { id, recorded: true };
+      } catch { return failed(); }
+    },
+    async recordDelivery(id, state) {
+      if (!enabled) return { recorded: false, disabled: true };
+      try {
+        const { day } = parseId(id);
+        const saved = await read(id);
+        if (!saved.finish || !["sent", "failed"].includes(state)) throw failure("invalid");
+        await durableCreate(await folder(day), `${id}.delivery.json`, {
+          format: "tbrain.operation.v1", event: "delivery", id, at: new Date().toISOString(), state,
+          note: "Sent means the transport accepted the reply, not that the caller read or used it.",
+        });
         writes++;
         return { id, recorded: true };
       } catch { return failed(); }

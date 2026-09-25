@@ -23,6 +23,8 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
   const pending = new Map();
   const connectionId = randomUUID();
   let caller = null, closed = false;
+  const previousClose = transport.onclose;
+  const previousError = transport.onerror;
   const safely = async action => {
     try { return await action(); } catch { return { recorded: false, error_code: "trace_unavailable" }; }
   };
@@ -43,8 +45,8 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
         pending.set(JSON.stringify(message.id), { ...start, receivedAt, tool: message.method === "tools/call" });
         traced.onmessage?.(message, extra);
       };
-      transport.onclose = () => { closed = true; pending.clear(); traced.onclose?.(); };
-      transport.onerror = error => traced.onerror?.(error);
+      transport.onclose = () => { closed = true; pending.clear(); previousClose?.(); traced.onclose?.(); };
+      transport.onerror = error => { previousError?.(error); traced.onerror?.(error); };
       await transport.start();
     },
     async send(message, options) {
@@ -62,7 +64,13 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
       if (operation.tool && message.result) outgoing = { ...message, result: { ...message.result, _meta: { ...message.result._meta, "tbrain/trace": trace } } };
       if (message.error) outgoing = { ...message, error: { ...message.error, data: { ...message.error.data, "tbrain/trace": trace } } };
       pending.delete(key);
-      return transport.send(outgoing, options);
+      try {
+        await transport.send(outgoing, options);
+      } catch (error) {
+        if (finished.recorded) await safely(() => journal.recordDelivery(operation.id, "failed"));
+        throw error;
+      }
+      if (finished.recorded) await safely(() => journal.recordDelivery(operation.id, "sent"));
     },
     async close() { closed = true; await transport.close(); },
   };
