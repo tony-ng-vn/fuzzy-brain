@@ -79,3 +79,21 @@ Older log entries retain their original content; this change does not rewrite th
 
 After a cycle, use `index_status` to check the source you care about.
 A successful bounded pass can leave more records pending.
+
+## Overlapping work
+
+Session capture and search indexing each allow one process at a time on the same machine.
+Their lock directories contain a process ID and a unique owner name before becoming visible to other processes.
+A second process refuses to start while that owner is alive.
+After a crash, a later run removes only the dead owner's record before trying to start.
+Delayed cleanup cannot remove a newer owner's record.
+
+The implementation uses a prepared directory and an atomic rename on the local filesystem.
+POSIX requires rename to reject a destination directory that still contains files.
+See the [rename specification](https://pubs.opengroup.org/onlinepubs/9799919799/functions/rename.html).
+These locks do not coordinate jobs on different machines or network filesystems.
+
+Existing PID-only lock files remain supported when their owner is known.
+An empty or malformed old lock stops the command because it may belong to an older process that has not finished writing its PID.
+Inspect running processes before removing such a file.
+If a process ID has been reused by the operating system, the command also waits rather than taking ownership from a possibly active process.
