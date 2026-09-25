@@ -51,6 +51,16 @@ for (const script of ["fuzzy-brain-mcp.mjs", "tbrain-mcp.mjs"]) {
     assert.equal(summary.errors.invalid, 1);
     assert.equal(summary.findings.schema_rejection, 1);
     assert.equal(summary.incomplete, 0);
+    const nodeId = randomUUID();
+    const nodeReport = parse(await client.callTool({ name: "report_outcome", arguments: {
+      workflow_id: workflow, stage: "retrieval", outcome: "failed", finding: "missing_expected_node",
+      expected_node_ids: [nodeId], used_node_ids: [],
+    } }));
+    assert.equal(nodeReport.recorded, true);
+    const nodeReadback = parse(await client.callTool({ name: "read_trace", arguments: { id: nodeReport.id, kind: "report" } }));
+    assert.deepEqual(nodeReadback.expected_node_ids, [nodeId]);
+    assert.deepEqual(nodeReadback.used_node_ids, []);
+    assert.equal(nodeReadback.attribution, "caller_reported");
   });
 }
 
