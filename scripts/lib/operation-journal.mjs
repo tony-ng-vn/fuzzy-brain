@@ -140,7 +140,7 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
         const safeUuid = value => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
         const event = {
           format: "tbrain.operation.v1", event: "start", id, at,
-          entry_point: ["tbrain_mcp", "fuzzy_brain_mcp", "tbrain_cli", "recall_cli", "brain_cli", "index_cli"].includes(entry_point) ? entry_point : "unknown",
+          entry_point: ["tbrain_mcp", "fuzzy_brain_mcp", "tbrain_cli", "recall_cli", "brain_cli", "index_cli", "sync_cli"].includes(entry_point) ? entry_point : "unknown",
           operation: safeOperation(operation),
           release: typeof release === "string" && /^\d+\.\d+\.\d+(?:[-.a-zA-Z0-9]+)?$/.test(release) ? release.slice(0, 80) : null,
           caller: callerMetadata(caller), input: inputMetadata(input),

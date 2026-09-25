@@ -8,6 +8,10 @@ import { homedir } from "node:os";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { installLauncher, launcherPaths } from "./lib/agent-launcher.mjs";
 import { resolveLaunchRoot } from "./lib/agent-runtime.mjs";
+import { runTracedCli } from "./lib/operation-cli.mjs";
+import { operationChildEnvironment } from "./lib/operation-context.mjs";
+import { safeErrorCode } from "./lib/operation-metadata.mjs";
+import { loadEnvLocal } from "./recall.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +68,7 @@ async function runScript(script, args) {
     encoding: "utf8",
     timeout: 20 * 60 * 1000,
     maxBuffer: 8 * 1024 * 1024,
+    env: operationChildEnvironment(),
   });
   return stdout.trim();
 }
@@ -93,6 +98,12 @@ export async function runFusionSync({
   return failures.length
     ? { ok: false, error: failures.map(item => item.message).join(" "), failures, output }
     : { ok: true, output };
+}
+
+export function logSyncFailure(stage, error) {
+  console.error(JSON.stringify({ event: "fusion_sync.stage_failed",
+    stage: ["ingest", "watch-items", "embedding", "startup"].includes(stage) ? stage : "unknown",
+    error_code: safeErrorCode(error?.code) }));
 }
 
 export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
@@ -126,6 +137,9 @@ export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
 }
 
 async function main() {
+  if (process.argv.length > 3 || (process.argv[2] && !["--install", "--print-plist"].includes(process.argv[2]))) {
+    throw Object.assign(new Error("Unknown background sync option."), { code: "invalid" });
+  }
   if (process.argv.includes("--install")) {
     console.log(JSON.stringify(await installLaunchAgent(), null, 2));
     return;
@@ -135,15 +149,18 @@ async function main() {
     return;
   }
   const result = await runFusionSync({
-    onError: (stage, error) => console.error(`[fusion-sync:${stage}]`, error),
+    onError: logSyncFailure,
   });
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;
+  return result;
 }
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+  loadEnvLocal();
+  const operation = process.argv[2] === "--install" ? "sync_install" : process.argv[2] === "--print-plist" ? "sync_config" : "sync";
+  runTracedCli("sync_cli", operation, process.argv.slice(2), main).catch((error) => {
+    logSyncFailure("startup", error);
     process.exit(1);
   });
 }
