@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { safeErrorCode } from "./lib/operation-metadata.mjs";
 import { configuredOperationJournal, registerTraceTools } from "./lib/operation-tools.mjs";
 import { traceTransport } from "./lib/operation-transport.mjs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -93,8 +94,12 @@ export function residentPool({ open = () => makePool(POOL_OPTIONS), logError = (
   };
 }
 
+function logFailure(event, error) {
+  console.error(JSON.stringify({ event, error_code: safeErrorCode(error?.code) }));
+}
+
 export function productionServices({
-  logError = (error) => console.error("[fuzzy-brain] connection failed:", error),
+  logError = (error) => logFailure("fuzzy_brain.connection_failed", error),
   pool = residentPool({ logError }),
   run = runJson,
 } = {}) {
@@ -205,7 +210,7 @@ function serverVersion() {
 
 export function createFuzzyBrainServer(
   services = productionServices(),
-  { logError = (error) => console.error("[fuzzy-brain] tool failed:", error), journal = null } = {},
+  { logError = (error) => logFailure("fuzzy_brain.tool_failed", error), journal = null } = {},
 ) {
   const server = new McpServer(
     { name: "fuzzy-brain", version: serverVersion() },
@@ -314,7 +319,7 @@ async function releaseResources(services) {
   try {
     await services.close();
   } catch (error) {
-    console.error("[fuzzy-brain] shutdown failed:", error);
+    logFailure("fuzzy_brain.shutdown_failed", error);
   } finally {
     await disposeEmbeddingModel();
   }
@@ -322,7 +327,7 @@ async function releaseResources(services) {
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    logFailure("fuzzy_brain.startup_failed", error);
     process.exit(1);
   });
 }
