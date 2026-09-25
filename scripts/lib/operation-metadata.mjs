@@ -39,7 +39,7 @@ export function fingerprint(value) {
 export function callerMetadata(caller) {
   const known = new Set(["codex", "claude", "claude-code", "cursor", "chatgpt", "gemini", "vscode", "mcp-inspector", "tbrain"]);
   const name = typeof caller?.name === "string" ? caller.name.toLowerCase() : null;
-  const version = typeof caller?.version === "string" && /^\d+(?:\.\d+){0,3}$/.test(caller.version) ? caller.version : null;
+  const version = typeof caller?.version === "string" && caller.version.length <= 64 && /^\d+(?:\.\d+){0,3}$/.test(caller.version) ? caller.version : null;
   return { name: known.has(name) ? name : null, name_sha256: name ? fingerprint(caller.name).sha256 : null,
     version, attribution: "client_reported" };
 }
