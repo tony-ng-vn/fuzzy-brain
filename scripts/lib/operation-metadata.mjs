@@ -99,7 +99,7 @@ export function inputMetadata(value) {
   const filters = {};
   if (roles.has(input.role)) filters.role = input.role;
   if (["all", "nodes", "evidence"].includes(input.layer)) filters.layer = input.layer;
-  for (const key of ["limit", "offset", "text_limit", "text_offset", "context"]) {
+  for (const key of ["limit", "offset", "text_limit", "text_offset", "context", "max_duration_ms"]) {
     if (finite(input[key]) && input[key] >= 0) filters[key] = input[key];
   }
   for (const key of ["from", "until"]) {
@@ -142,7 +142,7 @@ export function outputMetadata(value) {
       }
     }
   }
-  for (const key of ["ok", "saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more"]) {
+  for (const key of ["ok", "saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more", "time_limit_reached"]) {
     if (typeof output[key] === "boolean") metadata[key] = output[key];
   }
   for (const key of ["total_messages", "next_offset", "next_text_offset", "total", "indexed_evidence", "indexed_nodes"]) {
