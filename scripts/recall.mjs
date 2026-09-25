@@ -118,7 +118,7 @@ const SIM_FLOOR = 0.5;
 // One row earns "strong" the same way everywhere: an exact lexical match, or
 // a vector hit clear of the garbage band. Fragments are handled separately.
 const isStrongHit = (c) => c.strongLex || (c.sim ?? 0) >= SIM_STRONG;
-const compareStrength = (a, b) => Number(isStrongHit(b)) - Number(isStrongHit(a));
+const compareMatchPriority = (a, b) => Number(Boolean(b.exactTitle)) - Number(Boolean(a.exactTitle)) || Number(isStrongHit(b)) - Number(isStrongHit(a));
 
 // Recall asks one profile of the shared weighting rules: the query-dependent
 // one the bench measured. The fixed-weight profiles exist only as bench
@@ -253,12 +253,20 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
   const vecParam = ctx.vecParam ?? (ctx.vecLiteral ? p.bind(ctx.vecLiteral) : null);
 
   let laneScore;
+  let exactTitle = "false";
   let where;
   let orderBy;
   if (mode === "and") {
     const q = p.bind(ctx.question);
     laneScore = `ts_rank_cd(${a}.fts, websearch_to_tsquery('english', ${q}), ${TEXT_LENGTH_NORMALIZATION})`;
     where = `${a}.fts @@ websearch_to_tsquery('english', ${q})`;
+    if (!isEvidence) {
+      const title = p.bind(ctx.question.trim().replace(/^"([\s\S]*)"$/, "$1"));
+      exactTitle = `md5(lower(n.title)) = md5(lower(${title})) and lower(n.title) = lower(${title})`;
+      // Literal titles can contain only stopwords; keep them ahead of incidental body matches.
+      laneScore = `case when ${exactTitle} then 1 else ${laneScore} end`;
+      where = `(${where} or (${exactTitle}))`;
+    }
     orderBy = "lane_score desc";
   } else if (mode === "or") {
     const q = p.bind(ctx.orQuery);
@@ -304,7 +312,7 @@ function buildLaneSql(mode, layer, tables, ctx, p = paramBag()) {
     sql: `select ${payload},
        ${laneScore} as lane_score,
        ${simExpr} as sim,
-       ${rareExpr} as rare_hit
+       ${rareExpr} as rare_hit, ${exactTitle} as exact_title
      ${from}
      where ${where}${dateClause}${conversationClause}${scopeClause}
      order by ${orderBy} limit ${LANE_LIMIT}`,
@@ -374,7 +382,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
 
   // A union matches its arms by POSITION, so every arm lays its columns out
   // in this exact order: lane, id, the evidence payload, the node payload,
-  // the edge payload, then the three scores. Absent fields are typed nulls.
+  // the edge payload, then the scores and exact-title flag. Absent fields are typed nulls.
   const quoteNulls = `null::text as quote, null::text as speaker`;
   const provNulls = `null::uuid as episode_id, null::text as source_locator,
        null::text as source_kind, null::text as source_label, null::uuid as source_id,
@@ -395,14 +403,14 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
        c.source_occurred_at, c.source_occurred_until,
        ${nodeNulls},
        ${edgeNulls},
-       c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit
+       c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit, c.exact_title
      from ${cte} c`);
     } else {
       arms.push(`select '${mode}:node' as lane, c.id,
        ${quoteNulls}, c.occurred_at, ${provNulls},
        c.type, c.title, c.body, c.created_at,
        ${edgeNulls},
-       c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit
+       c.lane_score::float8 as lane_score, c.sim::float8 as sim, c.rare_hit, c.exact_title
      from ${cte} c`);
     }
   });
@@ -415,7 +423,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
        ${quoteNulls}, null::timestamptz as occurred_at, ${provNulls},
        ${nodeNulls},
        c.source, c.target, c.why, c.source_title, c.target_title,
-       c.lane_score::float8 as lane_score, null::float8 as sim, false as rare_hit
+       c.lane_score::float8 as lane_score, null::float8 as sim, false as rare_hit, false as exact_title
      from ${cte} c`);
   }
 
@@ -431,7 +439,7 @@ function buildFusedSql(tables, ctx, laneJobs, edgeModes) {
        ${quoteNulls}, n.created_at as occurred_at, ${provNulls},
        n.type, n.title, n.body, n.created_at,
        ${edgeNulls},
-       0::float8 as lane_score, ${simExpr}::float8 as sim, ${rareExpr} as rare_hit
+       0::float8 as lane_score, ${simExpr}::float8 as sim, ${rareExpr} as rare_hit, false as exact_title
      from ${tables.nodes} n
      where n.id in (${endpoints})${dateFilterSql("n.created_at", fctx, p)}`);
   }
@@ -519,7 +527,7 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
   const flagsFor = (key) => {
     let f = flags.get(key);
     if (!f) {
-      f = { strongLex: false, weakLex: false, trigramLex: false, viaEdge: false, sim: null, cosine: null, lexical: 0, rareHit: false };
+      f = { exactTitle: false, strongLex: false, weakLex: false, trigramLex: false, viaEdge: false, sim: null, cosine: null, lexical: 0, rareHit: false };
       flags.set(key, f);
     }
     return f;
@@ -550,6 +558,7 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
       rowByKey.set(key, row);
       const f = flagsFor(key);
       if (mode === "and") f.strongLex = true;
+      if (row.exact_title === true) f.exactTitle = true;
       if (mode === "or") f.weakLex = true;
       if (mode === "trigram") f.trigramLex = true;
       if (mode === "vector") f.sim = Math.max(f.sim ?? 0, row.lane_score);
@@ -652,6 +661,7 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
       layer: key.startsWith("node:") ? "node" : "evidence",
       row,
       rrf,
+      exactTitle: f.exactTitle,
       strongLex: f.strongLex,
       weakLex: f.weakLex,
       trigramLex: f.trigramLex,
@@ -681,7 +691,7 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
 
   const edges = await expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode, notes);
   // Fragments remain fallbacks even when matching several lanes gives them a higher score.
-  candidates.sort((a, b) => compareStrength(a, b) || b.rrf - a.rrf);
+  candidates.sort((a, b) => compareMatchPriority(a, b) || b.rrf - a.rrf);
 
   for (const c of candidates) {
     if (c.layer !== "node") continue;
@@ -702,7 +712,7 @@ async function findCandidates(client, tables, question, queryVec, notes, scope) 
     };
   }
   const ranked = rerank(features, shortlist, cfg);
-  ranked.sort(compareStrength);
+  ranked.sort(compareMatchPriority);
   return { hits: ranked.slice(0, MAX_HITS), features, weights, span, explicitDates };
 }
 
@@ -752,13 +762,13 @@ async function expandOneHop(client, tables, ctx, candidates, rowByKey, whyByNode
        select 'edge' as kind, h.id, h.source, h.target, h.why, h.source_title, h.target_title,
               null::text as type, null::text as title, null::text as body,
               null::timestamptz as created_at, null::timestamptz as occurred_at,
-              null::float8 as sim, false as rare_hit
+              null::float8 as sim, false as rare_hit, false as exact_title
        from hop h
        union all
        select 'node' as kind, n.id, null::uuid as source, null::uuid as target, null::text as why,
               null::text as source_title, null::text as target_title,
               n.type, n.title, n.body, n.created_at, n.created_at as occurred_at,
-              ${simExpr}::float8 as sim, ${rareExpr} as rare_hit
+              ${simExpr}::float8 as sim, ${rareExpr} as rare_hit, false as exact_title
        from ${tables.nodes} n
        where n.id in (select source from hop union select target from hop)
          and not (n.id = any(${ids}::uuid[]))${dateFilterSql("n.created_at", ctx, p)}`,

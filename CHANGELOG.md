@@ -4,6 +4,24 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.44.0
+
+2026-09-25
+
+**Data**
+
+- A small title index supports exact title searches without changing saved memories.
+
+**Tools**
+
+- Recall now finds a complete approved node title even when ordinary text search drops every word in it as too common.
+  Matching ignores letter case and accepts one outer pair of double quotes around the title.
+- Exact title matches stay ahead of incidental body matches when choosing candidates and ordering the final results.
+  Date and layer limits still apply.
+- `recall:migrate` adds the title lookup after rehearsing the database change in `brain_dev`, before an authorized production run.
+
+---
+
 ## v0.43.0
 
 2026-09-25
