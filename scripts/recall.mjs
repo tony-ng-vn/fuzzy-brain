@@ -913,7 +913,7 @@ function formatHuman(result) {
   }
   for (const h of result.hits) {
     if (h.layer === "node") {
-      lines.push(`[node] ${h.title}  (${h.type || "untyped"}, ${isoDate(h.created_at)})  score ${h.score}`);
+      lines.push(`[node] ${h.title}  (${h.type || "untyped"}, ${isoDate(h.created_at)})  ${h.match_strength} match, score ${h.score}`);
       lines.push(`  ${h.node_id}`);
       if (h.via_edge) {
         lines.push(`  surfaced through ${h.via_edge.from_title}`);
@@ -927,7 +927,7 @@ function formatHuman(result) {
     } else {
       const who = h.speaker ?? "unknown-speaker";
       lines.push(
-        `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  score ${h.score}`,
+        `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  ${h.match_strength} match, score ${h.score}`,
       );
       if (h.fidelity && h.fidelity !== "verbatim") {
         lines.push(`  ${h.fidelity}: ${clip(h.quote, 300)}`);

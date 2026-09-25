@@ -163,6 +163,7 @@ export function outputMetadata(value) {
       ...references(hit), ...references(hit?.provenance),
       ...(["node", "evidence"].includes(hit?.layer) ? { layer: hit.layer } : {}),
       ...(roles.has(hit?.role) ? { role: hit.role } : {}),
+      ...(["strong", "partial"].includes(hit?.match_strength) ? { match_strength: hit.match_strength } : {}),
     }));
     metadata.hits_truncated = output.hits.length > 100;
   }
