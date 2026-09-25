@@ -44,7 +44,7 @@ export function callerMetadata(caller) {
     version, attribution: "client_reported" };
 }
 
-function references(value = {}) {
+function references(value, budget) {
   if (!value || typeof value !== "object") value = {};
   const result = {};
   for (const key of ["id", "source_id", "episode_id", "receipt_id", "checkpoint_id", "request_id", "evidence_id", "node_id"]) {
@@ -52,13 +52,28 @@ function references(value = {}) {
   }
   for (const key of ["evidence_ids", "node_ids"]) {
     if (!Array.isArray(value[key])) continue;
-    result[key] = value[key].filter(validId).slice(0, 100).map(id => id.toLowerCase());
-    if (value[key].length > result[key].length) result.references_truncated = true;
+    result[key] = [];
+    for (const id of value[key]) {
+      if (result[key].length === 100 || budget.remaining === 0) break;
+      if (!validId(id)) continue;
+      result[key].push(id.toLowerCase());
+      budget.remaining--;
+    }
+    if (value[key].length > result[key].length) {
+      result.references_truncated = true;
+      budget.truncated = true;
+    }
   }
   return result;
 }
 
-function captureMetadata(value) {
+function referenceCollector() {
+  // Per-list limits alone multiply across a batch and can exceed a journal record.
+  const budget = { remaining: 1000, truncated: false };
+  return { read: value => references(value, budget), get truncated() { return budget.truncated; } };
+}
+
+function captureMetadata(value, readReferences) {
   const coverage = value.coverage && typeof value.coverage === "object" ? value.coverage : {};
   const messageRoles = {};
   for (const message of value.messages ?? []) {
@@ -74,11 +89,12 @@ function captureMetadata(value) {
     known_message_dates: (value.messages ?? []).filter(message => typeof message?.at === "string" && Number.isFinite(Date.parse(message.at))).length,
     source_key_sha256: typeof value.source_key === "string" ? fingerprint(value.source_key).sha256 : null,
     revision_sha256: typeof value.revision === "string" ? fingerprint(value.revision).sha256 : null,
-    relation: { ...references(value.relation), kind: ["correction", "supplements", "source_export"].includes(value.relation?.kind) ? value.relation.kind : null },
+    relation: { ...readReferences(value.relation), kind: ["correction", "supplements", "source_export"].includes(value.relation?.kind) ? value.relation.kind : null },
   };
 }
 
 export function inputMetadata(value) {
+  const refs = referenceCollector();
   const input = value && typeof value === "object" ? value : {};
   const filters = {};
   if (roles.has(input.role)) filters.role = input.role;
@@ -91,19 +107,21 @@ export function inputMetadata(value) {
   }
   const transfer = input.transfer && typeof input.transfer === "object" ? input.transfer : input;
   return {
-    ...fingerprint(value), filters, references: { ...references(input), ...references(transfer) },
-    ...(Array.isArray(value) ? { item_count: value.length, items: value.slice(0, 100).map(references), items_truncated: value.length > 100 } : {}),
-    ...(Array.isArray(transfer.messages) ? { message_count: transfer.messages.length, capture: captureMetadata(transfer) } : {}),
+    ...fingerprint(value), filters, references: { ...refs.read(input), ...(transfer !== input ? refs.read(transfer) : {}) },
+    ...(Array.isArray(value) ? { item_count: value.length, items: value.slice(0, 100).map(refs.read), items_truncated: value.length > 100 } : {}),
+    ...(Array.isArray(transfer.messages) ? { message_count: transfer.messages.length, capture: captureMetadata(transfer, refs.read) } : {}),
+    ...(refs.truncated ? { references_truncated: true } : {}),
   };
 }
 
 export function outputMetadata(value) {
+  const refs = referenceCollector();
   const output = value && typeof value === "object" ? value : {};
-  const metadata = { ...fingerprint(value), references: references(output) };
+  const metadata = { ...fingerprint(value), references: refs.read(output) };
   if (Array.isArray(value)) {
     metadata.item_count = value.length;
     metadata.items = value.slice(0, 100).map(item => {
-      const fields = references(item);
+      const fields = refs.read(item);
       if (["committed", "prepared", "verified", "failed"].includes(item?.state)) fields.state = item.state;
       if (typeof item?.replayed === "boolean") fields.replayed = item.replayed;
       for (const key of ["evidence_count", "seen_count"]) {
@@ -132,7 +150,7 @@ export function outputMetadata(value) {
   }
   if (["committed", "prepared", "verified", "failed", "ready", "missing", "partial", "evidence", "supported", "conflict", "unavailable"].includes(output.state)) metadata.state = output.state;
   if (output.evidence && typeof output.evidence === "object") {
-    metadata.evidence = { ...references(output.evidence), source: references(output.evidence.source) };
+    metadata.evidence = { ...refs.read(output.evidence), source: refs.read(output.evidence.source) };
   }
   if (["empty", "pending", "complete"].includes(output.semantic_index?.state)) {
     const counts = value => value && ["total", "indexed", "pending"].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
@@ -160,12 +178,13 @@ export function outputMetadata(value) {
     metadata.hit_count = output.hits.length;
     metadata.hits = output.hits.slice(0, 100).map((hit, index) => ({
       rank: index + 1,
-      ...references(hit), ...references(hit?.provenance),
+      ...refs.read(hit), ...refs.read(hit?.provenance),
       ...(["node", "evidence"].includes(hit?.layer) ? { layer: hit.layer } : {}),
       ...(roles.has(hit?.role) ? { role: hit.role } : {}),
       ...(["strong", "partial"].includes(hit?.match_strength) ? { match_strength: hit.match_strength } : {}),
     }));
     metadata.hits_truncated = output.hits.length > 100;
   }
+  if (refs.truncated) metadata.references_truncated = true;
   return metadata;
 }
