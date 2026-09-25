@@ -17,8 +17,8 @@ const commands = {
     note: "Read a returned trace identifier. The default kind is operation. Use report for caller feedback. A missing finish means unknown or still running, not a failed save.",
   },
   traces: {
-    usage: "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports] [--workflow-id UUID] [--parent-id ID] [--operation-id ID]",
-    note: "List records for a UTC day, default today. The limit defaults to 20 and accepts 1 through 100 inspected records before filtering. Follow next_after even on an empty page. Results use identifier order. Workflow filters work for both kinds; parent filters select operations and operation filters select reports. Combined filters must all match.",
+    usage: "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports] [--workflow-id UUID] [--parent-id ID] [--operation-id ID] [--operation NAME] [--outcome success|error|incomplete] [--min-duration-ms N]",
+    note: "List records for a UTC day, default today. The limit defaults to 20 and accepts 1 through 100 inspected records before filtering. Follow next_after even on an empty page. Results use identifier order. Workflow IDs filter both kinds; parent IDs, action names, outcomes, and minimum durations filter operations only. Use the action name in start.operation, such as recall or sync. Incomplete means no finish record. Duration filters need a completed timing and accept nonnegative milliseconds, including fractions. Operation IDs filter reports. Combined filters must all match.",
   },
   "trace-summary": {
     usage: "trace-summary [--day DATE] [--limit N]",
