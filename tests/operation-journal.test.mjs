@@ -136,6 +136,48 @@ test("caller reports can be located by workflow or operation without changing at
   assert.equal(page.scanned_count, 2);
 });
 
+test("operation filters find slow failures and distinguish unfinished calls from completed ones", async t => {
+  const { store } = await journal(t);
+  const workflow = randomUUID();
+  const quick = await store.start({ ...details, workflow_id: workflow });
+  await store.finish(quick.id, { duration_ms: 5 });
+  const slow = await store.start({ ...details, workflow_id: workflow });
+  await store.finish(slow.id, { duration_ms: 200.5, error: { code: "unavailable" } });
+  const background = await store.start({ ...details, operation: "sync" });
+  await store.finish(background.id, { duration_ms: 1000 });
+  const incomplete = await store.start(details);
+  const noDuration = await store.start(details);
+  await store.finish(noDuration.id, {});
+  const found = [];
+  let after = null, scanned = 0;
+  do {
+    const page = await store.list({ operation: "recall", outcome: "error", min_duration_ms: 100, workflow_id: workflow, limit: 1, after });
+    scanned += page.scanned_count;
+    found.push(...page.traces.map(trace => trace.id));
+    after = page.next_after;
+  } while (after);
+  assert.equal(scanned, 5);
+  assert.deepEqual(found, [slow.id]);
+  assert.deepEqual((await store.list({ operation: "recall", outcome: "incomplete" })).traces.map(trace => trace.id), [incomplete.id]);
+  assert.deepEqual(new Set((await store.list({ operation: "recall", outcome: "success" })).traces.map(trace => trace.id)), new Set([quick.id, noDuration.id]));
+  assert.deepEqual(new Set((await store.list({ min_duration_ms: 0 })).traces.map(trace => trace.id)), new Set([quick.id, slow.id, background.id]));
+  assert.deepEqual((await store.list({ min_duration_ms: 200.5, operation: "recall" })).traces.map(trace => trace.id), [slow.id]);
+  assert.deepEqual((await store.list({ outcome: "incomplete", min_duration_ms: 0 })).traces, []);
+});
+
+test("operation filters reject private labels and incompatible report filters before reading files", async t => {
+  const { store } = await journal(t);
+  for (const options of [{ operation: "PRIVATE LABEL" }, { outcome: "PRIVATE LABEL" }, { min_duration_ms: -1 }, { min_duration_ms: Infinity }]) {
+    await assert.rejects(store.list(options), { code: "invalid" });
+  }
+  for (const options of [{ operation: "recall" }, { outcome: "success" }, { min_duration_ms: 0 }]) {
+    await assert.rejects(store.listReports(options), { code: "invalid" });
+  }
+  const unknown = await store.start({ ...details, operation: "PRIVATE OPERATION" });
+  assert.deepEqual((await store.list({ operation: "unknown" })).traces.map(trace => trace.id), [unknown.id]);
+  assert.doesNotMatch(JSON.stringify(await store.list({ operation: "unknown" })), /PRIVATE/);
+});
+
 test("invalid or incompatible trace filters are rejected before listing private files", async t => {
   const { store } = await journal(t);
   for (const options of [{ workflow_id: "PRIVATE" }, { parent_id: "../../PRIVATE" }, { operation_id: "2000-01-01_11111111-1111-4111-8111-111111111111" }]) {
