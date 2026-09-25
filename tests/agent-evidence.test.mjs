@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createFuzzyBrainServer, productionServices } from "../scripts/fuzzy-brain-mcp.mjs";
@@ -116,6 +118,13 @@ test("a long recall passage points both memory servers to the matching source ex
   assert.equal(hit.quote_truncated, true);
   assert.equal(hit.quote_length, text.length);
   assert.equal(hit.read.arguments.text_offset, hit.quote_offset);
+  const output = execFileSync(process.execPath, [fileURLToPath(new URL("../scripts/recall.mjs", import.meta.url)), "understanding release automation", "--source-id", source], {
+    encoding: "utf8", timeout: 60000,
+    env: { ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev" },
+  });
+  assert.ok(output.includes(target), "the text command must keep the matching sentence visible");
+  assert.ok(output.includes(`evidence ${receipt.evidence_ids[0]}`));
+  assert.ok(output.includes(`text offset ${hit.quote_offset} of ${text.length}`));
   const oldSchema = process.env.BRAIN_SCHEMA;
   process.env.BRAIN_SCHEMA = "brain_dev";
   t.after(() => { if (oldSchema === undefined) delete process.env.BRAIN_SCHEMA; else process.env.BRAIN_SCHEMA = oldSchema; });
