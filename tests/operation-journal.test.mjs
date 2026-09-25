@@ -89,3 +89,22 @@ test("failed tools keep safe error codes, references, and output counts without 
   assert.equal(saved.start.input.references.source_id, id);
   assert.doesNotMatch(JSON.stringify(saved), /PRIVATE/);
 });
+
+test("caller names and malformed result fields cannot leak arbitrary text or prevent a trace", async t => {
+  const { store } = await journal(t);
+  const started = await store.start({ ...details, caller: { name: "PRIVATE NAME", version: "PRIVATE VERSION" } });
+  assert.equal(started.recorded, true);
+  const finished = await store.finish(started.id, { result: { evidence: { source: null }, hits: [null, { id: "PRIVATE ID" }] } });
+  assert.equal(finished.recorded, true);
+  const saved = await store.read(started.id);
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE/);
+  assert.match(saved.start.caller.name_sha256, /^[0-9a-f]{64}$/);
+});
+
+test("reading a missing trace or empty day does not create journal directories", async t => {
+  const { store, directory } = await journal(t);
+  const id = "2000-01-01_11111111-1111-4111-8111-111111111111";
+  await assert.rejects(() => store.read(id), error => error.code === "not_found");
+  assert.deepEqual((await store.list({ day: "2000-01-01" })).traces, []);
+  assert.deepEqual(await readdir(directory), []);
+});
