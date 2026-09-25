@@ -48,6 +48,26 @@ function references(value = {}) {
   return result;
 }
 
+function captureMetadata(value) {
+  const coverage = value.coverage && typeof value.coverage === "object" ? value.coverage : {};
+  const messageRoles = {};
+  for (const message of value.messages ?? []) {
+    const role = roles.has(message?.role) ? message.role : "unknown";
+    messageRoles[role] = (messageRoles[role] ?? 0) + 1;
+  }
+  return {
+    coverage: {
+      kind: ["source_export", "model_assembled"].includes(coverage.kind) ? coverage.kind : null,
+      completeness: ["complete", "partial", "unknown"].includes(coverage.completeness) ? coverage.completeness : null,
+    },
+    message_roles: messageRoles,
+    known_message_dates: (value.messages ?? []).filter(message => typeof message?.at === "string" && Number.isFinite(Date.parse(message.at))).length,
+    source_key_sha256: typeof value.source_key === "string" ? fingerprint(value.source_key).sha256 : null,
+    revision_sha256: typeof value.revision === "string" ? fingerprint(value.revision).sha256 : null,
+    relation: { ...references(value.relation), kind: ["correction", "supplements", "source_export"].includes(value.relation?.kind) ? value.relation.kind : null },
+  };
+}
+
 export function inputMetadata(value) {
   const input = value && typeof value === "object" ? value : {};
   const filters = {};
@@ -62,13 +82,18 @@ export function inputMetadata(value) {
   const transfer = input.transfer && typeof input.transfer === "object" ? input.transfer : input;
   return {
     ...fingerprint(value), filters, references: { ...references(input), ...references(transfer) },
-    ...(Array.isArray(transfer.messages) ? { message_count: transfer.messages.length } : {}),
+    ...(Array.isArray(transfer.messages) ? { message_count: transfer.messages.length, capture: captureMetadata(transfer) } : {}),
   };
 }
 
 export function outputMetadata(value) {
   const output = value && typeof value === "object" ? value : {};
   const metadata = { ...fingerprint(value), references: references(output) };
+  if (Array.isArray(value)) {
+    metadata.item_count = value.length;
+    metadata.items = value.slice(0, 100).map(references);
+    metadata.items_truncated = value.length > 100;
+  }
   for (const key of ["saved", "valid", "replayed", "degraded", "exhaustive", "truncated", "has_more"]) {
     if (typeof output[key] === "boolean") metadata[key] = output[key];
   }
