@@ -94,6 +94,7 @@ test("portable trace listing filters linked calls and reports without opening th
   const workflow = randomUUID();
   const parent = await journal.start({ operation: "recall", workflow_id: workflow });
   const child = await journal.start({ operation: "search", workflow_id: workflow, parent_id: parent.id });
+  await journal.finish(child.id, { duration_ms: 123.5, error: { code: "unavailable" } });
   await journal.start({ operation: "recall", workflow_id: randomUUID() });
   const report = await journal.report({ operation_id: child.id, workflow_id: workflow, stage: "retrieval", outcome: "succeeded", finding: "none" });
   const options = { ...env, TBRAIN_TRACE: "0" };
@@ -103,6 +104,12 @@ test("portable trace listing filters linked calls and reports without opening th
   const reports = await run("tbrain.mjs", ["traces", "--kind", "reports", "--operation-id", child.id], options);
   assert.equal(reports.code, 0, reports.stderr);
   assert.deepEqual(JSON.parse(reports.stdout).reports.map(item => item.id), [report.id]);
+  const failed = await run("tbrain.mjs", ["traces", "--operation", "search", "--outcome", "error", "--min-duration-ms", "123.5"], options);
+  assert.equal(failed.code, 0, failed.stderr);
+  assert.deepEqual(JSON.parse(failed.stdout).traces.map(item => item.id), [child.id]);
+  const incompatible = await run("tbrain.mjs", ["traces", "--kind", "reports", "--min-duration-ms", "0"], options);
+  assert.equal(incompatible.code, 1);
+  assert.equal(JSON.parse(incompatible.stderr).error.code, "invalid");
 });
 
 test("a partly failed session batch keeps committed identifiers and reports the rejected item", async t => {
