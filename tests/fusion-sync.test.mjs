@@ -39,18 +39,19 @@ test("fusion sync still fills embeddings when the watch-item sweep cannot reach 
   assert.doesNotMatch(result.error, /DATABASE_URL|postgres/i);
 });
 
-test("fusion sync stops before embedding when ingestion fails", async () => {
+test("fusion sync continues independent work when session ingestion fails", async () => {
   const calls = [];
   const diagnostics = [];
   const result = await runFusionSync({
     run: async (script) => {
       calls.push(script);
-      throw new Error("ingest failed");
+      if (script === "ingest-sessions.mjs") throw new Error("ingest failed");
+      return `${script} ok`;
     },
     onError: (stage, error) => diagnostics.push([stage, error.message]),
   });
   assert.equal(result.ok, false);
-  assert.deepEqual(calls, ["ingest-sessions.mjs"]);
+  assert.deepEqual(calls, ["ingest-sessions.mjs", "sweep-watch-items.mjs", "embed-sweep.mjs"]);
   assert.deepEqual(diagnostics, [["ingest", "ingest failed"]]);
   assert.doesNotMatch(result.error, /DATABASE_URL|postgres/i);
 });
@@ -70,4 +71,25 @@ test("launch agent plist launches through the stable brain-run launcher, never a
   // worktree or repo path back into launchd's ProgramArguments.
   assert.doesNotMatch(plist, /Desktop\/fuzzy-brain/);
   assert.doesNotMatch(plist, /worktrees/);
+});
+
+
+test("fusion sync reports each failed stage and keeps completed work visible", async () => {
+  const result = await runFusionSync({
+    run: async script => {
+      if (script !== "embed-sweep.mjs") throw new Error("PRIVATE child command and source text");
+      return "indexed 4 records";
+    },
+    onError() { throw new Error("PRIVATE logging failure"); },
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failures.map(item => item.stage), ["ingest", "watch-items"]);
+  assert.deepEqual(result.output, ["indexed 4 records"]);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+});
+
+test("fusion sync rejects invalid indexing limits before starting capture", async () => {
+  for (const embeddingLimit of [0, -1, 1.5, NaN, Infinity]) {
+    await assert.rejects(runFusionSync({ embeddingLimit, run() { assert.fail("capture must not start"); } }), { code: "invalid" });
+  }
 });

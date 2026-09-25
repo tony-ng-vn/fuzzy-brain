@@ -26,3 +26,14 @@ test("batch outputs keep bounded record identifiers without source content", () 
   assert.equal(result.items[0].id, ID);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
+
+test("background traces retain failed stage names without child errors", () => {
+  const result = outputMetadata({ ok: false, failures: [
+    { stage: "ingest", message: "PRIVATE source text" },
+    { stage: "embedding", message: "PRIVATE credentials" },
+    { stage: "PRIVATE name", message: "PRIVATE data" },
+  ] });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failed_stages, ["ingest", "embedding"]);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+});
