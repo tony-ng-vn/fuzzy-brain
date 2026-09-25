@@ -1,3 +1,4 @@
+import { attemptTrace } from "./operation-safety.mjs";
 import { operationContext } from "./operation-context.mjs";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -26,9 +27,7 @@ export function traceTransport(transport, { journal, entryPoint, release }) {
   let caller = null, closed = false;
   const previousClose = transport.onclose;
   const previousError = transport.onerror;
-  const safely = async action => {
-    try { return await action(); } catch { return { recorded: false, error_code: "trace_unavailable" }; }
-  };
+  const safely = action => attemptTrace(action, { onTimeout: () => journal.markTimeout?.() });
   const traced = {
     get sessionId() { return transport.sessionId; },
     async start() {

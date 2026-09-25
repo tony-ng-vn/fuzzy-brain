@@ -69,8 +69,8 @@ async function readEvent(path) {
 
 export function createOperationJournal({ directory, enabled = true } = {}) {
   const root = directory ? resolve(directory) : null;
-  let writes = 0, failures = 0;
-  const status = () => ({ state: !enabled ? "disabled" : failures ? "degraded" : writes ? "ready" : "unverified", recorded_events: writes, failed_events: failures, storage: "local_private_files", content: "metadata_only" });
+  let writes = 0, failures = 0, timeouts = 0;
+  const status = () => ({ state: !enabled ? "disabled" : failures || timeouts ? "degraded" : writes ? "ready" : "unverified", recorded_events: writes, failed_events: failures, unconfirmed_events: timeouts, storage: "local_private_files", content: "metadata_only" });
   const failed = () => { failures++; return { recorded: false, error_code: "trace_unavailable" }; };
   const folder = async (day, create = false) => {
     if (!enabled || !root) throw failure("unavailable");
@@ -114,6 +114,7 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
   };
   return {
     status, read, readReport,
+    markTimeout() { timeouts++; },
     async start({ entry_point, operation, release, caller, input, connection_id = null, protocol_request_id = null, workflow_id = null, parent_id = null } = {}) {
       if (!enabled) return { recorded: false, disabled: true };
       try {
