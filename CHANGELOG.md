@@ -4,6 +4,25 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.34.0
+
+2026-09-25
+
+**Tools**
+
+- Recall now puts strong matches ahead of partial word or meaning matches when choosing candidates and again after ranking them.
+  Partial matches fill remaining places and still appear when no strong match exists.
+- Search results, command output, and trace records now label each match as strong or partial.
+  The labels describe search relevance.
+  They do not prove a claim or approve a memory.
+
+**Docs**
+
+- The memory guide explains match labels and why agents should use the returned order instead of sorting by score alone.
+- A research note records the ranking failure and two read-only comparisons with reference searches.
+
+---
+
 ## v0.33.0
 
 2026-09-25
