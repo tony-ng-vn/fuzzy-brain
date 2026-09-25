@@ -100,6 +100,9 @@ Delivery counts cover finished MCP requests only.
 A completed command-line call does not prove that another program read its output, and does not count as an unconfirmed MCP reply.
 The `failed_stages` counts show how many background runs reported a failure in session capture, pasted video capture, or indexing.
 Each run counts at most once per failed step.
+Session capture records `capture_sources` with counts for each configured session format and `failed_sources` when saves fail.
+Use its parent identifier to find the background cycle.
+Find save attempts in `list_traces` by matching their `parent_id` to the capture trace ID.
 Duration ends when the operation produces its result, before the finish record and reply delivery.
 It inspects at most 1,000 operations and 1,000 reports per call.
 When `exhaustive` is false, its counts and percentiles cover only the inspected records.

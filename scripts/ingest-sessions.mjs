@@ -21,6 +21,9 @@ import { tmpdir } from "node:os";
 import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode, SESSION_PARSER_VERSION } from "./lib/session-parser.mjs";
 import { cli, ensureSource } from "./lib/brain-cli.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
+import { runTracedCli } from "./lib/operation-cli.mjs";
+import { safeErrorCode } from "./lib/operation-metadata.mjs";
+import { loadEnvLocal } from "./recall.mjs";
 
 // One brain.mjs call per this many episodes, not one call per session: a
 // fresh spawn pays a fresh TLS handshake, which dominated cost on a
@@ -212,6 +215,12 @@ function listCheckpoints(sourceId) {
   return cli("list-session-checkpoints", [sourceId]);
 }
 
+export function logCaptureFailure(stage, error, count = 1) {
+  console.error(JSON.stringify({ event: "session_capture.failed",
+    stage: ["prepare", "batch", "claude", "codex", "startup"].includes(stage) ? stage : "unknown",
+    error_code: safeErrorCode(error?.code), count: Number.isSafeInteger(count) && count >= 0 ? count : 1 }));
+}
+
 // Reconcile a batch through one process and connection, with one transaction per session.
 // A failed reply leaves its checkpoint available to the identical retry.
 function flushChunk(buffer, submitChunk, counts) {
@@ -222,7 +231,7 @@ function flushChunk(buffer, submitChunk, counts) {
     results = submitChunk(chunk);
   } catch (err) {
     counts.failed += chunk.length;
-    console.error(`  failed chunk of ${chunk.length}: ${String(err.message).split("\n")[0]}`);
+    logCaptureFailure("batch", err, chunk.length);
     return;
   }
   for (const r of results) {
@@ -230,7 +239,7 @@ function flushChunk(buffer, submitChunk, counts) {
       counts.excluded++;
     } else if (r && r.error) {
       counts.failed++;
-      console.error(`  failed ${r.source_locator}: ${r.error}`);
+      logCaptureFailure("batch", { code: r.error });
     } else if (r.replayed || (r.state === "committed" && r.evidence_count === 0)) {
       counts.alreadyIngested++;
     } else {
@@ -285,7 +294,7 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
       payload = prepare(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
     } catch (err) {
       counts.failed++;
-      console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
+      logCaptureFailure("prepare", err);
       continue;
     }
     if (payload) {
@@ -339,7 +348,7 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
       payload = prepare(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
     } catch (err) {
       counts.failed++;
-      console.error(`  failed ${sessionId}: ${String(err.message).split("\n")[0]}`);
+      logCaptureFailure("prepare", err);
       continue;
     }
     if (payload) {
@@ -372,13 +381,46 @@ function printSummary(label, counts) {
   );
 }
 
+export function runSessionCapture(cfg, {
+  claude = processClaudeSessions, codex = processCodexSessions, onError = logCaptureFailure,
+} = {}) {
+  const settledBefore = Date.now() - cfg.settledHours * 3600 * 1000;
+  const capture_sources = {}, failed_sources = [];
+  for (const [source, capture] of [["claude", claude], ["codex", codex]]) {
+    try {
+      const counts = capture(cfg, settledBefore);
+      capture_sources[source] = counts;
+      if (counts.failed > 0) failed_sources.push(source);
+    } catch (error) {
+      failed_sources.push(source);
+      try { onError(source, error); } catch { /* The result still records the failed source. */ }
+    }
+  }
+  const ok = failed_sources.length === 0;
+  return { ok, capture_sources, failed_sources,
+    ...(!ok ? { error: { code: "unavailable", message: "Some sessions did not save; completed sessions remain saved." } } : {}) };
+}
+
 function main() {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length && !["--help", "-h"].includes(args[0]))) {
+    throw Object.assign(new Error("Unknown session capture option."), { code: "invalid" });
+  }
+  if (args.length) {
+    const help = { state: "help", commands: ["Run without arguments to capture settled sessions from configured sources."],
+      note: "Capture uses the configured allowlist and source exclusions. Failed saves return a nonzero exit status." };
+    console.log(JSON.stringify(help, null, 2));
+    return help;
+  }
   const releaseLock = acquireIngestLock();
   try {
     const cfg = loadConfig();
-    const settledBefore = Date.now() - cfg.settledHours * 3600 * 1000;
-    printSummary(cfg.sourceLabel, processClaudeSessions(cfg, settledBefore));
-    printSummary(cfg.codexSourceLabel, processCodexSessions(cfg, settledBefore));
+    const result = runSessionCapture(cfg);
+    for (const [source, counts] of Object.entries(result.capture_sources)) {
+      printSummary(source === "claude" ? cfg.sourceLabel : cfg.codexSourceLabel, counts);
+    }
+    if (!result.ok) process.exitCode = 1;
+    return result;
   } finally {
     releaseLock();
   }
@@ -386,5 +428,10 @@ function main() {
 
 // Only ingest when run directly; importing for tests must not (brain.mjs pattern).
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main();
+  loadEnvLocal();
+  const operation = ["--help", "-h"].includes(process.argv[2]) ? "help" : "session_capture";
+  runTracedCli("ingest_cli", operation, process.argv.slice(2), main).catch(error => {
+    logCaptureFailure("startup", error);
+    process.exitCode = 1;
+  });
 }

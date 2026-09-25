@@ -61,6 +61,17 @@ A failure in one step does not stop the later steps.
 The result lists failed steps and retains the summaries of completed work.
 A failed cycle exits with a nonzero status even when other steps succeeded.
 
+Session capture also exits with a nonzero status when individual saves fail.
+It keeps the completed saves and attempts the other configured session source even if the first source fails.
+Source exclusions and deliberate skips do not count as failed saves.
+Its own trace records per-source counts and failed source names.
+Child save commands point to that capture trace, which points to the background cycle when one started it.
+These records show completed work without copying session text, file names, or private error messages.
+
+Run `node scripts/ingest-sessions.mjs --help` to inspect session capture without reading its configuration or starting capture.
+The command rejects unknown options before capture begins.
+The configured allowlist, settling delay, and source exclusions still decide what may save.
+
 Run one cycle with `node scripts/fusion-sync.mjs`.
 Use `--help` to inspect its commands without starting capture.
 Use `--print-plist` to inspect its background-job configuration without installing it.

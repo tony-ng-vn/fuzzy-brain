@@ -4,6 +4,25 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.33.0
+
+2026-09-25
+
+**Tools**
+
+- Session capture now exits with a failure when some sessions cannot be saved.
+  It keeps successful saves and still tries the other session source.
+- Each capture run records counts for each source and links its record to the background run and individual save commands.
+- Capture now catches private error output from its save commands before it can print, then logs only safe details.
+- `--help` shows instructions without starting capture or reading configuration.
+  Unknown options also fail before either step.
+
+**Docs**
+
+- The capture and trace guides explain partial saves, failures by source, and how to follow a background run to each save attempt.
+
+---
+
 ## v0.32.6
 
 2026-09-25

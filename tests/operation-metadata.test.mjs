@@ -51,3 +51,13 @@ test("batch failure counts cover items beyond the bounded identifier list", () =
   assert.equal(metadata.items_truncated, true);
   assert.doesNotMatch(JSON.stringify({ output, metadata }), /PRIVATE/);
 });
+
+test("capture traces retain only known sources and nonnegative integer counts", () => {
+  const output = outputMetadata({ capture_sources: {
+    claude: { failed: 2, evidenceRows: 4, scanned: -1, ingested: "PRIVATE WORDS", unknown: 12 },
+    codex: { failed: 0 }, "PRIVATE SOURCE": { failed: 5 },
+  }, failed_sources: ["claude", "claude", "PRIVATE SOURCE"] });
+  assert.deepEqual(output.capture_sources, { claude: { failed: 2, evidenceRows: 4 }, codex: { failed: 0 } });
+  assert.deepEqual(output.failed_sources, ["claude"]);
+  assert.doesNotMatch(JSON.stringify(output), /PRIVATE/);
+});
