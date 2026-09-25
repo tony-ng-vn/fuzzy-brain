@@ -135,3 +135,23 @@ test("a long recall passage points both memory servers to the matching source ex
     } finally { await client.close(); }
   }
 });
+
+test("evidence readback accepts a valid excerpt offset beyond five million characters", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const db = database.client;
+  const source = randomUUID(), episode = randomUUID(), evidence = randomUUID();
+  const offset = 5000010;
+  const text = ".".repeat(offset) + "The original ending.";
+  await db.query("insert into brain_dev.sources(id,kind,label) values($1,'agent_read_test','Large offset')", [source]);
+  await db.query("insert into brain_dev.episodes(id,source_id,raw) values($1,$2,$3)", [episode, source, text]);
+  await db.query("insert into brain_dev.evidence(id,episode_id,quote,start_offset,end_offset,speaker) values($1,$2,$3,0,$4,'tony')", [evidence, episode, text, text.length]);
+  const { readEvidence } = await import("../scripts/lib/tbrain-store.mjs");
+  const result = await readEvidence(db, "brain_dev", { id: evidence, context: 0, text_offset: offset, text_limit: 700 });
+  assert.equal(result.evidence.text, "The original ending.");
+  assert.equal(result.evidence.text_offset, offset);
+  assert.equal(result.evidence.next_text_offset, null);
+  for (const text_offset of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(readEvidence(db, "brain_dev", { id: evidence, text_offset }));
+  }
+});
