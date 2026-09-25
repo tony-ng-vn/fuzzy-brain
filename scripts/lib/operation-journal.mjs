@@ -67,6 +67,23 @@ async function readEvent(path) {
   } finally { await handle.close(); }
 }
 
+async function readPage(ids, reader) {
+  const results = new Array(ids.length);
+  let next = 0, error = null;
+  // A summary can inspect 1,000 records; opening them all can exhaust the process.
+  const workers = Array.from({ length: Math.min(8, ids.length) }, async () => {
+    while (!error && next < ids.length) {
+      const index = next++;
+      try { results[index] = await reader(ids[index]); }
+      catch (caught) { error = caught; }
+    }
+  });
+  // Finish outstanding reads before reporting failure so their handles close.
+  await Promise.all(workers);
+  if (error) throw error;
+  return results;
+}
+
 export function createOperationJournal({ directory, enabled = true } = {}) {
   const root = directory ? resolve(directory) : null;
   let writes = 0, failures = 0, timeouts = 0;
@@ -105,7 +122,7 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
       const ids = (await readdir(await folder(day))).filter(name => name.endsWith(suffix))
         .map(name => name.slice(0, -suffix.length)).filter(id => idPattern.test(id) && (!after || id > after)).sort();
       const selected = ids.slice(0, limit);
-      return { day, items: await Promise.all(selected.map(reader)), has_more: ids.length > limit,
+      return { day, items: await readPage(selected, reader), has_more: ids.length > limit,
         next_after: ids.length > limit ? selected.at(-1) : null, order: "identifier", exhaustive: ids.length <= limit };
     } catch (error) {
       if (error.code === "ENOENT") return { day, items: [], has_more: false, next_after: null, order: "identifier", exhaustive: true };
