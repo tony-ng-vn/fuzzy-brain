@@ -4,6 +4,19 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.42.0
+
+2026-09-25
+
+**Tools**
+
+- Agents using the dedicated Tbrain connection can now open a recalled approved node with `get_node`.
+  It returns Tony's full original words, readable text, deadline, and completion state without requiring a second memory connection.
+- Node search previews now keep the exact spacing of the saved text and report its full length and whether the preview was shortened.
+  Each preview includes the command to open the full node.
+
+---
+
 ## v0.41.0
 
 2026-09-25

@@ -121,7 +121,7 @@ Use `status` to inspect storage readiness, configured source IDs and whether the
 Before `archive_day`, call `transfer_format` and copy one of its returned `authorized_source_ids` into `source_id`.
 Keep the conversation identity in `source_key` and `source.conversation_id`; never invent a source ID.
 
-The tools are `recall`, `search_archive`, `read_evidence`, `read_archive`, `read_source`, `read_receipt`, `prepare_capture`, `validate_transfer`, `transfer_format`, `status`, and, when enabled, `archive_day`.
+The tools are `recall`, `get_node`, `search_archive`, `read_evidence`, `read_archive`, `read_source`, `read_receipt`, `prepare_capture`, `validate_transfer`, `transfer_format`, `status`, and, when enabled, `archive_day`.
 Ranked `recall` accepts optional layer, source, role, and explicit timestamp filters on both memory servers.
 The [memory guide](agents/memory-tools.md) explains their date semantics and effective scope.
 Use `prepare_capture` for a partial packet assembled from supplied messages, or `validate_transfer` to check a full transfer without database access.
