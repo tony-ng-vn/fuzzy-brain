@@ -73,7 +73,7 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
   const status = () => ({ state: !enabled ? "disabled" : failures || timeouts ? "degraded" : writes ? "ready" : "unverified", recorded_events: writes, failed_events: failures, unconfirmed_events: timeouts, storage: "local_private_files", content: "metadata_only" });
   const failed = () => { failures++; return { recorded: false, error_code: "trace_unavailable" }; };
   const folder = async (day, create = false) => {
-    if (!enabled || !root) throw failure("unavailable");
+    if (!root || (!enabled && create)) throw failure("unavailable");
     const check = create ? privateDirectory : checkPrivateDirectory;
     await check(root);
     const path = join(root, day);

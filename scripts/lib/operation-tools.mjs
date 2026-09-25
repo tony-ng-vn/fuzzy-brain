@@ -6,9 +6,10 @@ import { outcomeReportShape, traceIdShape } from "./operation-feedback.mjs";
 import { safeErrorCode } from "./operation-metadata.mjs";
 
 export function configuredOperationJournal(env = process.env) {
-  // Development processes need their own explicit directory before retaining traces.
+  // Development processes must not read or write the production journal by default.
   const enabled = env.TBRAIN_TRACE !== "0" && (env.BRAIN_SCHEMA !== "brain_dev" || Boolean(env.TBRAIN_TRACE_DIR));
-  return createOperationJournal({ directory: env.TBRAIN_TRACE_DIR || join(homedir(), ".fuzzy-brain", "operation-traces"), enabled });
+  const directory = env.TBRAIN_TRACE_DIR || (env.BRAIN_SCHEMA === "brain_dev" ? null : join(homedir(), ".fuzzy-brain", "operation-traces"));
+  return createOperationJournal({ directory, enabled });
 }
 
 export function registerTraceTools(server, { journal, release }) {
