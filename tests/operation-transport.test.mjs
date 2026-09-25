@@ -107,3 +107,13 @@ test("a trace completion failure does not replace the service result", async t =
   assert.equal(result._meta["tbrain/trace"].recorded, false);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
+
+test("a stuck journal cannot hold a successful tool reply indefinitely", async t => {
+  const journal = { start: () => new Promise(() => {}) };
+  const { client } = await connect(t, "tbrain", { recall: async () => ({ hits: [] }) }, journal);
+  const started = performance.now();
+  const response = await client.callTool({ name: "recall", arguments: { question: "synthetic" } });
+  assert.notEqual(response.isError, true);
+  assert.equal(response._meta["tbrain/trace"].recorded, false);
+  assert.ok(performance.now() - started < 2500);
+});
