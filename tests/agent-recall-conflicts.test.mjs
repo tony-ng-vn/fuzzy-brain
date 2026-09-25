@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { recall } from "../scripts/recall.mjs";
+import { getNode, schemaTables } from "../scripts/brain.mjs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createFuzzyBrainServer } from "../scripts/fuzzy-brain-mcp.mjs";
+import { createTbrainServer } from "../scripts/tbrain-mcp.mjs";
 
 test("recall claims a conflict only for an explicit link between returned nodes", async t => {
   const db = await createTbrainTestDatabase();
@@ -34,5 +39,28 @@ test("recall claims a conflict only for an explicit link between returned nodes"
     assert.deepEqual(result.hits.map(hit => hit.node_id), [first]);
     assert.equal(result.state, "supported");
     assert.ok(result.hits[0].edges.some(link => link.target_title === "Copper orchard schedule"));
+  });
+  await t.test("either server can open the other end of a returned connection", async () => {
+    const result = await read({ from: "2026-09-15T00:00:00Z" });
+    const link = result.hits[0].edges[0];
+    assert.equal(link.source_id, first);
+    assert.equal(link.target_id, second);
+    assert.deepEqual(link.read, { tool: "get_node", arguments: { id: second } });
+    for (const create of [createFuzzyBrainServer, createTbrainServer]) {
+      const server = create({ getNode: id => getNode(db.client, schemaTables("brain_dev"), id) });
+      const client = new Client({ name: "connection-test", version: "1" });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(b), client.connect(a)]);
+      try {
+        const reply = await client.callTool({ name: link.read.tool, arguments: link.read.arguments });
+        assert.notEqual(reply.isError, true);
+        const node = JSON.parse(reply.content[0].text);
+        assert.equal(node.id, second);
+        assert.equal(node.raw, "The copper orchard meeting is Tuesday.");
+      } finally { await client.close(); }
+    }
+    const both = await read();
+    const reverse = both.hits.find(hit => hit.node_id === second).edges[0];
+    assert.deepEqual(reverse.read, { tool: "get_node", arguments: { id: first } });
   });
 });
