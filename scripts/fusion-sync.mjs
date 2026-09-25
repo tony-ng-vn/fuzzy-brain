@@ -17,6 +17,7 @@ const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const DEFAULT_EMBEDDING_LIMIT = 32;
+const DEFAULT_SESSION_LIMIT = 32;
 const LABEL = "com.tony.fuzzy-brain.sync";
 
 function xml(value) {
@@ -76,14 +77,18 @@ async function runScript(script, args) {
 export async function runFusionSync({
   run = runScript,
   embeddingLimit = DEFAULT_EMBEDDING_LIMIT,
+  sessionLimit = DEFAULT_SESSION_LIMIT,
   onError = () => {},
 } = {}) {
   if (!Number.isSafeInteger(embeddingLimit) || embeddingLimit <= 0) {
     throw Object.assign(new Error("The indexing limit must be a positive integer."), { code: "invalid" });
   }
+  if (!Number.isSafeInteger(sessionLimit) || sessionLimit <= 0) {
+    throw Object.assign(new Error("The session limit must be a positive integer."), { code: "invalid" });
+  }
   const output = [], failures = [];
   const steps = [
-    ["ingest", "ingest-sessions.mjs", [], "Session ingestion failed; completed batches remain saved and the next run can resume."],
+    ["ingest", "ingest-sessions.mjs", ["--limit", String(sessionLimit)], "Session ingestion failed; completed batches remain saved and the next run can resume."],
     ["watch-items", "sweep-watch-items.mjs", [], "Pasted video transcripts did not land; the next run retries them."],
     ["embedding", "embed-sweep.mjs", ["--limit", String(embeddingLimit)], "Some embeddings remain pending; the next run retries them."],
   ];
