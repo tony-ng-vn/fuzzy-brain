@@ -9,6 +9,7 @@
 // Deliberately absent, as protection by omission: no set-raw, no delete verbs.
 // The database CHECKs on raw, why, and recap are the final gates (AGENTS.md);
 // this tool never works around them. BRAIN_SCHEMA=brain_dev targets the sandbox.
+import { emitTracedOutput, recordTraceInput, runTracedCli } from "./lib/operation-cli.mjs";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -210,7 +211,7 @@ function loadEnvLocal() {
 async function readStdin() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
+  return recordTraceInput(Buffer.concat(chunks).toString("utf8"));
 }
 
 const EVIDENCE_BATCH_ROWS = 500;
@@ -355,7 +356,7 @@ async function main() {
         authorized: args.includes("--authorize"),
         allowedSourceIds: (process.env.TBRAIN_ALLOWED_SOURCE_IDS || "").split(",").map(id => id.trim()).filter(Boolean),
       });
-      console.log(JSON.stringify(receipt, null, 2));
+      emitTracedOutput(JSON.stringify(receipt, null, 2));
     } else if (!command || command === "index") {
       const nodes = (
         await client.query(
@@ -377,7 +378,7 @@ async function main() {
       const talk = (
         await client.query(`select recap, created_at from ${tables.talks} order by created_at desc limit 1`)
       ).rows[0] ?? null;
-      console.log(formatIndex(nodes, edges, talk));
+      emitTracedOutput(formatIndex(nodes, edges, talk));
     } else if (command === "show") {
       if (args.length === 0) throw new Error("show needs at least one node id");
       const { rows } = await client.query(
@@ -388,13 +389,13 @@ async function main() {
          where n.id = any($1::uuid[])`,
         [args],
       );
-      console.log(formatShow(rows));
+      emitTracedOutput(formatShow(rows));
     } else if (command === "get-node") {
-      console.log(JSON.stringify(await getNode(client, tables, args[0]), null, 2));
+      emitTracedOutput(JSON.stringify(await getNode(client, tables, args[0]), null, 2));
     } else if (command === "read-write-receipt") {
-      console.log(JSON.stringify(await readWriteReceipt(client, schema, args[0]), null, 2));
+      emitTracedOutput(JSON.stringify(await readWriteReceipt(client, schema, args[0]), null, 2));
     } else if (command === "add-node") {
-      console.log(JSON.stringify(await addMemoryNode(client, schema, JSON.parse(await readStdin())), null, 2));
+      emitTracedOutput(JSON.stringify(await addMemoryNode(client, schema, JSON.parse(await readStdin())), null, 2));
     } else if (command === "set-deadline") {
       const [id] = args;
       if (!id) throw new Error("set-deadline needs a node id");
@@ -407,7 +408,7 @@ async function main() {
          returning id, node_id, event_type, value_at, occurred_at, raw, origin, created_at`,
         [id, dueAt, raw, origin === "explicit" ? "explicit" : "derived"],
       );
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "clear-deadline") {
       const [id] = args;
       if (!id) throw new Error("clear-deadline needs a node id");
@@ -419,12 +420,12 @@ async function main() {
          returning id, node_id, event_type, occurred_at, raw, origin, created_at`,
         [id, raw],
       );
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "mark-complete") {
-      console.log(JSON.stringify(await completeMemoryNodes(client, schema, JSON.parse(await readStdin())), null, 2));
+      emitTracedOutput(JSON.stringify(await completeMemoryNodes(client, schema, JSON.parse(await readStdin())), null, 2));
     } else if (command === "list-reminders") {
       const atArg = args.find((arg) => arg.startsWith("--at="));
-      console.log(JSON.stringify(await listReminders(client, tables, atArg?.slice(5)), null, 2));
+      emitTracedOutput(JSON.stringify(await listReminders(client, tables, atArg?.slice(5)), null, 2));
     } else if (command === "add-edge") {
       const { source, target, why } = JSON.parse(await readStdin());
       // No client-side why check: the CHECK constraint is the one true gate.
@@ -432,7 +433,7 @@ async function main() {
         `insert into ${tables.edges} (source, target, why) values ($1, $2, $3) returning id, source, target, why`,
         [source, target, why],
       );
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "set-readable") {
       const [id] = args;
       if (!id) throw new Error("set-readable needs a node id");
@@ -444,7 +445,7 @@ async function main() {
         [id, body],
       );
       if (rowCount === 0) throw new Error(`no node with id ${id}`);
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "add-talk") {
       const { recap } = JSON.parse(await readStdin());
       if (!recap || !recap.trim()) throw new Error("a talk needs a recap");
@@ -452,7 +453,7 @@ async function main() {
         `insert into ${tables.talks} (recap) values ($1) returning id, recap, created_at`,
         [recap],
       );
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "add-source") {
       const { kind, label, exclusions } = JSON.parse(await readStdin());
       const list = exclusions ?? [];
@@ -461,12 +462,12 @@ async function main() {
         `insert into ${tables.sources} (kind, label, exclusions) values ($1, $2, $3) returning id, kind, label, exclusions, created_at`,
         [kind, label, JSON.stringify(stampExclusions(list))],
       );
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "list-sources") {
       const { rows } = await client.query(
         `select id, kind, label, sync_cursor, last_synced_at, exclusions, created_at from ${tables.sources} order by created_at asc`,
       );
-      console.log(JSON.stringify(rows, null, 2));
+      emitTracedOutput(JSON.stringify(rows, null, 2));
     } else if (command === "set-exclusions") {
       const [id] = args;
       if (!id) throw new Error("set-exclusions needs a source id");
@@ -480,9 +481,9 @@ async function main() {
         [id, JSON.stringify(stampExclusions(list))],
       );
       if (rowCount === 0) throw new Error(`no source with id ${id}`);
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "list-session-checkpoints") {
-      console.log(JSON.stringify(await listSessionCheckpoints(client, schema, args[0])));
+      emitTracedOutput(JSON.stringify(await listSessionCheckpoints(client, schema, args[0])));
     } else if (command === "sync-session") {
       const input = JSON.parse(await readStdin());
       if (Array.isArray(input)) {
@@ -491,9 +492,9 @@ async function main() {
           try { results.push(await syncSession(client, schema, item)); }
           catch (error) { results.push({ error: errorCode(error), source_locator: item?.source_locator ?? null }); }
         }
-        console.log(JSON.stringify(results));
+        emitTracedOutput(JSON.stringify(results));
       } else {
-        console.log(JSON.stringify(await syncSession(client, schema, input)));
+        emitTracedOutput(JSON.stringify(await syncSession(client, schema, input)));
       }
     } else if (command === "add-episode") {
       // Accepts one episode object (unchanged), or an array for batch
@@ -520,11 +521,11 @@ async function main() {
             results.push({ error: String(err.message).split("\n")[0], source_locator: item.source_locator ?? null });
           }
         }
-        console.log(JSON.stringify(results, null, 2));
+        emitTracedOutput(JSON.stringify(results, null, 2));
       } else {
         // Single-object callers keep the full echo (including raw): nothing
         // about this shape changed, only the array form above got slimmer.
-        console.log(JSON.stringify(await addOneEpisode(client, tables, input), null, 2));
+        emitTracedOutput(JSON.stringify(await addOneEpisode(client, tables, input), null, 2));
       }
     } else if (command === "add-evidence") {
       // Accepts one span object, or an array of spans for batch ingestion --
@@ -541,7 +542,7 @@ async function main() {
         await client.query("rollback");
         throw err;
       }
-      console.log(JSON.stringify(Array.isArray(input) ? inserted : inserted[0], null, 2));
+      emitTracedOutput(JSON.stringify(Array.isArray(input) ? inserted : inserted[0], null, 2));
     } else if (command === "list-episodes") {
       // Read-only browse: the companion's way into evidence without SQL.
       const [sourceId] = args;
@@ -555,7 +556,7 @@ async function main() {
          order by e.ingested_at desc`,
         params,
       );
-      console.log(JSON.stringify(rows, null, 2));
+      emitTracedOutput(JSON.stringify(rows, null, 2));
     } else if (command === "mark-sender-deleted") {
       const [id] = args;
       if (!id) throw new Error("mark-sender-deleted needs an evidence id");
@@ -568,7 +569,7 @@ async function main() {
         [id],
       );
       if (rowCount === 0) throw new Error(`no evidence with id ${id}, or it was already marked deleted`);
-      console.log(JSON.stringify(rows[0], null, 2));
+      emitTracedOutput(JSON.stringify(rows[0], null, 2));
     } else if (command === "show-evidence") {
       const [episodeId] = args;
       if (!episodeId) throw new Error("show-evidence needs an episode id");
@@ -586,13 +587,13 @@ async function main() {
           [episodeId],
         )
       ).rows;
-      console.log(formatEvidence(ep.rows[0], { label: ep.rows[0].label, kind: ep.rows[0].kind }, spans));
+      emitTracedOutput(formatEvidence(ep.rows[0], { label: ep.rows[0].label, kind: ep.rows[0].kind }, spans));
     } else if (command === "dump") {
       const nodes = (await client.query(`select * from ${tables.nodes} order by created_at asc`)).rows;
       const edges = (await client.query(`select * from ${tables.edges} order by created_at asc`)).rows;
       const talks = (await client.query(`select * from ${tables.talks} order by created_at asc`)).rows;
       const temporal_events = (await client.query(`select * from ${tables.temporalEvents} order by created_at asc`)).rows;
-      console.log(JSON.stringify({ dumped_at: new Date().toISOString(), nodes, edges, talks, temporal_events }, null, 2));
+      emitTracedOutput(JSON.stringify({ dumped_at: new Date().toISOString(), nodes, edges, talks, temporal_events }, null, 2));
     } else {
       throw new Error(`unknown command: ${command}`);
     }
@@ -603,7 +604,8 @@ async function main() {
 
 // Only touch the database when run directly; importing for tests must not.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
+  loadEnvLocal();
+  runTracedCli("brain_cli", process.argv[2] || "index", process.argv.slice(2), main).catch((err) => {
     if (process.argv[2] === "import-transfer" || process.argv.includes("--json-errors")) {
       const failed = { state: "failed", error: { code: errorCode(err) } };
       if (process.argv.includes("--json-errors")) console.log(JSON.stringify(failed));

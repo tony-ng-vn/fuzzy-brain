@@ -2,6 +2,8 @@
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { configuredOperationJournal, registerTraceTools } from "./lib/operation-tools.mjs";
+import { traceTransport } from "./lib/operation-transport.mjs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { recallInputShape } from "./lib/recall-scope.mjs";
@@ -76,12 +78,13 @@ export function productionTbrainServices(config = tbrainRuntimeConfig(), {
   };
 }
 
-export function createTbrainServer(services, { allowCapture = false, allowedSourceIds = [] } = {}) {
+export function createTbrainServer(services, { allowCapture = false, allowedSourceIds = [], journal = null } = {}) {
   const allowed = new Set(allowedSourceIds);
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
   const server = new McpServer({ name: "tbrain", version }, {
     instructions: [
       "Tbrain is Tony's portable long-term record. The current host is only one place he talks.",
+      ...(journal ? ["Every tool reply includes trace persistence status. Use trace.id with read_trace. Report concrete request, capture, verification, retrieval, or reasoning outcomes with report_outcome. Reports remain unverified feedback. Pass a UUID in request metadata tbrain/workflow_id to connect steps."] : []),
       "Retrieve personal history when it materially changes the answer. All recorded periods are eligible; use a date range only when the question calls for one.",
       "Do not preload the whole brain or assume the newest recap is sufficient. Read original archive passages when summaries are insufficient.",
       "Distinguish Tony's words, other speakers, assistant interpretations, and explicitly confirmed conclusions. Cite source identifiers and dates when available.",
@@ -162,6 +165,7 @@ export function createTbrainServer(services, { allowCapture = false, allowedSour
       return services.archiveDay(transfer);
     }, true);
   }
+  registerTraceTools(server, { journal, release: version });
   return server;
 }
 
@@ -169,12 +173,14 @@ async function main() {
   loadEnvLocal();
   const config = tbrainRuntimeConfig();
   const services = productionTbrainServices(config);
-  const server = createTbrainServer(services, config);
+  const journal = configuredOperationJournal();
+  const server = createTbrainServer(services, { ...config, journal });
   const transport = new StdioServerTransport();
   transport.onclose = () => {
     void services.close().catch(() => {}).finally(() => disposeEmbeddingModel());
   };
-  await server.connect(transport);
+  const release = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  await server.connect(traceTransport(transport, { journal, entryPoint: "tbrain_mcp", release }));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -171,3 +171,10 @@ Only a checkpoint for the current parser and observed file metadata permits an u
 An identical retry verifies the original committed checkpoint.
 The first run after installing this support also reconciles older sessions that have no checkpoint.
 See `docs/fusion-bridge.md` for the required additive checkpoint migration and operational commands.
+
+## Operation traces
+
+Both memory servers return a trace identifier with each tool reply.
+Use it to inspect a failure, and report a concrete capture or retrieval outcome through `report_outcome`.
+Server records and caller reports stay separate from approved memory.
+See [the operation trace guide](operation-traces.md) for storage, privacy, workflow identifiers, and commands.

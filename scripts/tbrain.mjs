@@ -1,4 +1,6 @@
 // Portable file entry point. All capture writes still pass through brain.mjs.
+import { runTracedCli, recordTraceInput } from "./lib/operation-cli.mjs";
+import { operationContext } from "./lib/operation-context.mjs";
 import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { inspectTransfer, MAX_TRANSFER_BYTES, digest } from "./lib/tbrain-transfer.mjs";
@@ -11,6 +13,7 @@ import { archiveError, errorCode, readArchive, readReceipt, readSource, searchAr
 const help = {
   state: "help",
   commands: [
+    "trace-status", "trace ID [--kind operation|report]", "traces [--day DATE] [--limit N] [--after ID] [--kind operations|reports]", "trace-summary [--day DATE] [--limit N]", "report-outcome FILE",
     "validate FILE", "import FILE --authorize", "status", "receipt ID", "verify ID", "export ID",
     "search QUERY [--from ISO] [--until ISO] [--source-id UUID] [--role user|assistant|system|tool|other|unknown] [--offset N] [--limit N]",
     "read ID [OFFSET LIMIT] [--offset N] [--limit N] [--text-offset N] [--text-limit N]",
@@ -63,7 +66,46 @@ function parseArgs(args) {
   return { command, value, options };
 }
 
+async function traceCommand(args, journal) {
+  const [command, ...rest] = args;
+  const options = {};
+  let value;
+  const allowed = command === "trace" ? ["kind"] : command === "traces" ? ["day", "limit", "after", "kind"] : command === "trace-summary" ? ["day", "limit"] : [];
+  for (let i = 0; i < rest.length; i++) {
+    if (!rest[i].startsWith("--")) {
+      if (!["trace", "report-outcome"].includes(command) || value !== undefined) throw archiveError("invalid");
+      value = rest[i];
+    } else {
+      const key = rest[i].slice(2), item = rest[++i];
+      if (!allowed.includes(key) || key in options || item === undefined || item.startsWith("--")) throw archiveError("invalid");
+      options[key] = key === "limit" ? Number(item) : item;
+    }
+  }
+  if (command === "trace-status") return journal.status();
+  if (command === "trace-summary") return journal.summary(options);
+  if (command === "traces") {
+    const { kind = "operations", ...page } = options;
+    if (!["operations", "reports"].includes(kind)) throw archiveError("invalid");
+    return kind === "reports" ? journal.listReports(page) : journal.list(page);
+  }
+  if (!value) throw archiveError("invalid");
+  if (command === "trace") {
+    if (![undefined, "operation", "report"].includes(options.kind)) throw archiveError("invalid");
+    return options.kind === "report" ? journal.readReport(value) : journal.read(value);
+  }
+  let report;
+  try {
+    if (statSync(value).size > 16384) throw archiveError("invalid");
+    report = JSON.parse(readFileSync(value, "utf8"));
+  } catch { throw archiveError("invalid"); }
+  await recordTraceInput(report);
+  return journal.report(report);
+}
+
 async function main() {
+  if (["trace-status", "trace", "traces", "trace-summary", "report-outcome"].includes(process.argv[2])) {
+    return traceCommand(process.argv.slice(2), operationContext.getStore().journal);
+  }
   const { command, value, options } = parseArgs(process.argv.slice(2));
   if (command === "help") return help;
   loadEnvLocal();
@@ -73,6 +115,7 @@ async function main() {
       if (statSync(value).size > MAX_TRANSFER_BYTES) throw new Error();
       input = JSON.parse(readFileSync(value, "utf8"));
     } catch { throw archiveError("invalid"); }
+    await recordTraceInput(input);
     const prepared = inspectTransfer(input);
     if (!prepared.valid) {
       const error = archiveError("invalid");
@@ -110,6 +153,7 @@ async function main() {
   } finally {await client.end();}
 }
 
-main().then(result=>console.log(JSON.stringify(result,null,2))).catch(error=>{
+loadEnvLocal();
+runTracedCli("tbrain_cli", process.argv[2] || "help", process.argv.slice(2), main).then(result=>console.log(JSON.stringify(result,null,2))).catch(error=>{
   console.error(JSON.stringify({state:"failed",saved:false,...(error.validation??{}),error:{code:errorCode(error)}}));process.exitCode=1;
 });

@@ -4,6 +4,33 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.31.0
+
+2026-09-25
+
+**Data**
+
+- Memory operations now leave private local records of their requests, results, and reply delivery.
+  These records keep identifiers and content fingerprints without copying memory text into another store.
+- Caller feedback stays separate from server records and approved memories.
+
+**Tools**
+
+- Both memory connections return a trace identifier and offer tools to read traces, report outcomes, and inspect daily counts and operation times.
+- Invalid arguments, unknown tools, and database failures now leave traces too.
+- Direct commands record their operations and link child commands to the request that started them.
+  Existing command output stays unchanged.
+- A failed trace write does not turn a successful memory save into a failed save.
+  Tracing stops waiting after one second if its storage does not respond.
+- Server error logs now keep safe failure categories instead of private error details.
+- Trace summaries distinguish failed operations, empty searches, unfinished calls, and problems reported by callers.
+
+**Docs**
+
+- The trace guide explains what is recorded, what remains unknown, how callers report outcomes, and how to inspect failures without a database connection.
+
+---
+
 ## v0.30.0
 
 2026-09-24

@@ -125,7 +125,7 @@ test("Tbrain stdio refuses unapproved source before touching a database", async 
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL("../scripts/tbrain-mcp.mjs", import.meta.url))],
-    env: { PATH: process.env.PATH, TBRAIN_ALLOW_CAPTURE: "1", TBRAIN_ALLOWED_SOURCE_IDS: "", DATABASE_URL: "postgresql://invalid:invalid@127.0.0.1:1/invalid" },
+    env: { PATH: process.env.PATH, TBRAIN_TRACE: "0", TBRAIN_ALLOW_CAPTURE: "1", TBRAIN_ALLOWED_SOURCE_IDS: "", DATABASE_URL: "postgresql://invalid:invalid@127.0.0.1:1/invalid" },
     stderr: "pipe",
   });
   let stderr = "";
@@ -134,7 +134,7 @@ test("Tbrain stdio refuses unapproved source before touching a database", async 
   t.after(() => client.close());
   await client.connect(transport);
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(t => t.name).sort(), ["archive_day", ...READ_TOOLS]);
+  assert.deepEqual(listed.tools.map(t => t.name).sort(), ["archive_day", ...READ_TOOLS, "list_traces", "read_trace", "report_outcome", "trace_status", "trace_summary"].sort());
   const result = await client.callTool({ name: "archive_day", arguments: { transfer: transfer() } });
   assert.equal(result.isError, true);
   assert.equal(parsed(result).error.code, "unauthorized");
