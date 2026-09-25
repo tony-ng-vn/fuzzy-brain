@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { operationNames } from "./operation-metadata.mjs";
+import { operationNames, recallStates } from "./operation-metadata.mjs";
 
 export const traceIdShape = z.string().regex(/^\d{4}-\d{2}-\d{2}_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 export const traceListFilterShape = {
@@ -45,6 +45,8 @@ function summarizeTraceGroup(traces) {
   const deliveryState = trace => trace.delivery?.state ?? trace.finish.delivery;
   return {
     operations: traces.length,
+    recall_states: count(traces.filter(t => t.start.operation === "recall" && t.finish?.outcome === "success"),
+      t => recallStates.includes(t.finish.output?.state) ? t.finish.output.state : "unknown"),
     incomplete: traces.filter(t => !t.finish).length,
     errors: count(traces, t => t.finish?.error_code),
     empty_retrievals: traces.filter(t => ["recall", "search_archive", "search"].includes(t.start.operation) && t.finish?.output.hit_count === 0).length,

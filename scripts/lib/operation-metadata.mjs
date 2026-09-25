@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const codes = new Set(["invalid", "not_found", "conflict", "unauthorized", "excluded", "unavailable", "cancelled"]);
+export const recallStates = Object.freeze(["supported", "conflicting", "evidence", "partial", "missing"]);
 const roles = new Set(["user", "assistant", "system", "tool", "other", "unknown"]);
 export const operationNames = Object.freeze([
   "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status", "index_repair", "sync", "sync_install", "sync_config", "session_capture", "list-session-checkpoints",
@@ -149,7 +150,7 @@ export function outputMetadata(value) {
   for (const key of ["total_messages", "next_offset", "next_text_offset", "total", "indexed_evidence", "indexed_nodes"]) {
     if (finite(output[key])) metadata[key] = output[key];
   }
-  if (["committed", "prepared", "verified", "failed", "ready", "missing", "partial", "evidence", "supported", "conflict", "unavailable"].includes(output.state)) metadata.state = output.state;
+  if (["committed", "prepared", "verified", "failed", "ready", ...recallStates, "conflict", "unavailable"].includes(output.state)) metadata.state = output.state;
   if (output.evidence && typeof output.evidence === "object") {
     metadata.evidence = { ...refs.read(output.evidence), source: refs.read(output.evidence.source) };
   }
