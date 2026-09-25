@@ -4,6 +4,24 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.46.0
+
+2026-09-25
+
+**Tools**
+
+- Recall now applies a conflicting label only when an approved connection starts with `contradicts:`.
+  Both distinct nodes must appear in the results, with at least one strong match.
+  Phrases such as "does not contradict" no longer trigger the label, and other approved connection text stays visible unchanged.
+- Returned connections now include the exact IDs of both nodes and a `get_node` instruction for the other node.
+  Agents can open that node even when ranking or a date filter left it out of the results.
+
+**Docs**
+
+- The memory guide explains when to inspect both nodes and why a missing conflict label does not prove agreement.
+
+---
+
 ## v0.45.2
 
 2026-09-25

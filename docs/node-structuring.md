@@ -64,6 +64,11 @@ testing, adopted, retired.
   existing whys already read close to this shape. Convention only: it guides how the
   agent drafts, never what Tony ratifies.
 
+Recall's automatic conflict label recognizes an approved why that starts with `contradicts:` and includes an explanation.
+It requires both distinct connected nodes in the results and at least one strong match.
+Other wording remains visible but does not trigger that automatic label.
+Do not rewrite approved connections to make them fit this convention.
+
 ## Retrieval trials
 
 The real measure. Each trial is a concrete question posed against the current graph:
