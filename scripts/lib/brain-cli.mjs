@@ -23,6 +23,8 @@ export const CLI_EXEC_OPTS = Object.freeze({
 export function cli(verb, extraArgs = [], input) {
   const out = execFileSync(process.execPath, [brainCli, verb, ...extraArgs], {
     encoding: "utf8",
+    // Explicit pipes prevent execFileSync from echoing private stderr on failure.
+    stdio: "pipe",
     input: input === undefined ? undefined : JSON.stringify(input),
     env: operationChildEnvironment(),
     ...CLI_EXEC_OPTS,
