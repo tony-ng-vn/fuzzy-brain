@@ -73,32 +73,26 @@ export async function runFusionSync({
   embeddingLimit = DEFAULT_EMBEDDING_LIMIT,
   onError = () => {},
 } = {}) {
-  const output = [];
-  try {
-    output.push(await run("ingest-sessions.mjs", []));
-  } catch (error) {
-    onError("ingest", error);
-    return { ok: false, error: "session ingestion failed; completed batches remain saved and the next run can resume", output };
+  if (!Number.isSafeInteger(embeddingLimit) || embeddingLimit <= 0) {
+    throw Object.assign(new Error("The indexing limit must be a positive integer."), { code: "invalid" });
   }
-  // Before the embed sweep, so a transcript landed this cycle gets its
-  // vectors in the same cycle. Its failure is the one that does not stop
-  // the run: this is the only step reaching a backend off this Mac, and an
-  // outage there must not quietly freeze retrieval for everything else.
-  let watchItemsError = null;
-  try {
-    output.push(await run("sweep-watch-items.mjs", []));
-  } catch (error) {
-    onError("watch-items", error);
-    watchItemsError = "pasted video transcripts did not land; the next run retries them";
+  const output = [], failures = [];
+  const steps = [
+    ["ingest", "ingest-sessions.mjs", [], "Session ingestion failed; completed batches remain saved and the next run can resume."],
+    ["watch-items", "sweep-watch-items.mjs", [], "Pasted video transcripts did not land; the next run retries them."],
+    ["embedding", "embed-sweep.mjs", ["--limit", String(embeddingLimit)], "Some embeddings remain pending; the next run retries them."],
+  ];
+  for (const [stage, script, args, message] of steps) {
+    try { output.push(await run(script, args)); }
+    catch (error) {
+      failures.push({ stage, message });
+      // Logging failures must not prevent independent capture or indexing work.
+      try { onError(stage, error); } catch { /* The returned failure still records the stage. */ }
+    }
   }
-  try {
-    output.push(await run("embed-sweep.mjs", ["--limit", String(embeddingLimit)]));
-  } catch (error) {
-    onError("embedding", error);
-    return { ok: false, error: "session ingestion succeeded, but some embeddings remain pending", output };
-  }
-  if (watchItemsError) return { ok: false, error: watchItemsError, output };
-  return { ok: true, output };
+  return failures.length
+    ? { ok: false, error: failures.map(item => item.message).join(" "), failures, output }
+    : { ok: true, output };
 }
 
 export async function installLaunchAgent({ intervalSeconds = 3600 } = {}) {
