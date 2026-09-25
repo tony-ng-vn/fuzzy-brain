@@ -4,6 +4,25 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.41.0
+
+2026-09-25
+
+**Tools**
+
+- Both memory servers and the portable traces command can now filter calls by exact action name or by success, error, or incomplete status.
+  They can also find calls whose recorded duration is at least a chosen number of milliseconds.
+  These filters combine with workflow and parent filters to find failed or slow recall and background calls.
+- Calls with no timing, including unfinished calls, do not match a time filter.
+  Each page still inspects a bounded number of records, and an empty page may still lead to more results.
+- Caller reports do not use these filters.
+
+**Docs**
+
+- The trace guide and command help explain how to use the filters and continue after an empty page.
+
+---
+
 ## v0.40.0
 
 2026-09-25

@@ -24,6 +24,24 @@ Use `trace_status` if a reply says its trace was not recorded or the connection 
 The status includes the server release and this process's recording counters.
 Existing connections must reconnect after a runtime update to load new code and tools.
 
+Use `list_traces` with `operation` to inspect one action, such as `recall`, `sync`, or `index_repair`.
+Copy the exact action name from a trace's `start.operation` field.
+Add `outcome:"error"` for completed failures, `outcome:"success"` for completed successes, or `outcome:"incomplete"` for calls without a finish record.
+The outcome describes the operation, not whether the caller received the reply or whether an answer was correct.
+A diagnostics request can appear in its own listing while it runs, so an incomplete record alone does not mean a stuck call.
+
+Add `min_duration_ms` for calls whose recorded duration meets or exceeds that number.
+It accepts nonnegative milliseconds, including fractions.
+Unfinished calls and completed calls without a recorded timing cannot match a duration filter.
+Use the incomplete filter separately when checking unfinished work.
+These action, outcome, and duration filters apply only to operation records; report listings reject them.
+They combine with workflow and parent filters, and every condition must match.
+
+For example, `{"operation":"recall","outcome":"error","min_duration_ms":1000,"limit":100}` finds failed recall calls that took at least one second among the inspected records.
+The portable command uses `node scripts/tbrain.mjs traces --operation recall --outcome error --min-duration-ms 1000 --limit 100`.
+Filtering does not increase the page's inspection limit.
+Follow `next_after` even when a filtered page has no matches.
+
 The start record names the operation, entry point, release, connection, and caller when it recognizes the client's reported name.
 Unknown client names are fingerprinted.
 Caller identity is reported by the client, not verified authentication.

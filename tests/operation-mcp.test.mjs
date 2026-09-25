@@ -30,6 +30,10 @@ for (const script of ["fuzzy-brain-mcp.mjs", "tbrain-mcp.mjs"]) {
     assert.ok(rejected.content.some(block => block.text.includes(id)));
     const saved = parse(await client.callTool({ name: "read_trace", arguments: { id } }));
     assert.equal(saved.finish.error_code, "invalid");
+    const failures = parse(await client.callTool({ name: "list_traces", arguments: { operation: "recall", outcome: "error", min_duration_ms: 0 } }));
+    assert.deepEqual(failures.traces.map(item => item.id), [id]);
+    const unfinished = parse(await client.callTool({ name: "list_traces", arguments: { operation: "recall", outcome: "incomplete" } }));
+    assert.deepEqual(unfinished.traces, []);
     const workflow = randomUUID();
     const reported = parse(await client.callTool({ name: "report_outcome", arguments: {
       operation_id: id, stage: "request", outcome: "failed", finding: "schema_rejection", workflow_id: workflow,
