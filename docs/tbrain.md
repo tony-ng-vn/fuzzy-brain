@@ -234,3 +234,9 @@ The synthetic ChatGPT capture and fresh-conversation retrieval ran only against 
 Each future archive still requires an explicit authorized request such as a close-of-day review and may include only material actually supplied to the client.
 The current ChatGPT permission flow asked for the synthetic write and received one-time permission.
 No reminders, paid-host commitment, public personal-data endpoint or synthetic production record is part of this release.
+
+## Operation tracing
+
+Memory calls and portable commands retain private operational records outside the memory database.
+Agents can inspect failures and report expected evidence without adding personal memories.
+See [the operation trace guide](agents/operation-traces.md) for the five diagnostic tools, local storage, and recovery behavior.
