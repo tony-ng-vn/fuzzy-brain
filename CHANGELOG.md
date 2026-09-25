@@ -4,6 +4,25 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.40.0
+
+2026-09-25
+
+**Tools**
+
+- Hourly indexing now tries up to 256 missing items, up from 32, within one 30-second allowance shared by saved nodes and archived evidence.
+  It checks the time between passages and before another page, keeps completed search vectors from a partial page, and resumes missing work later.
+- Indexing still handles one passage at a time at low CPU priority.
+  A model or database call already in progress may carry the run past 30 seconds.
+- Manual indexing now accepts `--max-seconds` alongside `--limit` and source or archive receipt filters.
+  Traces show the chosen time allowance, how many items were filled, and whether the limit was reached.
+
+**Docs**
+
+- The indexing guide explains how to set these limits and what happens when a run reaches its time allowance.
+
+---
+
 ## v0.39.0
 
 2026-09-25

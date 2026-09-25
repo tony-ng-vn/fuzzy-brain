@@ -2,20 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderLaunchAgentPlist, runFusionSync } from "../scripts/fusion-sync.mjs";
 
-test("fusion sync ingests settled sessions before filling a bounded number of embeddings", async () => {
+test("fusion sync gives the indexing backlog both a row limit and a time allowance", async () => {
   const calls = [];
   const result = await runFusionSync({
     run: async (script, args) => {
       calls.push([script, args]);
       return `${script} ok`;
     },
-    embeddingLimit: 32,
   });
 
   assert.deepEqual(calls, [
     ["ingest-sessions.mjs", ["--limit", "32"]],
     ["sweep-watch-items.mjs", []],
-    ["embed-sweep.mjs", ["--limit", "32"]],
+    ["embed-sweep.mjs", ["--limit", "256", "--max-seconds", "30"]],
   ]);
   assert.equal(result.ok, true);
 });
@@ -96,10 +95,16 @@ test("fusion sync rejects invalid indexing limits before starting capture", asyn
 
 test("fusion sync bounds each session source independently of the indexing limit", async () => {
   const calls = [];
-  await runFusionSync({ sessionLimit: 4, embeddingLimit: 9, run: async (script, args) => { calls.push([script, args]); return "done"; } });
+  await runFusionSync({ sessionLimit: 4, embeddingLimit: 9, embeddingMaxSeconds: 2, run: async (script, args) => { calls.push([script, args]); return "done"; } });
   assert.deepEqual(calls[0], ["ingest-sessions.mjs", ["--limit", "4"]]);
-  assert.deepEqual(calls[2], ["embed-sweep.mjs", ["--limit", "9"]]);
+  assert.deepEqual(calls[2], ["embed-sweep.mjs", ["--limit", "9", "--max-seconds", "2"]]);
   for (const sessionLimit of [0, -1, 1.5, NaN, Infinity]) {
     await assert.rejects(runFusionSync({ sessionLimit, run() { assert.fail("capture must not start"); } }), { code: "invalid" });
+  }
+});
+
+test("fusion sync rejects invalid time allowances before starting any capture", async () => {
+  for (const embeddingMaxSeconds of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
+    await assert.rejects(runFusionSync({ embeddingMaxSeconds, run() { assert.fail("capture must not start"); } }), { code: "invalid" });
   }
 });

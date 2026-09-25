@@ -16,7 +16,8 @@ import { loadEnvLocal } from "./recall.mjs";
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const DEFAULT_EMBEDDING_LIMIT = 32;
+const DEFAULT_EMBEDDING_LIMIT = 256;
+const DEFAULT_EMBEDDING_MAX_SECONDS = 30;
 const DEFAULT_SESSION_LIMIT = 32;
 const LABEL = "com.tony.fuzzy-brain.sync";
 
@@ -77,11 +78,15 @@ async function runScript(script, args) {
 export async function runFusionSync({
   run = runScript,
   embeddingLimit = DEFAULT_EMBEDDING_LIMIT,
+  embeddingMaxSeconds = DEFAULT_EMBEDDING_MAX_SECONDS,
   sessionLimit = DEFAULT_SESSION_LIMIT,
   onError = () => {},
 } = {}) {
   if (!Number.isSafeInteger(embeddingLimit) || embeddingLimit <= 0) {
     throw Object.assign(new Error("The indexing limit must be a positive integer."), { code: "invalid" });
+  }
+  if (!Number.isSafeInteger(embeddingMaxSeconds) || embeddingMaxSeconds <= 0 || !Number.isSafeInteger(embeddingMaxSeconds * 1000)) {
+    throw Object.assign(new Error("The indexing time allowance must be a positive whole number of seconds."), { code: "invalid" });
   }
   if (!Number.isSafeInteger(sessionLimit) || sessionLimit <= 0) {
     throw Object.assign(new Error("The session limit must be a positive integer."), { code: "invalid" });
@@ -90,7 +95,7 @@ export async function runFusionSync({
   const steps = [
     ["ingest", "ingest-sessions.mjs", ["--limit", String(sessionLimit)], "Session ingestion failed; completed batches remain saved and the next run can resume."],
     ["watch-items", "sweep-watch-items.mjs", [], "Pasted video transcripts did not land; the next run retries them."],
-    ["embedding", "embed-sweep.mjs", ["--limit", String(embeddingLimit)], "Some embeddings remain pending; the next run retries them."],
+    ["embedding", "embed-sweep.mjs", ["--limit", String(embeddingLimit), "--max-seconds", String(embeddingMaxSeconds)], "Some embeddings remain pending; the next run retries them."],
   ];
   for (const [stage, script, args, message] of steps) {
     try { output.push(await run(script, args)); }

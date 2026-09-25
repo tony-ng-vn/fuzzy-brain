@@ -8,10 +8,21 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 import { createOperationJournal } from "../scripts/lib/operation-journal.mjs";
-import { outputMetadata } from "../scripts/lib/operation-metadata.mjs";
+import { inputMetadata, outputMetadata } from "../scripts/lib/operation-metadata.mjs";
 import { outcomeReportSchema, summarizeOperations } from "../scripts/lib/operation-feedback.mjs";
 const run = promisify(execFile);
 const id = "11111111-1111-4111-8111-111111111111";
+
+test("index repair traces distinguish a time-limited pass from an indexing failure", () => {
+  const input = inputMetadata({ limit: 256, max_duration_ms: 30000, text: "PRIVATE" });
+  const output = outputMetadata({ indexed_evidence: 83, indexed_nodes: 2, time_limit_reached: true, text: "PRIVATE" });
+  assert.equal(input.filters.max_duration_ms, 30000);
+  assert.equal(output.time_limit_reached, true);
+  assert.equal(output.indexed_evidence, 83);
+  assert.doesNotMatch(JSON.stringify({ input, output }), /PRIVATE/);
+  assert.equal(outputMetadata({ time_limit_reached: false }).time_limit_reached, false);
+  assert.equal(outputMetadata({ time_limit_reached: "PRIVATE" }).time_limit_reached, undefined);
+});
 
 test("index diagnostics retain safe counts and accept a pending-index finding", () => {
   const result = outputMetadata({ scope: { receipt_id: id }, evidence: { total: 7, indexed: 3, pending: 4, text: "PRIVATE" }, nodes: null,
@@ -30,7 +41,7 @@ test("a direct index repair leaves a trace even when the requested receipt does 
   const directory = await mkdtemp(join(tmpdir(), "index-repair-trace-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const script = fileURLToPath(new URL("../scripts/embed-sweep.mjs", import.meta.url));
-  await assert.rejects(run(process.execPath, [script, "--receipt-id", id, "--limit", "4"], { env: {
+  await assert.rejects(run(process.execPath, [script, "--receipt-id", id, "--limit", "4", "--max-seconds", "1"], { env: {
     ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "1", TBRAIN_TRACE_DIR: directory,
     FUZZY_BRAIN_EMBED_LOCK: join(directory, "sweep.lock"),
   } }));
@@ -39,5 +50,27 @@ test("a direct index repair leaves a trace even when the requested receipt does 
   assert.equal(traces[0].start.operation, "index_repair");
   assert.equal(traces[0].start.entry_point, "index_cli");
   assert.equal(traces[0].input.input.references.receipt_id, id);
+  assert.equal(traces[0].input.input.filters.max_duration_ms, 1000);
   assert.equal(traces[0].finish.error_code, "not_found");
+});
+
+test("an empty timed index pass completes without loading a model and records its limits", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const directory = await mkdtemp(join(tmpdir(), "timed-index-trace-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("../scripts/embed-sweep.mjs", import.meta.url));
+  const result = await run(process.execPath, [script, "--limit", "256", "--max-seconds", "1"], { env: {
+    ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "1", TBRAIN_TRACE_DIR: directory,
+    FUZZY_BRAIN_EMBED_LOCK: join(directory, "sweep.lock"),
+  } });
+  assert.match(result.stdout, /evidence filled 0/);
+  const { traces } = await createOperationJournal({ directory }).list();
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0].input.input.filters.max_duration_ms, 1000);
+  assert.equal(traces[0].input.input.filters.limit, 256);
+  assert.equal(traces[0].finish.outcome, "success");
+  assert.equal(traces[0].finish.output.time_limit_reached, false);
+  assert.equal(traces[0].finish.output.indexed_evidence, 0);
+  assert.equal(traces[0].finish.output.indexed_nodes, 0);
 });

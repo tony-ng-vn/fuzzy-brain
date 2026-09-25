@@ -79,3 +79,57 @@ test("index repair validates scope and row bounds before database work", async (
   const client = { query() { throw new Error("database must not run"); } };
   await assert.rejects(sweep.runEmbeddingSweep(client, { schema: "brain_dev", limit: 0 }), { code: "invalid" });
 });
+
+test("an indexing time allowance spans both layers and commits a partial page before stopping", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const client = database.client;
+  const source = randomUUID(), episode = randomUUID();
+  await client.query("insert into brain_dev.sources(id,kind,label) values($1,'index_test','Timed sweep')", [source]);
+  await client.query("insert into brain_dev.episodes(id,source_id,raw) values($1,$2,'Original text')", [episode, source]);
+  for (let i = 0; i < 5; i++) await client.query("insert into brain_dev.evidence(episode_id,quote,start_offset,end_offset) values($1,$2,$3,$4)", [episode, `Passage ${i}`, i * 20, i * 20 + 9]);
+  for (let i = 0; i < 2; i++) await client.query("insert into brain_dev.nodes(type,title,raw,body) values('note','Original node','Original words','Original words')");
+  const before = (await client.query("select id,quote,start_offset,end_offset from brain_dev.evidence order by id")).rows;
+  let clock = 0, calls = 0;
+  const embed = async texts => { calls++; clock += 10; return texts.map(() => [1, ...Array(767).fill(0)]); };
+  const result = await sweep.runEmbeddingSweep(client, { schema: "brain_dev", limit: 6, maxDurationMs: 25, now: () => clock, embed });
+  assert.deepEqual(result, { nodes: 2, evidence: 1, time_limit_reached: true });
+  assert.equal(calls, 3);
+  assert.equal((await indexStatus(client, "brain_dev")).evidence.pending, 4);
+  assert.equal((await indexStatus(client, "brain_dev")).nodes.pending, 0);
+  assert.deepEqual((await client.query("select id,quote,start_offset,end_offset from brain_dev.evidence order by id")).rows, before);
+  clock = 0;
+  const resumed = await sweep.runEmbeddingSweep(client, { schema: "brain_dev", limit: 6, maxDurationMs: 100, now: () => clock, embed });
+  assert.deepEqual(resumed, { nodes: 0, evidence: 4, time_limit_reached: false });
+  assert.equal(calls, 7, "resume must not recompute committed vectors");
+});
+
+test("an elapsed time allowance starts no model work and the row cap still applies", async t => {
+  const database = await createTbrainTestDatabase();
+  t.after(() => database.close());
+  const client = database.client;
+  await client.query("insert into brain_dev.nodes(type,title,raw,body) values('note','Original node','Original words','Original words')");
+  let clock = 0, embedded = 0;
+  const delayed = { query: async (...args) => { const result = await client.query(...args); clock += 50; return result; } };
+  const embed = async texts => { embedded++; return texts.map(() => [1, ...Array(767).fill(0)]); };
+  assert.deepEqual(await sweep.runEmbeddingSweep(delayed, { schema: "brain_dev", limit: 4, maxDurationMs: 25, now: () => clock, embed }), {
+    nodes: 0, evidence: 0, time_limit_reached: true,
+  });
+  assert.equal(embedded, 0);
+  assert.equal((await indexStatus(client, "brain_dev")).nodes.pending, 1);
+  assert.deepEqual(await sweep.runEmbeddingSweep(client, { schema: "brain_dev", limit: 1, maxDurationMs: 100, now: () => clock, embed }), {
+    nodes: 1, evidence: 0, time_limit_reached: false,
+  });
+  assert.equal(embedded, 1);
+});
+
+test("indexing time arguments reject invalid allowances before reading the database", async () => {
+  assert.deepEqual(sweep.parseSweepArgs(["--limit", "256", "--max-seconds", "30"]), { scope: {}, limit: 256, maxDurationMs: 30000 });
+  const client = { query() { assert.fail("invalid time allowance must not read the database"); } };
+  for (const maxDurationMs of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(sweep.runEmbeddingSweep(client, { maxDurationMs }), { code: "invalid" });
+  }
+  for (const args of [["--max-seconds"], ["--max-seconds", "0"], ["--max-seconds", "-1"], ["--max-seconds", "1.5"], ["--max-seconds", "Infinity"], ["--max-seconds", "1", "--max-seconds", "2"]]) {
+    assert.throws(() => sweep.parseSweepArgs(args), { code: "invalid" });
+  }
+});
