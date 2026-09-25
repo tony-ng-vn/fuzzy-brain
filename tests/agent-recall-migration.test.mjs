@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { createTbrainTestDatabase } from "./helpers/tbrain-database.mjs";
 
 const exec = promisify(execFile);
-const migrate = (url, schema) => exec(process.execPath, ["scripts/recall-migrate.mjs"], {
+const migrate = (url, schema, args = []) => exec(process.execPath, ["scripts/recall-migrate.mjs", ...args], {
   env: { ...process.env, DATABASE_URL: url, DATABASE_URL_DEV: url, BRAIN_SCHEMA: schema }, timeout: 20000,
 });
 
@@ -22,5 +22,15 @@ test("title lookup migration preserves existing nodes and indexes long titles", 
   const plan = await db.client.query("explain (format json) select id from brain_dev.nodes where md5(lower(title))=md5(lower($1)) and lower(title)=lower($1)", [title]);
   assert.match(JSON.stringify(plan.rows), /nodes_title_lookup_idx/);
   await assert.rejects(migrate(db.url, "public"), error => /--authorize-production/.test(error.stderr));
+  assert.equal((await db.client.query("select to_regclass('public.nodes_title_lookup_idx') name")).rows[0].name, null);
+});
+
+
+test("a missing sandbox node table cannot redirect index rehearsal into production", async t => {
+  const db = await createTbrainTestDatabase();
+  t.after(() => db.close());
+  await db.client.query("alter table brain_dev.nodes rename to renamed_nodes");
+  await db.client.query("create table public.nodes(title text not null)");
+  await assert.rejects(migrate(db.url, "public", ["--authorize-production"]), error => /Recall index migration failed/.test(error.stderr));
   assert.equal((await db.client.query("select to_regclass('public.nodes_title_lookup_idx') name")).rows[0].name, null);
 });
