@@ -111,6 +111,12 @@ Use the recorded start and finish times to inspect execution order after collect
 A workflow crossing UTC midnight requires a separate listing for each day.
 
 `trace_summary` reports operation counts, error categories, unfinished calls, empty or limited searches, delivery failures, failed background steps, caller findings, release counts, and duration percentiles.
+Its `per_operation` field separates timings and failures by operation name.
+For example, inspect `per_operation.recall` when investigating search speed instead of using the overall timing that also includes long capture jobs.
+Each operation group includes its inspected count, unfinished calls, error categories, empty or degraded searches, MCP delivery counts, and duration percentiles.
+The duration sample count excludes unfinished calls and records without a valid duration.
+Diagnostic calls remain separate from these groups.
+These measurements describe the inspected records, not answer quality or a controlled performance comparison between releases.
 Delivery counts cover finished MCP requests only.
 A completed command-line call does not prove that another program read its output, and does not count as an unconfirmed MCP reply.
 The `failed_stages` counts show how many background runs reported a failure in session capture, pasted video capture, or indexing.
