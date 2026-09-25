@@ -84,7 +84,7 @@ test("summary shows recall latency and failures separately from a long backgroun
   const summary = await journal.summary();
   assert.deepEqual(summary.per_operation.recall, {
     operations: 4, incomplete: 1, errors: { invalid: 1 }, empty_retrievals: 2, degraded_retrievals: 1,
-    failed_deliveries: 1, unconfirmed_deliveries: 0,
+    failed_deliveries: 1, unconfirmed_deliveries: 0, recall_states: { unknown: 2 },
     duration_ms: { samples: 3, p50: 5, p95: 20, p99: 20 },
   });
   assert.equal(summary.per_operation.sync.duration_ms.p95, 1200000);
@@ -151,4 +151,27 @@ test("feedback distinguishes expected and used nodes from source evidence", asyn
   const unchanged = await journal.readReport(legacy.id);
   assert.deepEqual(unchanged.expected_node_ids, []);
   assert.deepEqual(unchanged.used_node_ids, []);
+});
+
+
+test("summary counts recall result states without treating them as answer quality", async t => {
+  const journal = await setup(t);
+  for (const state of ["supported", "conflicting", "evidence", "partial", "missing", "PRIVATE state", undefined]) {
+    const operation = await journal.start({ operation: "recall" });
+    await journal.finish(operation.id, { result: { state, note: "PRIVATE explanation", hits: [] }, duration_ms: 1 });
+  }
+  const failed = await journal.start({ operation: "recall" });
+  await journal.finish(failed.id, { error: { code: "unavailable" } });
+  await journal.start({ operation: "recall" });
+  const unrelated = await journal.start({ operation: "index_status" });
+  await journal.finish(unrelated.id, { result: { state: "missing" } });
+  await journal.report({ operation_id: failed.id, stage: "reasoning", outcome: "failed", finding: "insufficient_support" });
+  const summary = await journal.summary();
+  const expected = { supported: 1, conflicting: 1, evidence: 1, partial: 1, missing: 1, unknown: 2 };
+  assert.deepEqual(summary.recall_states, expected);
+  assert.deepEqual(summary.per_operation.recall.recall_states, expected);
+  assert.equal(summary.incomplete, 1);
+  assert.equal(summary.errors.unavailable, 1);
+  assert.equal(summary.findings.insufficient_support, 1);
+  assert.doesNotMatch(JSON.stringify(summary), /PRIVATE/);
 });
