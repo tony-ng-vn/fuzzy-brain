@@ -4,6 +4,17 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.1
+
+2026-09-25
+
+**Tools**
+
+- Large daily trace summaries now read a few records at a time, so they work when the process has a small file limit.
+- If a trace read fails, the reader closes its other open records before reporting the failure.
+
+---
+
 ## v0.32.0
 
 2026-09-25
