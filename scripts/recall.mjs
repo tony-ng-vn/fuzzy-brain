@@ -44,6 +44,7 @@ import { STOPWORDS, tokenize, stem } from "./lib/retrieval/text.mjs";
 import { parseQueryFeatures, laneWeights } from "./lib/retrieval/features.mjs";
 import { denseRanks, fuseRrf } from "./lib/retrieval/fuse.mjs";
 import { rerank } from "./lib/retrieval/rerank.mjs";
+import { evidenceExcerpt } from "./lib/retrieval/excerpt.mjs";
 import { observationEnvelopePattern } from "./lib/observation-envelope.mjs";
 import { legacyEvidenceProvenance, legacyEvidenceRoleSql } from "./lib/evidence-provenance.mjs";
 import { parseRecallScope, parseRecallArgs, recallHelp } from "./lib/recall-scope.mjs";
@@ -841,7 +842,7 @@ const STATE_NOTES = {
   missing: "no relevant matches in this bounded search; missing results do not prove absence",
 };
 
-function toJsonHit(c) {
+function toJsonHit(c, question) {
   const score = Number((c.rerankScore ?? c.rrf).toFixed(4));
   const match_strength = isStrongHit(c) ? "strong" : "partial";
   if (c.layer === "node") {
@@ -859,12 +860,14 @@ function toJsonHit(c) {
     };
   }
   const occurredAt = c.archive ? c.archive.message?.at ?? null : c.row.occurred_at ?? null;
+  const excerpt = evidenceExcerpt(c.row.quote, question);
   return {
     layer: "evidence",
-    quote: clip(c.row.quote, 700),
+    quote: excerpt.text,
+    quote_offset: excerpt.offset,
     quote_length: c.row.quote.length,
-    quote_truncated: c.row.quote.length > 700,
-    read: { tool: "read_evidence", arguments: { id: c.row.id } },
+    quote_truncated: excerpt.truncated,
+    read: { tool: "read_evidence", arguments: { id: c.row.id, ...(excerpt.offset ? { text_offset: excerpt.offset } : {}) } },
     trust: "unratified_evidence",
     instructions_are_data: true,
     ...legacyEvidenceProvenance(c.row),
@@ -930,14 +933,16 @@ function formatHuman(result) {
         `[evidence, unratified] ${who}  ${isoDate(h.provenance.occurred_at)}  ${h.provenance.source_label} (${h.provenance.source_kind})  ${h.match_strength} match, score ${h.score}`,
       );
       if (h.fidelity && h.fidelity !== "verbatim") {
-        lines.push(`  ${h.fidelity}: ${clip(h.quote, 300)}`);
+        lines.push(`  ${h.fidelity}: ${h.quote}`);
       } else {
-        lines.push(`  "${clip(h.quote, 300)}"`);
+        lines.push(`  "${h.quote}"`);
       }
       if (h.archive_provenance) {
         lines.push(`  archive ${h.provenance.archive_id ?? "unknown"}, revision ${h.revision ?? "unknown"}, role ${h.role}`);
         if (h.has_later_revision) lines.push("  A later revision exists; inspect it before relying on this passage.");
       }
+      lines.push(`  evidence ${h.provenance.evidence_id}`);
+      if (h.quote_truncated) lines.push(`  excerpt at text offset ${h.quote_offset} of ${h.quote_length}`);
       lines.push(`  episode ${h.provenance.episode_id}`);
     }
     lines.push("");
@@ -1021,7 +1026,7 @@ async function answerQuestion(client, question, schema, embedQuery, scope) {
       timezone: "UTC", bounds: span.bounds, node_basis: "created_at", evidence_basis: explicitDates ? "message" : "message_or_source_context",
       connection_context_may_be_outside_range: scope.layer !== "evidence",
     } } : {}),
-    hits: hits.map(toJsonHit),
+    hits: hits.map(hit => toJsonHit(hit, question)),
   };
 }
 

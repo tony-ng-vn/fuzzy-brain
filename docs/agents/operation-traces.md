@@ -28,6 +28,7 @@ The start record names the operation, entry point, release, connection, and call
 Unknown client names are fingerprinted.
 Caller identity is reported by the client, not verified authentication.
 The finish record contains a safe error category or result summary, timing, and available receipt, node, source, and evidence identifiers.
+Recall traces also retain each excerpt's position, full passage length, and truncation flag without copying its text.
 Batch records also retain up to 100 item identifiers, including session checkpoint IDs, along with saved-item states and evidence counts when returned.
 Nested evidence-ID and node-ID lists share a 1,000-identifier allowance across each input or output record, with at most 100 identifiers per list.
 `references_truncated: true` means the trace omitted some list entries.

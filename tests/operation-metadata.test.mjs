@@ -90,3 +90,19 @@ test("recall traces preserve match strength without accepting arbitrary labels",
   assert.deepEqual(result.hits.map(hit => hit.match_strength), ["strong", "partial", undefined]);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
+
+test("recall traces retain excerpt positions without copying source text", () => {
+  const result = outputMetadata({ hits: [
+    { id: ID, quote: "PRIVATE WORDS", quote_offset: 20001, quote_length: 27000, quote_truncated: true },
+    { id: ID, quote_offset: 0, quote_length: 12, quote_truncated: false },
+    { id: ID, quote_offset: -1, quote_length: Number.MAX_SAFE_INTEGER + 1, quote_truncated: "PRIVATE LABEL" },
+  ] });
+  assert.equal(result.hits[0].quote_offset, 20001);
+  assert.equal(result.hits[0].quote_length, 27000);
+  assert.equal(result.hits[0].quote_truncated, true);
+  assert.equal(result.hits[1].quote_offset, 0);
+  assert.equal(result.hits[1].quote_length, 12);
+  assert.equal(result.hits[1].quote_truncated, false);
+  for (const key of ["quote_offset", "quote_length", "quote_truncated"]) assert.equal(result.hits[2][key], undefined);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+});

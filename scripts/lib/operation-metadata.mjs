@@ -182,6 +182,9 @@ export function outputMetadata(value) {
       ...(["node", "evidence"].includes(hit?.layer) ? { layer: hit.layer } : {}),
       ...(roles.has(hit?.role) ? { role: hit.role } : {}),
       ...(["strong", "partial"].includes(hit?.match_strength) ? { match_strength: hit.match_strength } : {}),
+      ...(Number.isSafeInteger(hit?.quote_offset) && hit.quote_offset >= 0 ? { quote_offset: hit.quote_offset } : {}),
+      ...(Number.isSafeInteger(hit?.quote_length) && hit.quote_length >= 0 ? { quote_length: hit.quote_length } : {}),
+      ...(typeof hit?.quote_truncated === "boolean" ? { quote_truncated: hit.quote_truncated } : {}),
     }));
     metadata.hits_truncated = output.hits.length > 100;
   }
