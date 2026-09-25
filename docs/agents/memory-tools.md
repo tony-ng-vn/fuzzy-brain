@@ -39,7 +39,14 @@ For evidence, follow the hit's `read` object through `read_evidence` on either s
 That returns the matching passage and one neighboring passage on each side by default.
 Use `context:0` for the matching passage alone, or up to three neighbors on each side.
 
-Read `quote_truncated` and `quote_length` before treating a recall excerpt as complete.
+Recall shows an exact excerpt of up to 700 characters near matching words in a long passage.
+It compares word stems and favors a nearby group of distinct query words.
+When no words match, it shows the beginning, including for a match found only through meaning.
+The excerpt does not prove that the passage answers the question.
+Read `quote_truncated`, `quote_length`, and `quote_offset` before treating it as complete.
+`quote_offset` is the excerpt's position within the saved passage, using the same UTF-16 indexing as `read_evidence`.
+The returned `read` instruction starts there, so follow it rather than rebuilding the arguments from the ID alone.
+Use `text_offset:0` to inspect earlier context when the excerpt begins partway through the passage.
 Pass the same evidence ID with `text_offset` equal to `next_text_offset` to continue long text.
 Neighboring passages have their own IDs and continuations; read them separately when needed.
 The context page reports `context_scope:"episode"` and covers only the current saved episode.

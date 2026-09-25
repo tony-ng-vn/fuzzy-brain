@@ -4,6 +4,28 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.38.0
+
+2026-09-25
+
+**API**
+
+- Passage reads now accept valid positions beyond the old five-million-character limit, so a match deep in a long source can be opened.
+
+**Tools**
+
+- Recall now shows an exact excerpt near the matching words in a long saved passage instead of always showing its beginning.
+  Its read instruction points to that position.
+- The command keeps the full excerpt within its output limit, along with the evidence ID and position.
+  Traces record the excerpt's position, length, and whether it was cut short without copying the text.
+- Search ranking, source text, and approval status stay unchanged.
+
+**Docs**
+
+- The memory guide explains how to open the excerpt and what recall shows when it cannot find a matching part.
+
+---
+
 ## v0.37.0
 
 2026-09-25
