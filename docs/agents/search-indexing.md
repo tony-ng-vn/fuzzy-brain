@@ -63,6 +63,9 @@ The index-status result reports database state; it does not claim that a backgro
 ## Background sync failures
 
 The existing background job attempts session capture, pasted-transcript capture, and indexing in that order.
+Session capture attempts up to 32 sessions from each configured session source per cycle.
+Successful checkpoints let later cycles move past those files without duplicating their messages.
+This bounds ordinary backlog work; a slow database call can still reach its separate timeout.
 A failure in one step does not stop the later steps.
 The result lists failed steps and retains the summaries of completed work.
 A failed cycle exits with a nonzero status even when other steps succeeded.
@@ -76,6 +79,13 @@ These records show completed work without copying session text, file names, or p
 
 Run `node scripts/ingest-sessions.mjs --help` to inspect session capture without reading its configuration or starting capture.
 The command rejects unknown options before capture begins.
+Use `node scripts/ingest-sessions.mjs --limit 32` for a bounded manual run.
+The limit applies separately to each session source and includes failed preparation or save attempts.
+Files skipped because they are unchanged, excluded, empty, or outside the configured capture rules do not consume the allowance.
+The summary and trace report attempted sessions and deferred files.
+Deferred files are files the run did not examine after reaching its limit, not a count of sessions eligible to save.
+The command exits successfully when it reaches the limit without a save failure.
+Running without `--limit` keeps the existing full-scan behavior.
 The configured allowlist, settling delay, and source exclusions still decide what may save.
 
 Run one cycle with `node scripts/fusion-sync.mjs`.

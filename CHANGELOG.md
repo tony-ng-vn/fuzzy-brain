@@ -4,6 +4,28 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.35.0
+
+2026-09-25
+
+**Tools**
+
+- Each background run now tries up to 32 sessions from each source before moving on.
+  Later runs use saved checkpoints to avoid duplicate messages.
+- Manual capture accepts `--limit N` for each source.
+  Without that option, it still scans all files.
+  Failed preparation or save attempts count toward the limit.
+  Unchanged, excluded, empty, and disallowed files do not.
+- Command output and traces show how many files were attempted or left unexamined.
+  A deferred file has not been examined yet, so its need for capture is unknown.
+
+**Docs**
+
+- The indexing guide explains the limit, later retries, and the difference between deferred files and unsaved sessions.
+  It also explains that the limit caps work without promising a finish time.
+
+---
+
 ## v0.34.1
 
 2026-09-25
