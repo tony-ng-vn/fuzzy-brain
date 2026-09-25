@@ -13,14 +13,13 @@ import { traceTransport } from "../scripts/lib/operation-transport.mjs";
 const parse = result => JSON.parse(result.content[0].text);
 async function connect(t, kind, overrides = {}, providedJournal) {
   const directory = await mkdtemp(join(tmpdir(), "tbrain-transport-traces-"));
-  t.after(() => rm(directory, { force: true, recursive: true }));
   const journal = providedJournal ?? createOperationJournal({ directory });
   const services = { recall: async () => ({ hits: [], degraded: false }), archiveStatus: async () => ({ storage: "ready" }), ...overrides };
   const server = kind === "tbrain" ? createTbrainServer(services) : createFuzzyBrainServer(services, { logError() {} });
   const client = new Client({ name: "codex", version: "1.0.0" });
+  t.after(async () => { await client.close(); await server.close(); await rm(directory, { force: true, recursive: true }); });
   const [left, right] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(traceTransport(right, { journal, entryPoint: `${kind}_mcp`, release: "0.31.0" })), client.connect(left)]);
-  t.after(async () => { await client.close(); await server.close(); });
   return { client, journal, directory };
 }
 
@@ -135,4 +134,18 @@ test("graceful shutdown waits for an outstanding delivery record", async () => {
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(closed, false);
   } finally { release({ recorded: true }); await Promise.all([sent, close]); }
+});
+
+test("default server error logging does not copy private service failures to stderr", async t => {
+  const logged = [];
+  t.mock.method(console, "error", (...values) => logged.push(values.map(String).join(" ")));
+  const server = createFuzzyBrainServer({ recall: async () => { throw new Error("PRIVATE DATABASE DETAIL"); } });
+  const client = new Client({ name: "codex", version: "1.0.0" });
+  const [left, right] = InMemoryTransport.createLinkedPair();
+  t.after(async () => { await client.close(); await server.close(); });
+  await Promise.all([server.connect(right), client.connect(left)]);
+  const response = await client.callTool({ name: "recall", arguments: { question: "synthetic" } });
+  assert.equal(response.isError, true);
+  assert.equal(logged.length, 1);
+  assert.doesNotMatch(logged.join("\n"), /PRIVATE DATABASE DETAIL/);
 });
