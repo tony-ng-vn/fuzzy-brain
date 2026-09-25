@@ -86,7 +86,7 @@ const page = { offset: z.number().int().min(0).max(100000).default(0), limit: z.
 export const evidenceReadShape = {
   id: z.uuid(),
   context: z.number().int().min(0).max(3).default(1).describe("Adjacent passages on each side within the same saved episode, in source order."),
-  text_offset: z.number().int().min(0).max(5000000).default(0),
+  text_offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
   text_limit: z.number().int().min(1).max(8000).default(2000),
 };
 
