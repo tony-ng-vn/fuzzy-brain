@@ -4,6 +4,19 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.46.1
+
+2026-09-25
+
+**Tools**
+
+- A registered source ID now works with uppercase or lowercase letters when preparing, saving, or adding a related revision.
+  The configured source list shows one entry for case variants of the same ID, while different IDs remain unauthorized.
+- The change does not rewrite saved transfer content, and a retry still needs the same exact packet.
+  Simultaneous requests using either spelling share the same revision lock.
+
+---
+
 ## v0.46.0
 
 2026-09-25
