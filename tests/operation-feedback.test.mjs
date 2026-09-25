@@ -66,6 +66,36 @@ test("summary separates empty retrieval, service errors, unfinished calls, and c
   assert.equal(limited.exhaustive, false);
 });
 
+test("summary shows recall latency and failures separately from a long background cycle", async t => {
+  const journal = await setup(t);
+  for (const duration_ms of [5, 20]) {
+    const call = await journal.start({ entry_point: "tbrain_mcp", operation: "recall" });
+    await journal.finish(call.id, { result: { hits: [], degraded: duration_ms === 20 }, duration_ms });
+    await journal.recordDelivery(call.id, "sent");
+  }
+  const rejected = await journal.start({ entry_point: "tbrain_mcp", operation: "recall" });
+  await journal.finish(rejected.id, { error: { code: "invalid" }, duration_ms: 1 });
+  await journal.recordDelivery(rejected.id, "failed");
+  await journal.start({ entry_point: "tbrain_mcp", operation: "recall" });
+  const sync = await journal.start({ entry_point: "sync_cli", operation: "sync" });
+  await journal.finish(sync.id, { result: { ok: false }, duration_ms: 1200000 });
+  const diagnostic = await journal.start({ entry_point: "tbrain_mcp", operation: "trace_summary" });
+  await journal.finish(diagnostic.id, { error: { code: "unavailable" }, duration_ms: 10000 });
+  const summary = await journal.summary();
+  assert.deepEqual(summary.per_operation.recall, {
+    operations: 4, incomplete: 1, errors: { invalid: 1 }, empty_retrievals: 2, degraded_retrievals: 1,
+    failed_deliveries: 1, unconfirmed_deliveries: 0,
+    duration_ms: { samples: 3, p50: 5, p95: 20, p99: 20 },
+  });
+  assert.equal(summary.per_operation.sync.duration_ms.p95, 1200000);
+  assert.equal(summary.per_operation.sync.unconfirmed_deliveries, 0);
+  assert.deepEqual(summary.per_operation.sync.errors, { unavailable: 1 });
+  assert.equal(summary.per_operation.trace_summary, undefined);
+  assert.equal(summary.diagnostics.errors.unavailable, 1);
+  assert.deepEqual(summary.by_operation, { recall: 4, sync: 1 });
+  assert.equal(summary.duration_ms.p95, 1200000, "the existing overall statistic remains available");
+});
+
 test("delivery counts describe MCP replies without treating CLI completion as a lost reply", async t => {
   const journal = await setup(t);
   for (const entry_point of ["tbrain_cli", "recall_cli", "brain_cli", "index_cli", "sync_cli", "unknown"]) {
