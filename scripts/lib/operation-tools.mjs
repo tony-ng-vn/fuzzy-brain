@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { createOperationJournal } from "./operation-journal.mjs";
-import { outcomeReportShape, traceIdShape } from "./operation-feedback.mjs";
+import { outcomeReportShape, traceIdShape, traceListFilterShape } from "./operation-feedback.mjs";
 import { safeErrorCode } from "./operation-metadata.mjs";
 
 export function configuredOperationJournal(env = process.env) {
@@ -28,9 +28,9 @@ export function registerTraceTools(server, { journal, release }) {
   register("read_trace", "Read an operation trace or caller report by its returned identifier. Server results and caller reports have separate attribution. A missing finish means unknown or still running, not a failed memory save.",
     { id: traceIdShape, kind: z.enum(["operation", "report"]).default("operation") },
     ({ id, kind }) => kind === "report" ? journal.readReport(id) : journal.read(id));
-  const page = { day: z.iso.date().optional().describe("UTC day, default today."), limit: z.number().int().min(1).max(100).default(20), after: traceIdShape.nullable().default(null) };
-  register("list_traces", "Inspect a bounded page of operation traces or caller reports for one UTC day. Results use identifier order; follow next_after. Concurrent new records may require another read.",
-    { ...page, kind: z.enum(["operations", "reports"]).default("operations") },
+  const page = { day: z.iso.date().optional().describe("UTC day, default today."), limit: z.number().int().min(1).max(100).default(20).describe("Maximum records inspected before filtering, not the number of matches."), after: traceIdShape.nullable().default(null) };
+  register("list_traces", "Inspect a bounded page of operation traces or caller reports for one UTC day. Filter either kind by workflow_id, operations by parent_id, or reports by operation_id. Combined filters must all match. Follow next_after even when a page is empty. Results use identifier order, not execution order. Concurrent new records may require another read.",
+    { ...page, ...traceListFilterShape, kind: z.enum(["operations", "reports"]).default("operations") },
     ({ kind, ...input }) => kind === "reports" ? journal.listReports(input) : journal.list(input));
   register("report_outcome", "Record structured feedback about a request, save, source check, search, or reasoning result. Include expected or used evidence IDs. This is an unverified caller report, not an approved memory. Use workflow_id for a failure before any server call. Do not include private internal reasoning or source text.",
     outcomeReportShape, input => journal.report(input), true);
