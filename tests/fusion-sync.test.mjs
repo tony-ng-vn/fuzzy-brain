@@ -13,7 +13,7 @@ test("fusion sync ingests settled sessions before filling a bounded number of em
   });
 
   assert.deepEqual(calls, [
-    ["ingest-sessions.mjs", []],
+    ["ingest-sessions.mjs", ["--limit", "32"]],
     ["sweep-watch-items.mjs", []],
     ["embed-sweep.mjs", ["--limit", "32"]],
   ]);
@@ -91,5 +91,15 @@ test("fusion sync reports each failed stage and keeps completed work visible", a
 test("fusion sync rejects invalid indexing limits before starting capture", async () => {
   for (const embeddingLimit of [0, -1, 1.5, NaN, Infinity]) {
     await assert.rejects(runFusionSync({ embeddingLimit, run() { assert.fail("capture must not start"); } }), { code: "invalid" });
+  }
+});
+
+test("fusion sync bounds each session source independently of the indexing limit", async () => {
+  const calls = [];
+  await runFusionSync({ sessionLimit: 4, embeddingLimit: 9, run: async (script, args) => { calls.push([script, args]); return "done"; } });
+  assert.deepEqual(calls[0], ["ingest-sessions.mjs", ["--limit", "4"]]);
+  assert.deepEqual(calls[2], ["embed-sweep.mjs", ["--limit", "9"]]);
+  for (const sessionLimit of [0, -1, 1.5, NaN, Infinity]) {
+    await assert.rejects(runFusionSync({ sessionLimit, run() { assert.fail("capture must not start"); } }), { code: "invalid" });
   }
 });
