@@ -28,6 +28,11 @@ The start record names the operation, entry point, release, connection, and call
 Unknown client names are fingerprinted.
 Caller identity is reported by the client, not verified authentication.
 The finish record contains a safe error category or result summary, timing, and available receipt, node, source, and evidence identifiers.
+Batch records also retain up to 100 item identifiers, including session checkpoint IDs, along with saved-item states and evidence counts when returned.
+They count failed items across the complete returned batch, even when the item list is truncated.
+An explicit `ok: false` result or any rejected batch item marks the operation as an error.
+For a partly saved batch, inspect the item records before retrying because other items may already be committed.
+The operation's error category is the first reported item error, while `item_errors` counts every returned rejection category.
 A separate delivery record says whether the transport accepted the reply.
 It cannot prove that the caller read or used it.
 
