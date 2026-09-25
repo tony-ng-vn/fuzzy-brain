@@ -478,6 +478,41 @@ test("preparation failures consume the capture allowance while intentional exclu
   assert.equal(counts.deferred, 1);
 });
 
+test("bounded capture gives later sessions a turn and then retries earlier failures", async t => {
+  const { processClaudeSessions, processCodexSessions } = await import("../scripts/ingest-sessions.mjs");
+  const home = mkdtempSync(join(tmpdir(), "capture-fairness-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.mock.method(console, "error", () => {});
+  for (const [name, capture] of [["claude", processClaudeSessions], ["codex", processCodexSessions]]) {
+    await t.test(name, () => {
+      const dir = join(home, name, "claude-code", "allowed");
+      mkdirSync(dir, { recursive: true });
+      for (const id of ["a-failed", "b-later", "c-later"]) {
+        const text = name === "claude" ? makeSession(id, "/synthetic/allowed", [id]) : codexSession(id, "/synthetic/allowed", id);
+        writeFileSync(join(dir, `${id}.jsonl`), text);
+      }
+      let after = null;
+      const visited = [], cursor = { read: () => after, write: value => { after = value; } };
+      const deps = {
+        ensureSource: () => ({ id: "synthetic", exclusions: [] }), listExisting: () => [], cursor,
+        prepare(source, exclusions, id) {
+          visited.push(id);
+          if (id === "a-failed") throw new Error("synthetic preparation error");
+          return { raw: id };
+        },
+        submitChunk: chunk => chunk.map(() => ({ state: "committed", evidence_count: 1 })),
+      };
+      const cfg = { allowlist: "*", archiveRoot: join(home, name), liveProjectsDir: join(home, "none"), codexSessionsDir: dir, sessionLimit: 1 };
+      for (let run = 0; run < 4; run++) {
+        const counts = capture(cfg, Date.now() + 1000, deps);
+        assert.equal(counts.attempted, 1);
+        assert.equal(counts.deferred, 2);
+      }
+      assert.deepEqual(visited, ["a-failed", "b-later", "c-later", "a-failed"]);
+    });
+  }
+});
+
 test("a chunk flushes early once its pending raw bytes cross the size cap, even under the count cap", async () => {
   const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
 
