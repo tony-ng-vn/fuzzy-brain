@@ -4,6 +4,26 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.34.1
+
+2026-09-25
+
+**Tools**
+
+- An unfiltered indexing run now offers pending saved nodes half its places first, rounded up.
+  Archived evidence gets the remaining places, and nodes can use any evidence places left empty.
+  The total limit stays the same, and a run limited to one item gives a pending node first place.
+- A live backlog check found 5,637 archived passages and three saved nodes waiting for indexing.
+  The old evidence-first order could keep nodes waiting indefinitely.
+- Repairs limited to one source or archive receipt still work only on archived evidence.
+  Indexing leaves source text and existing search vectors unchanged.
+
+**Docs**
+
+- The indexing guide explains the shared limit and why an unfiltered run limited to one item prioritizes a saved node.
+
+---
+
 ## v0.34.0
 
 2026-09-25

@@ -48,6 +48,12 @@ Repeat the same bounded repair if more records remain.
 
 An unfiltered sweep includes evidence and approved nodes.
 Its row limit is shared across both groups.
+It starts with up to half the limit for nodes, rounded up, then gives the remaining places to archived passages.
+If fewer passages need indexing, nodes can use the spare places.
+For example, a limit of 32 with three pending nodes can index those three nodes and 29 passages.
+A limit of one prioritizes a node when one is pending.
+This prevents a large archive backlog from using every place while saved thoughts wait.
+Source and receipt filters still use the whole limit for their selected passages.
 An existing vector is never overwritten by this command.
 
 The configured background sync also fills a bounded number of missing vectors after capture.
