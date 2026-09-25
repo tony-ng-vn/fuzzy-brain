@@ -4,6 +4,26 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.32.3
+
+2026-09-25
+
+**Tools**
+
+- The background job now prepares saved text for search even if it cannot capture agent sessions or pasted video transcripts.
+  Its result names each failed step and still shows which steps finished.
+- Each background run now records its steps and links them to the commands it started.
+  The records name failed steps without copying private error text.
+- Error logs from the background job no longer print command output, source text, or private error details.
+- The sync command now shows help without starting capture.
+  It rejects unknown options before starting work.
+
+**Docs**
+
+- The search indexing guide explains how to inspect a stopped background job, run one repair cycle, and check the result.
+
+---
+
 ## v0.32.2
 
 2026-09-25
