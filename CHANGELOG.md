@@ -4,6 +4,22 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.37.0
+
+2026-09-25
+
+**Tools**
+
+- Trace summaries now separate timing and errors by action while keeping the overall totals.
+  A slow background sync no longer hides how long recall takes.
+- Diagnostic checks do not count as user work in the action breakdown.
+
+**Docs**
+
+- The trace guide explains how to read these timings and why they do not prove answer quality.
+
+---
+
 ## v0.36.1
 
 2026-09-25
