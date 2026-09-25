@@ -149,7 +149,7 @@ export function outputMetadata(value) {
       const counts = output.capture_sources[source];
       if (!counts || typeof counts !== "object") continue;
       metadata.capture_sources[source] = {};
-      for (const key of ["scanned", "notSettled", "allowlistSkipped", "excluded", "noTonyTurns", "alreadyIngested", "unparseable", "failed", "ingested", "evidenceRows"]) {
+      for (const key of ["scanned", "attempted", "deferred", "notSettled", "allowlistSkipped", "excluded", "noTonyTurns", "alreadyIngested", "unparseable", "failed", "ingested", "evidenceRows"]) {
         if (Number.isSafeInteger(counts[key]) && counts[key] >= 0) metadata.capture_sources[source][key] = counts[key];
       }
     }

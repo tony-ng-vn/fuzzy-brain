@@ -453,6 +453,31 @@ test("sessions are submitted in one chunked call; one bad slot fails only itself
   }
 });
 
+test("preparation failures consume the capture allowance while intentional exclusions do not", async t => {
+  const { processClaudeSessions } = await import("../scripts/ingest-sessions.mjs");
+  const home = mkdtempSync(join(tmpdir(), "capture-budget-failure-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.mock.method(console, "error", () => {});
+  const project = join(home, "claude-code", "allowed");
+  mkdirSync(project, { recursive: true });
+  for (const id of ["a-excluded", "b-failed", "c-later"]) {
+    writeFileSync(join(project, `${id}.jsonl`), makeSession(id, "/synthetic/allowed", [id]));
+  }
+  const counts = processClaudeSessions({ allowlist: "*", archiveRoot: home, liveProjectsDir: join(home, "none"), sessionLimit: 1 }, Date.now() + 1000, {
+    ensureSource: () => ({ id: "synthetic", exclusions: [] }), listExisting: () => [],
+    prepare(source, exclusions, id, parsed, context, counts) {
+      if (id === "a-excluded") { counts.excluded++; return null; }
+      if (id === "b-failed") throw new Error("synthetic preparation error");
+      assert.fail("the next session must wait after the failed attempt");
+    },
+    submitChunk() { assert.fail("no payload was ready to save"); },
+  });
+  assert.equal(counts.excluded, 1);
+  assert.equal(counts.failed, 1);
+  assert.equal(counts.attempted, 1);
+  assert.equal(counts.deferred, 1);
+});
+
 test("a chunk flushes early once its pending raw bytes cross the size cap, even under the count cap", async () => {
   const mod = await import(pathToFileURL(join(root, "scripts", "ingest-sessions.mjs")).href);
 

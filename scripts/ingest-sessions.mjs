@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { parseClaudeSessionTurns, parseCodexSessionTurns, renderEpisode, SESSION_PARSER_VERSION } from "./lib/session-parser.mjs";
 import { cli, ensureSource } from "./lib/brain-cli.mjs";
 import { acquireProcessLock } from "./lib/process-lock.mjs";
-import { runTracedCli } from "./lib/operation-cli.mjs";
+import { runTracedCli, recordTraceInput } from "./lib/operation-cli.mjs";
 import { safeErrorCode } from "./lib/operation-metadata.mjs";
 import { loadEnvLocal } from "./recall.mjs";
 
@@ -159,6 +159,8 @@ function gatherCodexCandidates(cfg) {
 function newCounts() {
   return {
     scanned: 0,
+    attempted: 0,
+    deferred: 0,
     notSettled: 0,
     allowlistSkipped: 0,
     excluded: 0,
@@ -250,6 +252,7 @@ function flushChunk(buffer, submitChunk, counts) {
 }
 
 export function processClaudeSessions(cfg, settledBefore, deps = {}) {
+  const limit = validSessionLimit(cfg.sessionLimit ?? null);
   const source = (deps.ensureSource ?? ensureSource)(cfg.sourceKind, cfg.sourceLabel);
   const exclusions = source.exclusions ?? [];
   const existing = (deps.listExisting ?? listCheckpoints)(source.id);
@@ -258,7 +261,12 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
   const counts = newCounts();
   const buffer = [];
 
-  for (const [sessionId, cand] of gatherCandidates(cfg)) {
+  const candidates = gatherCandidates(cfg);
+  for (const [sessionId, cand] of candidates) {
+    if (limit !== null && counts.attempted >= limit) {
+      counts.deferred = candidates.size - counts.scanned;
+      break;
+    }
     counts.scanned++;
     if (cand.mtimeMs > settledBefore) {
       counts.notSettled++;
@@ -293,11 +301,13 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
     try {
       payload = prepare(source, exclusions, sessionId, parsed, `${cand.slug} ${parsed.cwd ?? ""}`, counts);
     } catch (err) {
+      counts.attempted++;
       counts.failed++;
       logCaptureFailure("prepare", err);
       continue;
     }
     if (payload) {
+      counts.attempted++;
       buffer.push({ ...payload, file_mtime_ms: cand.mtimeMs, file_size: cand.size });
       if (buffer.length >= EPISODE_CHUNK_SIZE || chunkRawBytes(buffer) >= CHUNK_MAX_RAW_BYTES) {
         flushChunk(buffer, submitChunk, counts);
@@ -309,6 +319,7 @@ export function processClaudeSessions(cfg, settledBefore, deps = {}) {
 }
 
 export function processCodexSessions(cfg, settledBefore, deps = {}) {
+  const limit = validSessionLimit(cfg.sessionLimit ?? null);
   const source = (deps.ensureSource ?? ensureSource)("codex_session", cfg.codexSourceLabel);
   const exclusions = source.exclusions ?? [];
   const existing = (deps.listExisting ?? listCheckpoints)(source.id);
@@ -317,7 +328,12 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
   const counts = newCounts();
   const buffer = [];
 
-  for (const [sessionId, cand] of gatherCodexCandidates(cfg)) {
+  const candidates = gatherCodexCandidates(cfg);
+  for (const [sessionId, cand] of candidates) {
+    if (limit !== null && counts.attempted >= limit) {
+      counts.deferred = candidates.size - counts.scanned;
+      break;
+    }
     counts.scanned++;
     if (cand.mtimeMs > settledBefore) {
       counts.notSettled++;
@@ -347,11 +363,13 @@ export function processCodexSessions(cfg, settledBefore, deps = {}) {
     try {
       payload = prepare(source, exclusions, sessionId, parsed, parsed.cwd ?? "codex", counts);
     } catch (err) {
+      counts.attempted++;
       counts.failed++;
       logCaptureFailure("prepare", err);
       continue;
     }
     if (payload) {
+      counts.attempted++;
       buffer.push({ ...payload, file_mtime_ms: cand.mtimeMs, file_size: cand.size });
       if (buffer.length >= EPISODE_CHUNK_SIZE || chunkRawBytes(buffer) >= CHUNK_MAX_RAW_BYTES) {
         flushChunk(buffer, submitChunk, counts);
@@ -369,6 +387,8 @@ function printSummary(label, counts) {
     [
       `ingest-sessions summary (${label})`,
       `  scanned          ${counts.scanned}`,
+      `  attempted        ${counts.attempted}`,
+      `  deferred         ${counts.deferred} files not examined after reaching the limit`,
       `  ingested         ${counts.ingested} (${counts.evidenceRows} evidence rows)`,
       `  already ingested ${counts.alreadyIngested}`,
       `  not settled yet  ${counts.notSettled}`,
@@ -401,20 +421,35 @@ export function runSessionCapture(cfg, {
     ...(!ok ? { error: { code: "unavailable", message: "Some sessions did not save; completed sessions remain saved." } } : {}) };
 }
 
-function main() {
-  const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length && !["--help", "-h"].includes(args[0]))) {
-    throw Object.assign(new Error("Unknown session capture option."), { code: "invalid" });
+function validSessionLimit(limit) {
+  if (limit !== null && (!Number.isSafeInteger(limit) || limit <= 0)) {
+    throw Object.assign(new Error("The session limit must be a positive integer."), { code: "invalid" });
   }
-  if (args.length) {
-    const help = { state: "help", commands: ["Run without arguments to capture settled sessions from configured sources."],
+  return limit;
+}
+
+function parseCaptureArgs(args) {
+  if (args.length === 0) return { limit: null };
+  if (args.length === 1 && ["--help", "-h"].includes(args[0])) return { help: true };
+  if (args.length === 2 && args[0] === "--limit" && /^\d+$/.test(args[1])) {
+    return { limit: validSessionLimit(Number(args[1])) };
+  }
+  throw Object.assign(new Error("Unknown session capture option or invalid limit."), { code: "invalid" });
+}
+
+async function main() {
+  const options = parseCaptureArgs(process.argv.slice(2));
+  if (options.help) {
+    const help = { state: "help", commands: ["Run without arguments to capture settled sessions from configured sources.",
+      "--limit N attempts at most N sessions per source, leaving the rest for a later run."],
       note: "Capture uses the configured allowlist and source exclusions. Failed saves return a nonzero exit status." };
     console.log(JSON.stringify(help, null, 2));
     return help;
   }
+  await recordTraceInput({ limit: options.limit });
   const releaseLock = acquireIngestLock();
   try {
-    const cfg = loadConfig();
+    const cfg = { ...loadConfig(), sessionLimit: options.limit };
     const result = runSessionCapture(cfg);
     for (const [source, counts] of Object.entries(result.capture_sources)) {
       printSummary(source === "claude" ? cfg.sourceLabel : cfg.codexSourceLabel, counts);
