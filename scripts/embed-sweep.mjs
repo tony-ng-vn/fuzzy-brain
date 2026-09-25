@@ -124,7 +124,7 @@ export async function sweepTable(client, { label, selectSql, selectValues = [], 
     if (rows.length === 0) break;
     const pageStart = filled;
 
-    // Length-sorted batches waste less padding inside the model.
+    // Shorter passages go first so a time-limited page can finish more work.
     rows.sort((a, b) => toText(a).length - toText(b).length);
     const pageVectors = [];
     for (let i = 0; i < rows.length; i += EMBED_BATCH_SIZE) {
@@ -134,8 +134,7 @@ export async function sweepTable(client, { label, selectSql, selectValues = [], 
       pageVectors.push(...vectors);
     }
     if (!pageVectors.length) break;
-    // One statement per page keeps the remote database cost bounded while
-    // single-row model calls keep native inference memory bounded.
+    // Commit completed vectors even if the allowance ended partway through this page.
     const res = await client.query(updateSql, [
       rows.slice(0, pageVectors.length).map((r) => r.id),
       pageVectors.map(vectorLiteral),

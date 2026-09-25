@@ -46,6 +46,25 @@ It updates only missing vectors, preserves source text, and records its operatio
 Follow it with `index-status` to verify the remaining count.
 Repeat the same bounded repair if more records remain.
 
+Add `--max-seconds` to give the pass a time allowance as well as a row limit.
+
+```sh
+node scripts/embed-sweep.mjs --receipt-id RECEIPT_UUID --limit 256 --max-seconds 30
+```
+
+The allowance accepts a positive whole number of seconds.
+It covers the shared indexing pass across evidence and nodes after the database connection opens.
+The sweep checks elapsed time before reading another page and before starting another passage.
+It saves completed vectors even when the allowance expires partway through a page.
+The next pass resumes with the remaining missing vectors.
+An active model call or database request can run beyond the allowance, so this is not a strict wall-clock timeout.
+The command still runs one model call at a time at low CPU priority.
+Without `--max-seconds`, a manual pass keeps its existing row-limited or full-sweep behavior.
+
+Reaching the allowance without another failure is a successful bounded pass.
+Its trace records `max_duration_ms`, completed counts, and `time_limit_reached`.
+Check `index_status` for the remaining backlog; the stop flag alone does not measure it.
+
 An unfiltered sweep includes evidence and approved nodes.
 Its row limit is shared across both groups.
 It starts with up to half the limit for nodes, rounded up, then gives the remaining places to archived passages.
@@ -56,7 +75,7 @@ This prevents a large archive backlog from using every place while saved thought
 Source and receipt filters still use the whole limit for their selected passages.
 An existing vector is never overwritten by this command.
 
-The configured background sync also fills a bounded number of missing vectors after capture.
+The configured background sync now fills up to 256 missing vectors after capture, with a shared 30-second indexing allowance.
 If counts remain pending across runs, inspect whether that job is loaded and whether its logs show a failure.
 The index-status result reports database state; it does not claim that a background job is running.
 
