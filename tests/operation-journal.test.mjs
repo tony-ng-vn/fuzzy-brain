@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, stat, rm, writeFile, chmod, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,55 @@ test("concurrent operations keep distinct records and a second finish cannot rew
   const second = await store.list({ day: starts[0].id.slice(0, 10), limit: 20, after: page.next_after });
   assert.equal(second.traces.length, 14);
   assert.equal(new Set([...page.traces, ...second.traces].map(t => t.id)).size, 24);
+});
+
+test("workflow and parent filters keep bounded pagination even when a page has no matches", async t => {
+  const { store } = await journal(t);
+  const workflow = randomUUID();
+  const parent = await store.start({ ...details, workflow_id: workflow });
+  const child = await store.start({ ...details, workflow_id: workflow, parent_id: parent.id });
+  await store.start({ ...details, parent_id: parent.id, workflow_id: randomUUID() });
+  await store.start(details);
+  const empty = await store.list({ workflow_id: randomUUID(), limit: 1 });
+  assert.deepEqual(empty.traces, []);
+  assert.equal(empty.scanned_count, 1);
+  assert.equal(empty.has_more, true);
+  assert.ok(empty.next_after);
+  const found = [];
+  let after = null, scanned = 0;
+  do {
+    const page = await store.list({ workflow_id: workflow, parent_id: parent.id, limit: 1, after });
+    scanned += page.scanned_count;
+    found.push(...page.traces.map(item => item.id));
+    assert.ok(page.scanned_count <= 1);
+    assert.equal(page.exhaustive, !page.has_more);
+    after = page.next_after;
+  } while (after);
+  assert.equal(scanned, 4);
+  assert.deepEqual(found, [child.id]);
+  assert.deepEqual(new Set((await store.list({ workflow_id: workflow })).traces.map(item => item.id)), new Set([parent.id, child.id]));
+});
+
+test("caller reports can be located by workflow or operation without changing attribution", async t => {
+  const { store } = await journal(t);
+  const workflow = randomUUID();
+  const operation = await store.start(details);
+  const report = { stage: "retrieval", outcome: "failed", finding: "missing_expected_evidence" };
+  const matching = await store.report({ ...report, workflow_id: workflow, operation_id: operation.id });
+  await store.report({ ...report, workflow_id: randomUUID() });
+  const page = await store.listReports({ workflow_id: workflow, operation_id: operation.id });
+  assert.deepEqual(page.reports.map(item => item.id), [matching.id]);
+  assert.equal(page.reports[0].attribution, "caller_reported");
+  assert.equal(page.scanned_count, 2);
+});
+
+test("invalid or incompatible trace filters are rejected before listing private files", async t => {
+  const { store } = await journal(t);
+  for (const options of [{ workflow_id: "PRIVATE" }, { parent_id: "../../PRIVATE" }, { operation_id: "2000-01-01_11111111-1111-4111-8111-111111111111" }]) {
+    await assert.rejects(store.list(options), { code: "invalid" });
+  }
+  await assert.rejects(store.listReports({ parent_id: "2000-01-01_11111111-1111-4111-8111-111111111111" }), { code: "invalid" });
+  await assert.rejects(store.listReports({ operation_id: "2026-02-30_11111111-1111-4111-8111-111111111111" }), { code: "invalid" });
 });
 
 test("trace failures are separate from operation results and do not leak paths or input", async t => {
