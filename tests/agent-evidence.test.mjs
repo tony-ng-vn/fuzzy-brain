@@ -118,7 +118,9 @@ test("a long recall passage points both memory servers to the matching source ex
   assert.equal(hit.quote_truncated, true);
   assert.equal(hit.quote_length, text.length);
   assert.equal(hit.read.arguments.text_offset, hit.quote_offset);
-  const output = execFileSync(process.execPath, [fileURLToPath(new URL("../scripts/recall.mjs", import.meta.url)), "understanding release automation", "--source-id", source], {
+  // This checks text output; CI must not need a model download to exercise it.
+  const offlineModel = `import { env } from ${JSON.stringify(import.meta.resolve("@huggingface/transformers"))}; env.allowRemoteModels = false;`;
+  const output = execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(offlineModel)}`, fileURLToPath(new URL("../scripts/recall.mjs", import.meta.url)), "understanding release automation", "--source-id", source], {
     encoding: "utf8", timeout: 60000,
     env: { ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev" },
   });
