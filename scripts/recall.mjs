@@ -846,12 +846,18 @@ function toJsonHit(c, question) {
   const score = Number((c.rerankScore ?? c.rrf).toFixed(4));
   const match_strength = isStrongHit(c) ? "strong" : "partial";
   if (c.layer === "node") {
+    const fullBody = c.row.body ?? "";
+    let end = Math.min(fullBody.length, 700);
+    if (end < fullBody.length && /[\uD800-\uDBFF]/.test(fullBody[end - 1]) && /[\uDC00-\uDFFF]/.test(fullBody[end])) end--;
     return {
       layer: "node",
       node_id: c.row.id,
       type: c.row.type,
       title: c.row.title,
-      body: clip(c.row.body, 700),
+      body: fullBody.slice(0, end),
+      body_length: fullBody.length,
+      body_truncated: end < fullBody.length,
+      read: { tool: "get_node", arguments: { id: c.row.id } },
       created_at: c.row.created_at,
       score,
       match_strength,
