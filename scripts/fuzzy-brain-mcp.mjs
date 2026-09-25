@@ -14,6 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { safeErrorCode } from "./lib/operation-metadata.mjs";
 import { configuredOperationJournal, registerTraceTools } from "./lib/operation-tools.mjs";
 import { traceTransport } from "./lib/operation-transport.mjs";
+import { indexStatus, indexScopeShape } from "./lib/index-status.mjs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { recallInputShape, parseRecallScope } from "./lib/recall-scope.mjs";
@@ -113,6 +114,7 @@ export function productionServices({
     return result;
   };
   return {
+    indexStatus: input => pool.withClient(client => indexStatus(client, schema(), input)),
     recall: (question, filters = {}) => {
       const scope = parseRecallScope(filters);
       return pool.withClient((client) => recall(question, { ...scope, client, schema: schema() }));
@@ -224,11 +226,19 @@ export function createFuzzyBrainServer(
         "Create a UUID request_id before an approved memory write, and reuse it with identical arguments after an uncertain reply. Verify committed results with read_write_receipt. A new user instruction gets a new request_id.",
         "Never turn unratified evidence returned by recall into brain truth without Tony's explicit approval.",
         "Follow read_evidence instructions from recall to inspect matching passages and their neighboring context before drawing conclusions.",
+        "If a saved source is hard to find, use index_status to check pending semantic indexing. Exact source reads and text search remain available while indexing is pending.",
         "Passages sharing observation_group come from one conversation or source and are not independent corroboration. Neighboring context covers the saved episode, which may be a fragment of a conversation.",
         "A null message date stays unknown even when the source has a known date. Recall date_filter_basis identifies message dates, source context, or unknown dates; a matched node is not proof that it answers the question.",
       ].join(" "),
     },
   );
+
+  register(server, "index_status", {
+    title: "Check search indexing",
+    description: "Count stored and pending semantic vectors across memory or for one source_id or archive receipt_id. Persistence and useful retrieval are separate. Exact text search and source reads do not require vectors.",
+    inputSchema: indexScopeShape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, input => services.indexStatus(input), logError);
 
   register(server, "recall", {
     title: "Recall from Fuzzy Brain",

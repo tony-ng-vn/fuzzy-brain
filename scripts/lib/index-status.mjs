@@ -14,6 +14,16 @@ export function parseIndexScope(input = {}) {
   return parsed.data;
 }
 
+export function parseIndexArgs(args) {
+  const input = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const key = args[i]?.slice(2).replaceAll("-", "_"), value = args[i + 1];
+    if (!["--source-id", "--receipt-id"].includes(args[i]) || key in input || !value) throw fail("invalid");
+    input[key] = value;
+  }
+  return parseIndexScope(input);
+}
+
 export async function resolveIndexScope(client, schema, input = {}) {
   const scope = parseIndexScope(input);
   const tables = schemaTables(schema);

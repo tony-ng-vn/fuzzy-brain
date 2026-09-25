@@ -4,7 +4,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const codes = new Set(["invalid", "not_found", "conflict", "unauthorized", "excluded", "unavailable", "cancelled"]);
 const roles = new Set(["user", "assistant", "system", "tool", "other", "unknown"]);
 const operations = new Set([
-  "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders",
+  "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status",
   "read_write_receipt", "status", "transfer_format", "prepare_capture", "validate_transfer", "archive_day",
   "read_receipt", "read_archive", "read_source", "read_evidence", "search_archive", "trace_status", "read_trace",
   "list_traces", "report_outcome", "trace_summary", "validate", "import", "receipt", "verify", "export", "search",
@@ -16,7 +16,7 @@ const finite = value => typeof value === "number" && Number.isFinite(value);
 const validId = value => typeof value === "string" && uuid.test(value);
 export const safeErrorCode = value => codes.has(value) ? value : "unavailable";
 export const safeOperation = value => {
-  const normalized = ["trace-status", "trace-summary", "report-outcome"].includes(value) ? value.replaceAll("-", "_")
+  const normalized = ["trace-status", "trace-summary", "report-outcome", "index-status"].includes(value) ? value.replaceAll("-", "_")
     : value === "traces" ? "list_traces" : value === "trace" ? "read_trace" : value;
   return operations.has(normalized) ? normalized : "unknown";
 };

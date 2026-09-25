@@ -17,7 +17,7 @@ test("both memory connections and the portable command explain pending archive i
   const source = randomUUID();
   await database.client.query("insert into brain_dev.sources(id,kind,label) values($1,'index_test','Index test')", [source]);
   const receipt = await importTransfer(database.client, "brain_dev", fixture({ source_id: source }), { authorized: true, allowedSourceIds: [source] });
-  const env = { PATH: process.env.PATH, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "0" };
+  const env = { ...process.env, DATABASE_URL: database.url, DATABASE_URL_DEV: database.url, BRAIN_SCHEMA: "brain_dev", TBRAIN_TRACE: "0" };
   for (const script of ["fuzzy-brain-mcp.mjs", "tbrain-mcp.mjs"]) {
     await t.test(script, async () => {
       const client = new Client({ name: "index-test", version: "1" });
