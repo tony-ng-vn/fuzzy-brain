@@ -106,3 +106,12 @@ test("recall traces retain excerpt positions without copying source text", () =>
   for (const key of ["quote_offset", "quote_length", "quote_truncated"]) assert.equal(result.hits[2][key], undefined);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
+
+test("recall traces retain every defined result state without copying its explanation", () => {
+  for (const state of ["supported", "conflicting", "evidence", "partial", "missing"]) {
+    const metadata = outputMetadata({ state, note: "PRIVATE explanation", hits: [] });
+    assert.equal(metadata.state, state);
+    assert.doesNotMatch(JSON.stringify(metadata), /PRIVATE/);
+  }
+  assert.equal(outputMetadata({ state: "PRIVATE invented state" }).state, undefined);
+});
