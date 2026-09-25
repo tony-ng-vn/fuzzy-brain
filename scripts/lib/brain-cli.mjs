@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { operationChildEnvironment } from "./operation-context.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const brainCli = join(here, "..", "brain.mjs");
@@ -23,7 +24,7 @@ export function cli(verb, extraArgs = [], input) {
   const out = execFileSync(process.execPath, [brainCli, verb, ...extraArgs], {
     encoding: "utf8",
     input: input === undefined ? undefined : JSON.stringify(input),
-    env: process.env,
+    env: operationChildEnvironment(),
     ...CLI_EXEC_OPTS,
   });
   return JSON.parse(out);

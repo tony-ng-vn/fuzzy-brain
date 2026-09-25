@@ -4,7 +4,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const codes = new Set(["invalid", "not_found", "conflict", "unauthorized", "excluded", "unavailable", "cancelled"]);
 const roles = new Set(["user", "assistant", "system", "tool", "other", "unknown"]);
 const operations = new Set([
-  "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status", "index_repair", "sync", "sync_install", "sync_config",
+  "initialize", "tools/list", "ping", "recall", "remember", "mark_complete", "get_node", "list_reminders", "index_status", "index_repair", "sync", "sync_install", "sync_config", "session_capture", "list-session-checkpoints",
   "read_write_receipt", "status", "transfer_format", "prepare_capture", "validate_transfer", "archive_day",
   "read_receipt", "read_archive", "read_source", "read_evidence", "search_archive", "trace_status", "read_trace",
   "list_traces", "report_outcome", "trace_summary", "validate", "import", "receipt", "verify", "export", "search",
@@ -112,6 +112,19 @@ export function outputMetadata(value) {
   if (Array.isArray(output.failures)) {
     metadata.failed_stages = [...new Set(output.failures.map(item => item?.stage)
       .filter(stage => ["ingest", "watch-items", "embedding"].includes(stage)))];
+  }
+  if (output.capture_sources && typeof output.capture_sources === "object") {
+    metadata.capture_sources = {};
+    for (const source of ["claude", "codex"]) {
+      const counts = output.capture_sources[source];
+      if (!counts || typeof counts !== "object") continue;
+      metadata.capture_sources[source] = {};
+      for (const key of ["scanned", "notSettled", "allowlistSkipped", "excluded", "noTonyTurns", "alreadyIngested", "unparseable", "failed", "ingested", "evidenceRows"]) {
+        if (Number.isSafeInteger(counts[key]) && counts[key] >= 0) metadata.capture_sources[source][key] = counts[key];
+      }
+    }
+    metadata.failed_sources = [...new Set((Array.isArray(output.failed_sources) ? output.failed_sources : [])
+      .filter(source => ["claude", "codex"].includes(source)))];
   }
   if (Array.isArray(output.hits)) {
     metadata.hit_count = output.hits.length;
