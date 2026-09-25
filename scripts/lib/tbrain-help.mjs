@@ -90,5 +90,5 @@ export function portableHelp(args) {
   };
   if (!Object.hasOwn(commands, command)) throw Object.assign(new Error("Unknown help command."), { code: "invalid" });
   const entry = commands[command];
-  return { state: "help", command, usage: entry.usage, note: entry.note, ...(entry.schema ? { input_schema: z.toJSONSchema(entry.schema) } : {}) };
+  return { state: "help", command, usage: entry.usage, note: entry.note, ...(entry.schema ? { input_schema: z.toJSONSchema(entry.schema, { io: "input" }) } : {}) };
 }
