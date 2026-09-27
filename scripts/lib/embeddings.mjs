@@ -51,11 +51,24 @@ const intraOpNumThreads =
 // a second parallel-for pool has nothing to schedule and only adds contention.
 const SESSION_OPTIONS = Object.freeze({ intraOpNumThreads, interOpNumThreads: 1 });
 
+// Which weight file to load. Exported because anything that caches a vector
+// has to record which one produced it: the same text embeds to a measurably
+// different vector under fp32 and q8, so a cache keyed on the text alone will
+// happily serve a query vector that was built with different weights than the
+// corpus it is about to be compared against.
+const REQUESTED_DTYPE = (process.env.EMBEDDING_DTYPE ?? "").trim();
+export const WEIGHTS_DTYPE = REQUESTED_DTYPE === "q8" ? "q8" : "fp32";
+
 // Embed only the head of very long spans: the head carries a span's
 // identity for retrieval, and full-window (8192-token) inference over tens
 // of thousands of pasted-transcript spans would turn a CPU sweep into a
 // multi-hour job. Full-text search still covers what the head cap skips.
-const EMBED_CHAR_CAP = 4000;
+// Exported so the recall bench can size an embedding batch by what a passage
+// actually costs to embed, and overridable so a cap can be measured against
+// the bench without a code change. EMBEDDING_CHAR_CAP=0 keeps the default.
+const CHAR_CAP_OVERRIDE = Number.parseInt(process.env.EMBEDDING_CHAR_CAP ?? "", 10);
+export const EMBED_CHAR_CAP =
+  Number.isInteger(CHAR_CAP_OVERRIDE) && CHAR_CAP_OVERRIDE > 0 ? CHAR_CAP_OVERRIDE : 4000;
 
 let extractorPromise = null;
 function loadExtractor() {
@@ -67,7 +80,7 @@ function loadExtractor() {
   // question retried the load. In a resident server one transient failure
   // would otherwise leave the vector lane dead for the life of the process,
   // and every answer would quietly come back from the text lanes alone.
-  extractorPromise ??= pipeline("feature-extraction", MODEL_ID, { dtype: "fp32", session_options: SESSION_OPTIONS }).catch((err) => {
+  extractorPromise ??= pipeline("feature-extraction", MODEL_ID, { dtype: WEIGHTS_DTYPE, session_options: SESSION_OPTIONS }).catch((err) => {
     extractorPromise = null;
     throw err;
   });
