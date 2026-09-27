@@ -21,7 +21,7 @@ import { recallInputShape, parseRecallScope } from "./lib/recall-scope.mjs";
 import { evidenceReadShape, readEvidence } from "./lib/tbrain-store.mjs";
 import { getNode, listReminders, makePool, schemaTables } from "./brain.mjs";
 import { loadEnvLocal, recall } from "./recall.mjs";
-import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
+import { disposeEmbeddingModel, startEmbeddingIdleRelease, stopEmbeddingIdleRelease } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
 import { readWriteReceipt } from "./lib/memory-writes.mjs";
 
@@ -322,6 +322,11 @@ async function main() {
   transport.onclose = () => {
     void releaseResources(services);
   };
+  // Arm the model reaper for the life of the connection. The pool above
+  // already stands down after a cold stretch, and the model follows the same
+  // rule: a session someone is still using never pays a reload, and a session
+  // that walked away stops holding gigabytes of resident weights.
+  startEmbeddingIdleRelease();
   await server.connect(traceTransport(transport, { journal, entryPoint: "fuzzy_brain_mcp", release: serverVersion() }));
 }
 
@@ -331,6 +336,7 @@ async function releaseResources(services) {
   } catch (error) {
     logFailure("fuzzy_brain.shutdown_failed", error);
   } finally {
+    stopEmbeddingIdleRelease();
     await disposeEmbeddingModel();
   }
 }

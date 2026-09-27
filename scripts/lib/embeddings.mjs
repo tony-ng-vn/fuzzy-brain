@@ -102,6 +102,7 @@ export async function embedWithExtractor(extractor, prefix, texts) {
   let pooled;
   let layerNormalized;
   let normalized;
+  beginInference();
   try {
     modelInputs = extractor.tokenizer(inputs, { padding: true, truncation: true });
     outputs = await extractor.model(modelInputs);
@@ -112,8 +113,109 @@ export async function embedWithExtractor(extractor, prefix, texts) {
     normalized = layerNormalized.normalize(2, -1);
     return normalized.tolist();
   } finally {
+    endInference();
     disposeTensors(normalized, layerNormalized, pooled, outputs, modelInputs);
   }
+}
+
+// Releasing an idle model, and why the default exists.
+//
+// A resident MCP server answers a question in-process precisely so it does not
+// pay the model load twice. Measured here, that load is 0.3s warm and about
+// 1.9s cold, against roughly 600ms of actual searching, so holding the model
+// across questions is worth it. Holding it forever is not: the fp32 session
+// peaks near 1.9 GB resident, which is roughly three and a half times the
+// weight file because ONNX keeps an activation arena sized to the longest
+// sequence it has seen. Several agent sessions can be talking to the brain at
+// once, and each of those processes was holding that 1.9 GB until its host
+// disconnected. An abandoned session could sit on the memory for hours.
+//
+// So the model follows the same rule the connection pool already follows: warm
+// while someone is talking, released once nobody is. The default window is ten
+// minutes, comfortably longer than any pause inside a conversation, so an
+// active session never pays a reload. Set EMBEDDING_IDLE_RELEASE_MS to tune
+// it, or to 0 to keep the old hold-forever behavior.
+const DEFAULT_IDLE_RELEASE_MS = 10 * 60_000;
+
+// Inference is counted rather than timed, because a question can outlive its
+// own window: a slow embed that started before the deadline must not have the
+// model pulled out from under it.
+let inferenceCount = 0;
+let lastInferenceAt = 0;
+let idleRelease = null;
+// Inference stamps the last-use time through the same clock the reaper reads,
+// so a caller that injects a clock for testing gets a coherent pair. Mixing a
+// real Date.now() here against an injected now() there makes the window
+// unmeasurable rather than merely fake.
+let clockNow = Date.now;
+
+function beginInference() {
+  inferenceCount += 1;
+  lastInferenceAt = clockNow();
+  idleRelease?.rearm();
+}
+
+function endInference() {
+  inferenceCount = Math.max(0, inferenceCount - 1);
+}
+
+/**
+ * Arm a timer that disposes the model once it has gone unused for `idleMs`.
+ *
+ * Injectable on every moving part so the policy is testable without waiting ten
+ * minutes or loading 547 MB of weights. Returns a handle with `rearm()` and
+ * `stop()`; `stop()` disarms without disposing, so a caller shutting down can
+ * still own teardown itself.
+ */
+export function startEmbeddingIdleRelease({
+  idleMs = Number.parseInt(process.env.EMBEDDING_IDLE_RELEASE_MS ?? "", 10) || DEFAULT_IDLE_RELEASE_MS,
+  dispose = disposeEmbeddingModel,
+  now = Date.now,
+  setTimer = setInterval,
+  clearTimer = clearInterval,
+} = {}) {
+  if (!(idleMs > 0)) return { rearm() {}, stop() {} };
+  idleRelease?.stop();
+  clockNow = now;
+  // Start measuring from arming, so a server that boots and is never asked
+  // anything does not treat "no inference yet" as "idle since the epoch".
+  // Arming happens before the first question, so this only ever delays a
+  // release that nothing was waiting on.
+  lastInferenceAt = now();
+
+  let timer = null;
+  const check = async () => {
+    // An inference in flight owns the model until it finishes.
+    if (inferenceCount > 0 || now() - lastInferenceAt < idleMs) return;
+    handle.stop();
+    // Best effort, exactly like the shutdown path: a failed release must not
+    // take the server down, and the next question reloads the model anyway.
+    await dispose();
+  };
+  const handle = {
+    rearm() {
+      handle.stop();
+      // Polling at the window's own length would let a check land up to a full
+      // window late; a short poll keeps the release close to when it is due.
+      timer = setTimer(check, Math.min(idleMs, 30_000));
+      // The reaper must never be the reason the process stays alive.
+      timer.unref?.();
+    },
+    stop() {
+      if (timer) clearTimer(timer);
+      timer = null;
+    },
+  };
+  handle.rearm();
+  idleRelease = handle;
+  return handle;
+}
+
+/** Disarm the idle reaper without disposing. Used on shutdown paths. */
+export function stopEmbeddingIdleRelease() {
+  idleRelease?.stop();
+  idleRelease = null;
+  clockNow = Date.now;
 }
 
 export async function disposeEmbeddingModel() {
