@@ -83,7 +83,7 @@ import { writeJsonl } from './lib/jsonl.mjs';
 import { buildTermStats } from './lib/term-stats.mjs';
 import { parseQueryFeatures, lexicalQueryParams } from './engine.mjs';
 import { buildMemoryIndex, reverbalizeQuery, retargetQuery } from './gen-corpus.mjs';
-import { embedDocuments, embedQuery, EMBED_CHAR_CAP } from '../../scripts/lib/embeddings.mjs';
+import { embedDocuments, embedQuery, WEIGHTS_DTYPE, EMBEDDING_DIM, EMBED_CHAR_CAP } from '../../scripts/lib/embeddings.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -431,8 +431,16 @@ export async function embedMemories(client, tier, opts = {}) {
   return { embedded, ms: Date.now() - started };
 }
 
-export function queryTextsHash(queries) {
-  return createHash('sha256').update(queries.map((q) => q.text).join('\n')).digest('hex');
+// The hash answers "were these vectors built from these exact query texts?".
+// The dtype is folded in because the same text embeds to a different vector
+// under fp32 and q8: without it, switching EMBEDDING_DTYPE and re-running the
+// load would reuse fp32 query vectors against a q8 corpus and quietly measure
+// nothing at all. The dimensions are folded in for the same reason.
+export function queryTextsHash(queries, { dtype, dims } = {}) {
+  const parts = [queries.map((q) => q.text).join('\n')];
+  if (dtype) parts.push(`dtype:${dtype}`);
+  if (dims) parts.push(`dims:${dims}`);
+  return createHash('sha256').update(parts.join('\n')).digest('hex');
 }
 
 export function queryTextsHashPath(cachePath) {
@@ -470,7 +478,7 @@ export async function cacheQueryVectors(queries, cachePath, opts = {}) {
   // reads as a bare Float32Array): a hash of the exact query texts these
   // vectors were built from, so a later step can tell whether the cache still
   // corresponds to the queries on disk.
-  await writeFile(queryTextsHashPath(cachePath), queryTextsHash(queries));
+  await writeFile(queryTextsHashPath(cachePath), queryTextsHash(queries, { dtype: WEIGHTS_DTYPE, dims: EMBEDDING_DIM }));
 
   return { cached: queries.length, ms: Date.now() - started };
 }
@@ -984,7 +992,7 @@ async function runVerifyOracle(tier, args) {
   const allQueries = [...dev, ...test];
   const hashPath = queryTextsHashPath(cachePath);
   const cachedHash = existsSync(hashPath) ? (await readFile(hashPath, 'utf8')).trim() : null;
-  if (cachedHash !== queryTextsHash(allQueries)) {
+  if (cachedHash !== queryTextsHash(allQueries, { dtype: WEIGHTS_DTYPE, dims: tier.dims })) {
     console.log(`  query-vector cache does not match the queries on disk (${cachedHash ? 'text changed' : 'no sidecar hash'}); re-embedding ${allQueries.length} queries`);
     const { ms } = await cacheQueryVectors(allQueries, cachePath, { batchSize: 8 });
     console.log(`  re-embedded in ${(ms / 1000).toFixed(1)}s`);
@@ -1019,7 +1027,7 @@ async function runVerifyOracle(tier, args) {
     await writeJsonl(devPath, dev);
     await writeJsonl(testPath, test);
     await writeFile(cachePath, Buffer.from(vectors.buffer, vectors.byteOffset, vectors.byteLength));
-    await writeFile(hashPath, queryTextsHash(allQueries));
+    await writeFile(hashPath, queryTextsHash(allQueries, { dtype: WEIGHTS_DTYPE, dims: tier.dims }));
 
     // Repair rewrites query text, so a CORPUS.lock written before this run
     // pins query hashes that no longer match what is on disk. Re-running
