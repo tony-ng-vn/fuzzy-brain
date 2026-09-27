@@ -2,6 +2,15 @@ import { z } from "zod";
 import { operationNames, recallStates } from "./operation-metadata.mjs";
 
 export const traceIdShape = z.string().regex(/^\d{4}-\d{2}-\d{2}_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+export const traceSummaryShape = {
+  day: z.iso.date().optional(),
+  limit: z.number().int().min(1).max(1000).default(1000),
+  after_operation: traceIdShape.nullable().optional().describe("Copy next.arguments. Null skips an already exhausted operation list; omit both positions for the first page."),
+  after_report: traceIdShape.nullable().optional().describe("Copy next.arguments. Null skips an already exhausted report list; supply both positions when continuing."),
+};
+export const traceSummarySchema = z.strictObject(traceSummaryShape).refine(
+  value => (value.after_operation === undefined) === (value.after_report === undefined),
+  "Continuation requires both operation and report positions.");
 export const traceListFilterShape = {
   workflow_id: z.uuid().nullable().optional(),
   parent_id: traceIdShape.nullable().optional(),
