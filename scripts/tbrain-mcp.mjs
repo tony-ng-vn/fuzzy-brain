@@ -10,7 +10,7 @@ import { z } from "zod";
 import { recallInputShape } from "./lib/recall-scope.mjs";
 import { productionServices, residentPool } from "./fuzzy-brain-mcp.mjs";
 import { loadEnvLocal } from "./recall.mjs";
-import { disposeEmbeddingModel } from "./lib/embeddings.mjs";
+import { disposeEmbeddingModel, startEmbeddingIdleRelease, stopEmbeddingIdleRelease } from "./lib/embeddings.mjs";
 import { runJson } from "./lib/run-json.mjs";
 import { transferSchema, validateTransfer, captureShape, prepareCapture, inspectTransfer, MAX_TRANSFER_BYTES, sourceIsAllowed } from "./lib/tbrain-transfer.mjs";
 import { evidenceReadShape, archiveSearchShape, sourceReadShape } from "./lib/tbrain-store.mjs";
@@ -185,8 +185,14 @@ async function main() {
   const server = createTbrainServer(services, { ...config, journal });
   const transport = new StdioServerTransport();
   transport.onclose = () => {
-    void services.close().catch(() => {}).finally(() => disposeEmbeddingModel());
+    void services.close().catch(() => {}).finally(() => {
+      stopEmbeddingIdleRelease();
+      return disposeEmbeddingModel();
+    });
   };
+  // Same rule as the fuzzy-brain server: hold the model while someone is
+  // asking questions, release it once the conversation goes quiet.
+  startEmbeddingIdleRelease();
   const release = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
   await server.connect(traceTransport(transport, { journal, entryPoint: "tbrain_mcp", release }));
 }

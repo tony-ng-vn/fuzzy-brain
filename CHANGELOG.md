@@ -4,6 +4,42 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.48.0
+
+2026-09-27
+
+**Tools**
+
+- Searching and index repair now finish about twice as fast and use a fraction of the processor, so the machine stays cool and a laptop stays on battery.
+  The local model had been spreading itself across every core by default.
+  On a 12 core machine, one measured question went from using 9.2 cores to 2, and the processing spent per thousand passages dropped about 8 times.
+  Answers do not change, because the weights and the arithmetic are untouched and only the number of workers differs.
+  Set `EMBEDDING_THREADS` if a machine wants a different count.
+- A memory server now lets go of the local model after ten quiet minutes instead of holding it until its connection closes.
+  Several sessions can be open at once and each one was holding roughly 1.9 GB of model memory the entire time, so a session you walked away from kept that memory for hours.
+  Releasing it hands back about 110 MB directly; the model's own arithmetic buffer holds the rest until the process exits.
+  Set `EMBEDDING_IDLE_RELEASE_MS` to change the window, or to `0` to keep holding as before.
+  An in-progress question is never interrupted, and the next one reloads the model transparently.
+- Only the opening 2,048 characters of a passage are now embedded, down from 4,000, which cuts the settled memory a model holds from about 1.7 GB to 1.0 GB and embeds long text in roughly half the time.
+  The old figure was a guess that was never tested, and it was set too high: the recall bench only ever generated short memories, so nothing it measured could reach the cap, while in the real store 12.2 percent of passages were already being clipped past 4,000.
+  Measured on a new long passage bench tier across 200 questions, whether the right answer reaches the top ten does not change at all: 0.985 at every setting tried.
+  Which answer arrives first drifts slightly and in step with the cap, so 2,048 was chosen as the point where that drift is too small to measure.
+  Set `EMBEDDING_CHAR_CAP` to 1,024 for roughly another 1.8x, knowing it costs a little ordering.
+- Index repair and the recall bench no longer embed 64 passages per model call.
+  A call costs tokens rather than rows, because every row is padded up to the longest one in the batch, so 64 passages that are 4,000 characters each needed 14.5 GB of memory and ran 20 times slower than one at a time.
+  Batches are now sized by a token budget, which keeps the same call size for short passages and shrinks it automatically for long ones.
+  The first attempt to load a realistic long passage corpus under the old setting embedded none of its 1,000 rows in 50 minutes; it now finishes in under two.
+- The recall bench gained a long passage tier, because the existing tiers could not see the shape of real evidence.
+  They generate 180 to 400 character memories, but the stored passages average 4,217 characters with a 90th percentile of 5,484, so the tuning behind the 0.977 headline score was measured on text roughly an order of magnitude shorter than most of what gets searched.
+  The new tier generates 3,800 to 5,200 character memories and places each memory's identifying detail at a drawn offset, so 82 percent of them carry that detail past a 1,024 character mark and none carry it past 4,000.
+  That is what it takes to tell whether lowering the embedded-character cap is safe, which no existing tier could answer.
+  The four existing tiers are unchanged and still produce identical corpora.
+- The smaller weight file was measured and rejected.
+  It holds recall exactly where the full weights do and is 40 percent slower, reversing an earlier reading that had found it faster; both numbers are real and were taken at different thread counts, and at the setting this release ships it is the slower of the two.
+  It stays available through `EMBEDDING_DTYPE` for anyone who wants to re-check that.
+
+---
+
 ## v0.47.0
 
 2026-09-27

@@ -83,7 +83,7 @@ import { writeJsonl } from './lib/jsonl.mjs';
 import { buildTermStats } from './lib/term-stats.mjs';
 import { parseQueryFeatures, lexicalQueryParams } from './engine.mjs';
 import { buildMemoryIndex, reverbalizeQuery, retargetQuery } from './gen-corpus.mjs';
-import { embedDocuments, embedQuery } from '../../scripts/lib/embeddings.mjs';
+import { embedDocuments, embedQuery, WEIGHTS_DTYPE, EMBEDDING_DIM, EMBED_CHAR_CAP } from '../../scripts/lib/embeddings.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -316,6 +316,85 @@ export async function copyMemories(client, tier, source) {
   return { rows, ms: Date.now() - started };
 }
 
+// Roughly four characters per token for English prose. Only ever used to size
+// a batch, so an approximation is fine; being wrong shifts the batch size
+// slightly and nothing else.
+const CHARS_PER_TOKEN = 4;
+
+// The batch ceiling, in tokens, that a model call may carry.
+//
+// This replaces a fixed 64-row batch, and the reason is memory rather than
+// taste. A model call's cost scales with the total tokens in it, not the rows,
+// because `padding: true` pads every row in the batch up to the longest one
+// and the activation arena is sized to that product. The old row count was
+// tuned on the quality tier's 340-400 character bodies, where 64 rows is about
+// 6,400 tokens and fits comfortably. The real evidence store does not look
+// like that: measured over 49,320 passages, the mean is 4,217 characters.
+// Sixty-four rows of that is roughly 61,000 tokens, and the longtail tier
+// measured what happens there:
+//
+//   batch    rows/s   peak RSS
+//       1      5.02     1.59 GB
+//       4      4.89     2.93 GB
+//       8      4.76     4.85 GB
+//      16      4.35     6.98 GB
+//      64      0.23    14.5 GB
+//
+// Throughput is flat to within noise all the way to 16 and then collapses 20x,
+// while memory climbs about 0.42 GB per row the whole way. Batching bought
+// nothing and cost 14.5 GB, which on a 24 GB machine is the difference between
+// a load that runs and a load that stalls: the first attempt at the longtail
+// tier embedded none of its 1,000 rows in 50 minutes.
+//
+// So a batch is bounded by tokens, not rows, which makes the batch size
+// independent of how long the memories happen to be.
+//
+// 6,000 is set so the short tiers keep the 64-row batch they always had:
+// at their ~93 tokens per body, 6,000/93 is 64. A 4,000 budget packs only 43,
+// and that looked free on a fast machine (1,000 smoke rows in 18.9s against
+// 17.7s) while costing a slow runner half again as much, because there the
+// fixed per-call cost is a much larger share of a call. The first CI run of
+// this change embedded the smoke tier in 148s against main's 97s, entirely
+// from calls that had got 30 percent smaller.
+//
+// At the long tail's 957 tokens per body the same budget allows 6 rows, so
+// peak memory lands near 4 GB instead of 14.5 GB. The budget is the knob that
+// trades those two against each other; raising it much past this reintroduces
+// the cliff, and the token cap of two threads in the product module assumes
+// batches stay small.
+export const BATCH_TOKEN_BUDGET = 6_000;
+
+/**
+ * Group row indices into model batches holding at most `tokenBudget` tokens
+ * and at most `maxRows` rows, whichever binds first.
+ */
+export function tokenBatches(rows, maxRows = 64, tokenBudget = BATCH_TOKEN_BUDGET) {
+  const batches = [];
+  let current = [];
+  let currentWidest = 0;
+  for (let i = 0; i < rows.length; i++) {
+    // Mirror the product module: it truncates at EMBED_CHAR_CAP before
+    // tokenizing, so a 200 KB body costs the cap, not 200 KB.
+    const chars = Math.min(rows[i].body.length, EMBED_CHAR_CAP);
+    const tokens = Math.max(1, Math.ceil(chars / CHARS_PER_TOKEN));
+    // The cost of a call is its LONGEST row times how many rows are in it,
+    // because `padding: true` pads every row up to that longest one. Budgeting
+    // on the sum of the rows instead lets one long row smuggle a batch of
+    // short ones past the ceiling: ten 512-token rows sum to well under 4,000
+    // but cost 5,120 padded tokens, which is the case this has to catch.
+    const widest = Math.max(currentWidest, tokens);
+    if (current.length > 0 && (widest * (current.length + 1) > tokenBudget || current.length >= maxRows)) {
+      batches.push(current);
+      current = [];
+      currentWidest = 0;
+    }
+    current.push(i);
+    currentWidest = Math.max(currentWidest, tokens);
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
 export async function embedMemories(client, tier, opts = {}) {
   if (tier.vector !== 'real') {
     // Running the model against a synthetic tier would try to write a
@@ -324,7 +403,7 @@ export async function embedMemories(client, tier, opts = {}) {
     throw new Error(`embedMemories only applies to real-vector tiers; tier.vector="${tier.vector}" gets its embedding from copyMemories instead`);
   }
 
-  const batchSize = opts.batchSize ?? 64; // measured optimum, DESIGN.md 1.2
+  const batchSize = opts.batchSize ?? 64; // row ceiling, see tokenBatches above
   const checkpointEvery = opts.checkpointEvery ?? 5000; // DESIGN.md section 7 rung 2
   const onProgress = opts.onProgress ?? (() => {});
   const table = `${tier.schema}.memories`;
@@ -342,10 +421,9 @@ export async function embedMemories(client, tier, opts = {}) {
     rows.sort((a, b) => a.body.length - b.body.length);
 
     const vectors = new Array(rows.length);
-    for (let i = 0; i < rows.length; i += batchSize) {
-      const slice = rows.slice(i, i + batchSize);
-      const embeddedSlice = await embedDocuments(slice.map((r) => r.body));
-      for (let j = 0; j < slice.length; j++) vectors[i + j] = embeddedSlice[j];
+    for (const idx of tokenBatches(rows, batchSize)) {
+      const embeddedSlice = await embedDocuments(idx.map((i) => rows[i].body));
+      for (let j = 0; j < idx.length; j++) vectors[idx[j]] = embeddedSlice[j];
     }
 
     // One UPDATE per checkpoint page: the "embedding is null" guard is what
@@ -365,8 +443,16 @@ export async function embedMemories(client, tier, opts = {}) {
   return { embedded, ms: Date.now() - started };
 }
 
-export function queryTextsHash(queries) {
-  return createHash('sha256').update(queries.map((q) => q.text).join('\n')).digest('hex');
+// The hash answers "were these vectors built from these exact query texts?".
+// The dtype is folded in because the same text embeds to a different vector
+// under fp32 and q8: without it, switching EMBEDDING_DTYPE and re-running the
+// load would reuse fp32 query vectors against a q8 corpus and quietly measure
+// nothing at all. The dimensions are folded in for the same reason.
+export function queryTextsHash(queries, { dtype, dims } = {}) {
+  const parts = [queries.map((q) => q.text).join('\n')];
+  if (dtype) parts.push(`dtype:${dtype}`);
+  if (dims) parts.push(`dims:${dims}`);
+  return createHash('sha256').update(parts.join('\n')).digest('hex');
 }
 
 export function queryTextsHashPath(cachePath) {
@@ -404,7 +490,7 @@ export async function cacheQueryVectors(queries, cachePath, opts = {}) {
   // reads as a bare Float32Array): a hash of the exact query texts these
   // vectors were built from, so a later step can tell whether the cache still
   // corresponds to the queries on disk.
-  await writeFile(queryTextsHashPath(cachePath), queryTextsHash(queries));
+  await writeFile(queryTextsHashPath(cachePath), queryTextsHash(queries, { dtype: WEIGHTS_DTYPE, dims: EMBEDDING_DIM }));
 
   return { cached: queries.length, ms: Date.now() - started };
 }
@@ -918,7 +1004,7 @@ async function runVerifyOracle(tier, args) {
   const allQueries = [...dev, ...test];
   const hashPath = queryTextsHashPath(cachePath);
   const cachedHash = existsSync(hashPath) ? (await readFile(hashPath, 'utf8')).trim() : null;
-  if (cachedHash !== queryTextsHash(allQueries)) {
+  if (cachedHash !== queryTextsHash(allQueries, { dtype: WEIGHTS_DTYPE, dims: tier.dims })) {
     console.log(`  query-vector cache does not match the queries on disk (${cachedHash ? 'text changed' : 'no sidecar hash'}); re-embedding ${allQueries.length} queries`);
     const { ms } = await cacheQueryVectors(allQueries, cachePath, { batchSize: 8 });
     console.log(`  re-embedded in ${(ms / 1000).toFixed(1)}s`);
@@ -953,7 +1039,7 @@ async function runVerifyOracle(tier, args) {
     await writeJsonl(devPath, dev);
     await writeJsonl(testPath, test);
     await writeFile(cachePath, Buffer.from(vectors.buffer, vectors.byteOffset, vectors.byteLength));
-    await writeFile(hashPath, queryTextsHash(allQueries));
+    await writeFile(hashPath, queryTextsHash(allQueries, { dtype: WEIGHTS_DTYPE, dims: tier.dims }));
 
     // Repair rewrites query text, so a CORPUS.lock written before this run
     // pins query hashes that no longer match what is on disk. Re-running

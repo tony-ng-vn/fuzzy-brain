@@ -6,6 +6,145 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Tensor } from "@huggingface/transformers";
 
+// A fake interval clock, so the idle-release policy is testable without waiting
+// ten minutes or loading 547 MB of weights. It mirrors the real contract
+// exactly: setTimer hands back a handle carrying unref, clearTimer takes that
+// same handle back, and a fired timer reschedules itself the way setInterval
+// does. `advance` runs every timer that came due, in order.
+function fakeClock() {
+  let current = 1_000_000;
+  const scheduled = new Map();
+  return {
+    now: () => current,
+    setTimer(fn, ms) {
+      const handle = { unref() {} };
+      scheduled.set(handle, { fn, every: ms, due: current + ms });
+      return handle;
+    },
+    clearTimer(handle) {
+      scheduled.delete(handle);
+    },
+    async advance(ms) {
+      const target = current + ms;
+      // Repeatedly take the earliest due timer and run it, since a callback
+      // may clear other timers or rearm itself. The callback must observe the
+      // time this tick was DUE, not the time of the next one, or a policy that
+      // compares against "now" reads a tick into the future every time.
+      for (;;) {
+        const due = [...scheduled].filter(([, e]) => e.due <= target).sort((a, b) => a[1].due - b[1].due)[0];
+        if (!due) break;
+        const entry = due[1];
+        current = Math.max(current, entry.due);
+        entry.due += entry.every;
+        await entry.fn();
+      }
+      current = target;
+    },
+    get armed() {
+      return scheduled.size;
+    },
+  };
+}
+
+// A one-shot fake extractor. Enough surface for embedWithExtractor, and it
+// optionally parks on a gate so a test can hold an inference open.
+function fakeExtractor({ gate = null } = {}) {
+  const token = new Tensor("int64", BigInt64Array.from([1n, 1n]), [1, 2]);
+  const mask = new Tensor("int64", BigInt64Array.from([1n, 1n]), [1, 2]);
+  const hidden = new Tensor("float32", Float32Array.from([1, 2, 3, 4]), [1, 2, 2]);
+  return {
+    tokenizer: () => ({ input_ids: token, attention_mask: mask }),
+    model: async () => {
+      if (gate) await gate;
+      return { last_hidden_state: hidden };
+    },
+  };
+}
+
+test("the idle window is measured from the last inference, not from arming", async () => {
+  const { embedWithExtractor, startEmbeddingIdleRelease, stopEmbeddingIdleRelease } =
+    await import("../scripts/lib/embeddings.mjs");
+  const clock = fakeClock();
+  let disposals = 0;
+  startEmbeddingIdleRelease({
+    idleMs: 600_000,
+    dispose: () => { disposals += 1; },
+    now: clock.now,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  try {
+    // A server nobody has asked anything of holds no model worth keeping, so
+    // a long quiet stretch releases it.
+    await clock.advance(5 * 3_600_000);
+    assert.equal(disposals, 1, "a model nobody used is released once the window closes");
+
+    // Now the interesting half. Answering a question must restart the window,
+    // so the release is measured from that use rather than from arming.
+    await embedWithExtractor(fakeExtractor(), "search_query", ["hello"]);
+    await clock.advance(599_000);
+    assert.equal(disposals, 1, "still inside the window that follows real use");
+    assert.ok(clock.armed > 0, "the reaper stays armed while the model is in use");
+
+    await clock.advance(2_000);
+    assert.equal(disposals, 2, "the window restarts from the last question, not from arming");
+  } finally {
+    stopEmbeddingIdleRelease();
+  }
+});
+
+test("a zero idle window keeps the model resident for the life of the process", async () => {
+  const { embedWithExtractor, startEmbeddingIdleRelease, stopEmbeddingIdleRelease } =
+    await import("../scripts/lib/embeddings.mjs");
+  const clock = fakeClock();
+  let disposals = 0;
+  startEmbeddingIdleRelease({
+    idleMs: 0,
+    dispose: () => { disposals += 1; },
+    now: clock.now,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  try {
+    await embedWithExtractor(fakeExtractor(), "search_query", ["hello"]);
+    await clock.advance(3 * 3_600_000);
+    assert.equal(disposals, 0);
+    assert.equal(clock.armed, 0, "no timer is armed at all when the window is off");
+  } finally {
+    stopEmbeddingIdleRelease();
+  }
+});
+
+test("inference in progress is never interrupted by the idle reaper", async () => {
+  const { embedWithExtractor, startEmbeddingIdleRelease, stopEmbeddingIdleRelease } =
+    await import("../scripts/lib/embeddings.mjs");
+  const clock = fakeClock();
+  let disposals = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  startEmbeddingIdleRelease({
+    idleMs: 1_000,
+    dispose: () => { disposals += 1; },
+    now: clock.now,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  try {
+    // model() parks on the gate, so the deadline passes with the caller still
+    // waiting on the model. Disposing here would take the answer away.
+    const pending = embedWithExtractor(fakeExtractor({ gate }), "search_document", ["hello"]);
+    await clock.advance(5_000);
+    assert.equal(disposals, 0, "a model mid-inference is not disposed underneath the caller");
+
+    release();
+    await pending;
+    await clock.advance(1_000);
+    assert.equal(disposals, 1, "the model is released once the caller is finished with it");
+  } finally {
+    stopEmbeddingIdleRelease();
+  }
+});
+
 test("embedding cleanup does not replay a failed model load", async () => {
   const { disposeExtractorPromise } = await import("../scripts/lib/embeddings.mjs");
   await assert.doesNotReject(disposeExtractorPromise(Promise.reject(new Error("model unavailable"))));
