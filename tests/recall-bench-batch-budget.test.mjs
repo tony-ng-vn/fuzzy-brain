@@ -79,22 +79,25 @@ test('an oversized row is batched by what it costs, not by its raw length', () =
 test('long bodies are batched small enough to keep memory bounded', () => {
   // The regression that motivated the change: 64 rows of real-length text
   // measured 14.5 GB. A token budget has to prevent that shape, not just
-  // rearrange it.
+  // rearrange it. The bound asserted here is the invariant, not a row count
+  // derived from one particular budget, because the budget is a tunable and
+  // the right row count moves with the character cap.
   const rows = bodies(Array(64).fill(3828));
   const batches = tokenBatches(rows);
   const widest = Math.max(...batches.map((b) => paddedTokens(rows, b)));
   assert.ok(widest <= BATCH_TOKEN_BUDGET, `widest padded batch is ${widest} tokens`);
-  assert.ok(Math.max(...batches.map((b) => b.length)) <= 8,
-    'a 3,828-character body fits at most 8 rows per call, nowhere near the 64 that cost 14.5 GB');
+  assert.ok(Math.max(...batches.map((b) => b.length)) < 64 / 4,
+    'a 3,828-character body never travels 16 or more to a call, let alone 64');
 });
 
-test('short bodies still batch, so the frozen tiers load about as before', () => {
-  // The point of budgeting in tokens rather than dropping batching outright:
-  // at the quality tier's ~93 tokens per body a call should still carry tens of
-  // rows, close to the old fixed 64.
+test('short bodies keep the 64-row batch they had before this change', () => {
+  // The budget is chosen so the short tiers are unaffected. This is a
+  // deliberate property, not an accident: a 4,000-token budget packed only 43
+  // rows, which cost nothing measurable on a fast machine and half again as
+  // much on a slow CI runner, where the fixed per-call cost dominates.
   const rows = bodies(Array(64).fill(370));
-  const batches = tokenBatches(rows);
-  assert.ok(batches.length <= 3, `64 short bodies take ${batches.length} calls, not 64`);
-  assert.ok(Math.max(...batches.map((b) => b.length)) >= 20, 'short bodies still travel together');
+  const batches = tokenBatches(rows, 64);
+  assert.equal(batches.length, 1, '64 short bodies fit in a single call');
+  assert.equal(batches[0].length, 64, 'and that call is the historical 64 rows');
   assertBounded(rows, batches);
 });

@@ -347,10 +347,22 @@ const CHARS_PER_TOKEN = 4;
 // tier embedded none of its 1,000 rows in 50 minutes.
 //
 // So a batch is bounded by tokens, not rows, which makes the batch size
-// independent of how long the memories happen to be. At the quality tier's
-// ~93 tokens per body this still packs about 43 rows per call, close to the
-// old behavior, so the frozen tiers load essentially as they always did.
-export const BATCH_TOKEN_BUDGET = 4_000;
+// independent of how long the memories happen to be.
+//
+// 6,000 is set so the short tiers keep the 64-row batch they always had:
+// at their ~93 tokens per body, 6,000/93 is 64. A 4,000 budget packs only 43,
+// and that looked free on a fast machine (1,000 smoke rows in 18.9s against
+// 17.7s) while costing a slow runner half again as much, because there the
+// fixed per-call cost is a much larger share of a call. The first CI run of
+// this change embedded the smoke tier in 148s against main's 97s, entirely
+// from calls that had got 30 percent smaller.
+//
+// At the long tail's 957 tokens per body the same budget allows 6 rows, so
+// peak memory lands near 4 GB instead of 14.5 GB. The budget is the knob that
+// trades those two against each other; raising it much past this reintroduces
+// the cliff, and the token cap of two threads in the product module assumes
+// batches stay small.
+export const BATCH_TOKEN_BUDGET = 6_000;
 
 /**
  * Group row indices into model batches holding at most `tokenBudget` tokens
