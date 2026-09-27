@@ -4,6 +4,19 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.47.0
+
+2026-09-27
+
+**Tools**
+
+- Trace summaries now give a ready-to-use next request for operation records and caller reports separately.
+  When one list is finished, later pages skip it instead of counting its records again.
+  Counts and timing figures clearly cover only the records on that page.
+- Archive search can continue beyond the first 100,000 matches while still returning at most 20 matches per page.
+
+---
+
 ## v0.46.1
 
 2026-09-25

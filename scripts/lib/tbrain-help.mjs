@@ -21,8 +21,8 @@ const commands = {
     note: "List records for a UTC day, default today. The limit defaults to 20 and accepts 1 through 100 inspected records before filtering. Follow next_after even on an empty page. Results use identifier order. Workflow IDs filter both kinds; parent IDs, action names, outcomes, and minimum durations filter operations only. Use the action name in start.operation, such as recall or sync. Incomplete means no finish record. Duration filters need a completed timing and accept nonnegative milliseconds, including fractions. Operation IDs filter reports. Combined filters must all match.",
   },
   "trace-summary": {
-    usage: "trace-summary [--day DATE] [--limit N]",
-    note: "Summarize a UTC day, default today. The limit defaults to 1000 and accepts 1 through 1000 records of each kind. Check exhaustive before treating counts as complete. Timings describe inspected calls, not answer quality.",
+    usage: "trace-summary [--day DATE] [--limit N] [--after-operation ID|done --after-report ID|done]",
+    note: "Summarize a UTC day, default today. The limit defaults to 1000 and accepts 1 through 1000 records of each kind. Follow next.arguments until next is null. Supply both continuation positions, using done for a null position. Each page has its own counts and timings. Add counts across pages, but do not combine percentiles. exhaustive is true only when one initial page covers the whole day. Timings describe inspected calls, not answer quality.",
   },
   "report-outcome": {
     usage: "report-outcome FILE",

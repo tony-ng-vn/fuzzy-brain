@@ -250,3 +250,10 @@ See [the operation trace guide](agents/operation-traces.md) for the five diagnos
 A committed source can still be waiting for semantic indexing.
 Both memory connections expose `index_status` for the whole brain, one source, or one receipt.
 See [Checking search indexing](agents/search-indexing.md) for exact-source fallbacks and bounded local repairs.
+
+## Search continuation
+
+`search_archive` and the portable `search` command accept the returned `next_offset`, including positions beyond 100,000 matches.
+Each response still returns at most 20 hits.
+Keep the same query and filters on later pages.
+Concurrent captures can change search order, so pagination is not a fixed snapshot of the archive.

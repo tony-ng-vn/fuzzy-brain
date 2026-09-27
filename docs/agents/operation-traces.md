@@ -161,7 +161,17 @@ Use its parent identifier to find the background cycle.
 Find save attempts with `list_traces` and `parent_id` set to the capture trace ID.
 Duration ends when the operation produces its result, before the finish record and reply delivery.
 It inspects at most 1,000 operations and 1,000 reports per call.
-When `exhaustive` is false, its counts and percentiles cover only the inspected records.
+Follow the ready-to-call `next` request until it is null to inspect the rest of the day.
+Its arguments carry separate `after_operation` and `after_report` positions.
+A null position skips a list that has already finished, so later pages do not count those records again.
+Supply both positions when continuing, and keep the returned UTC day.
+For the command line, pass `--after-operation ID --after-report ID`, replacing either ID with `done` when its position is null.
+`has_more` describes whether another page exists.
+`exhaustive` is true only when the initial page covers the whole day.
+A final continuation page still describes only its own records and keeps `exhaustive` false.
+Add counts across pages if needed, but do not average or combine page percentiles.
+To calculate timings for the whole day, collect the individual durations with `list_traces`.
+Concurrent additions can fall before a saved position; repeat the scan to include them.
 Diagnostic calls appear in a separate count, so asking for a summary does not look like an unfinished memory operation.
 
 Use a reported failure to build a reproducible test before changing the system.
