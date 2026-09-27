@@ -20,6 +20,37 @@ env.cacheDir = join(homedir(), ".fuzzy-brain", "models");
 const MODEL_ID = "nomic-ai/nomic-embed-text-v1.5";
 export const EMBEDDING_DIM = 768;
 
+// ONNX Runtime sizes its own intra-op thread pool when the session is built
+// without session_options, and on this workload that default is the single
+// largest source of heat in the whole system. Measured on a 12-core M-series
+// Mac, same weights, same batch of real evidence rows, only the thread count
+// varying:
+//
+//   threads   rows/s   CPU-seconds per 1000 rows   cores busy
+//        2     12.30                        155                 1.91
+//        3      6.72                        397                 2.67
+//        6      8.25                        641                 5.28
+//   default    7.18                        667                 4.79
+//       12      1.53                      5233                 7.98
+//
+// More threads is both slower and hotter, which is the whole point: inference
+// here is a batch of one row at up to 1000 tokens, so the matmuls are too
+// small to amortize the pool's synchronization. Past two workers the threads
+// spend their time spinning and contending for memory bandwidth. The default
+// pool burned 4.3x the CPU of two threads for a result 71% slower, and the
+// twelve-thread pool burned 7.2x for a result 39% slower.
+//
+// Two is a floor, not a ceiling, so an explicit override is honored:
+// EMBEDDING_THREADS=1 for a laptop that must stay cool, higher only if a
+// future workload is genuinely thread-bound rather than bandwidth-bound.
+const INFER_THREADS = Number.parseInt(process.env.EMBEDDING_THREADS ?? "", 10);
+const DEFAULT_INFER_THREADS = 2;
+const intraOpNumThreads =
+  Number.isInteger(INFER_THREADS) && INFER_THREADS >= 1 ? INFER_THREADS : DEFAULT_INFER_THREADS;
+// interOp stays sequential. There is one model and one request shape here, so
+// a second parallel-for pool has nothing to schedule and only adds contention.
+const SESSION_OPTIONS = Object.freeze({ intraOpNumThreads, interOpNumThreads: 1 });
+
 // Embed only the head of very long spans: the head carries a span's
 // identity for retrieval, and full-window (8192-token) inference over tens
 // of thousands of pasted-transcript spans would turn a CPU sweep into a
@@ -36,7 +67,7 @@ function loadExtractor() {
   // question retried the load. In a resident server one transient failure
   // would otherwise leave the vector lane dead for the life of the process,
   // and every answer would quietly come back from the text lanes alone.
-  extractorPromise ??= pipeline("feature-extraction", MODEL_ID, { dtype: "fp32" }).catch((err) => {
+  extractorPromise ??= pipeline("feature-extraction", MODEL_ID, { dtype: "fp32", session_options: SESSION_OPTIONS }).catch((err) => {
     extractorPromise = null;
     throw err;
   });
