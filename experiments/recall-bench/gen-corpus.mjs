@@ -304,6 +304,21 @@ function sentence(r, ctx) {
 // rare_token / date) are built first and never trimmed away; padding
 // sentences are appended afterward and are the only thing cut if `body`
 // would otherwise exceed bodyChars[1].
+//
+// `tier.signalPlacement` decides WHERE the load-bearing sentences land.
+// The default, "head", is the original behavior and stays byte-identical for
+// every tier that does not ask for anything else. It is also the assumption
+// scripts/lib/embeddings.mjs already makes: that a span's identity is carried
+// by its opening, which is why only the head of a long passage is embedded.
+//
+// "buried" exists to test that assumption instead of assuming it. Real
+// evidence is pasted transcripts whose identifying detail can sit thousands of
+// characters in, and the shipped character cap throws away everything past it.
+// A corpus that only ever plants signal at the head cannot detect a regression
+// from lowering that cap, because nothing it generates would ever be clipped.
+// So this variant pushes the load-bearing sentences behind a run of padding
+// whose depth is drawn per memory, which puts a controllable share of rows
+// beyond any candidate cap. See the longtail tier in config.mjs.
 function buildBody(r, ctx, tier) {
   const [minLen, maxLen] = tier.bodyChars;
   const loadBearing = [`On ${ctx.dateText}, ${ctx.person.name} and I were at ${ctx.place.name}.`];
@@ -311,7 +326,20 @@ function buildBody(r, ctx, tier) {
   if (ctx.distinguisher) loadBearing.push(`I remember it because of ${ctx.distinguisher}.`);
   if (ctx.rareToken) loadBearing.push(`The reference code on it was ${ctx.rareToken}.`);
 
-  let acc = loadBearing.join(' ');
+  const signal = loadBearing.join(' ');
+  let prefix = '';
+  if (tier.signalPlacement === 'buried') {
+    // Draw a depth in [0.08, 0.75] of the target window and pack padding into
+    // it, so the signal lands at a different offset in every memory instead of
+    // at one blessed depth that a single cap test could pass or fail by luck.
+    const target = Math.round((minLen + maxLen) / 2 * (0.08 + r.float() * 0.67));
+    for (let i = 0; i < 60 && prefix.length < target; i++) {
+      const candidate = sentence(r, ctx);
+      if (`${prefix} ${candidate}`.length <= target) prefix = `${prefix} ${candidate}`;
+    }
+  }
+
+  let acc = prefix ? `${prefix} ${signal}` : signal;
   // Greedy bin-pack a pool of candidate padding sentences into the
   // [minLen, maxLen] window: a single fixed sequence can straddle the
   // window (a sentence that would push acc from under minLen to over
@@ -321,7 +349,14 @@ function buildBody(r, ctx, tier) {
   // packing many more chances to land inside a window as narrow as the
   // synthetic tiers' 180-220 range.
   if (acc.length < maxLen) {
-    for (let i = 0; i < 30 && acc.length < minLen; i++) {
+    // The iteration ceiling only exists to stop a window the padding sentences
+    // cannot fill. It has to be well clear of what a long window needs: at
+    // roughly 60 characters per sentence, a 5,200 character target takes
+    // around 85 draws, and a 30-draw ceiling silently topped out near 1,800
+    // characters and produced a "long" tier that was not long. A narrow window
+    // still exits on `acc.length < minLen` long before the ceiling, so the
+    // short tiers draw exactly as many numbers as they always did.
+    for (let i = 0; i < 400 && acc.length < minLen; i++) {
       const candidate = sentence(r, ctx);
       const next = `${acc} ${candidate}`;
       if (next.length <= maxLen) acc = next;

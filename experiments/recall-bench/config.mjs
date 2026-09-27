@@ -34,6 +34,32 @@ export const config = {
     quality50k: { memories: 50_000,    queriesPerSplit: 1_000, vector: "real",      dims: 768, bodyChars: [340, 400], schema: "bench_q50k"  },
     rehearsal1m:{ memories: 1_000_000, queriesPerSplit: 2_000, vector: "synthetic", dims: 256, bodyChars: [180, 220], schema: "bench_r1m"   },
     full10m:    { memories: 10_000_000,queriesPerSplit: 5_000, vector: "synthetic", dims: 256, bodyChars: [180, 220], schema: "bench_x10m"  },
+
+    // The regime the other four tiers cannot see.
+    //
+    // Every tier above generates 180-400 character bodies. The real evidence
+    // store does not look like that: measured over its 49,320 passages, p50 is
+    // 289 characters but the mean is 4,217, p90 is 5,484, and the longest
+    // pasted span is 3.9 MB. So the retrieval design was tuned, and its
+    // headline Recall@10 of 0.977 was earned, on text roughly an order of
+    // magnitude shorter than most of what it actually has to search.
+    //
+    // That matters for one specific decision. scripts/lib/embeddings.mjs
+    // embeds only the first EMBED_CHAR_CAP characters of a span, on the
+    // theory that a span's identity lives in its opening. Lowering that cap is
+    // the single largest speed and memory lever available (measured: 4.9x
+    // throughput and roughly half the resident footprint), but a bench whose
+    // bodies are 370 characters cannot possibly detect the regression,
+    // because nothing it generates would ever be clipped.
+    //
+    // This tier closes that gap. Bodies are long enough that the shipped
+    // 4,000-character cap actually bites, and signalPlacement "buried" pushes
+    // the planted signal to a drawn offset so a share of rows carry their
+    // identity past any candidate cap. It is the tier that can answer whether
+    // the cap is safe to lower, and it is deliberately NOT a replacement for
+    // quality50k: those tiers stay frozen, so every number already recorded
+    // against them still reproduces exactly.
+    longtail1k:  { memories: 1_000,     queriesPerSplit: 100,   vector: "real",      dims: 768, bodyChars: [3_800, 5_200], schema: "bench_longtail", signalPlacement: "buried" },
   },
 
   corpus: {
