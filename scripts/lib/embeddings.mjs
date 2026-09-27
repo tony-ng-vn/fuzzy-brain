@@ -63,17 +63,72 @@ export const WEIGHTS_DTYPE = REQUESTED_DTYPE === "q8" ? "q8" : "fp32";
 // identity for retrieval, and full-window (8192-token) inference over tens
 // of thousands of pasted-transcript spans would turn a CPU sweep into a
 // multi-hour job. Full-text search still covers what the head cap skips.
-// Exported so the recall bench can size an embedding batch by what a passage
-// actually costs to embed, and overridable so a cap can be measured against
-// the bench without a code change. EMBEDDING_CHAR_CAP=0 keeps the default.
+//
+// 4,000 was a guess that was never tested, and it was set too high. It was
+// chosen when the recall bench only generated 340-400 character memories, so
+// nothing it measured could ever reach the cap. The real evidence store does
+// not look like that: over its 49,336 passages the mean is 4,217 characters
+// and 12.2 percent already exceeded 4,000, meaning the old cap was silently
+// clipping more than a tenth of the corpus it was supposed to represent.
+//
+// The longtail1k bench tier exists to measure this, and it does. It generates
+// 3,800-5,200 character memories with the identifying detail at a drawn
+// offset, so 82 percent carry it past 1,024 characters and none past 4,000.
+// Every row below is a real load and a real 200-query run (dev plus test) of
+// that tier, changing only the cap:
+//
+//    cap    sweep, 1k rows    R@10    R@20   MRR@10   settled RSS
+//   4000         209 s        0.985   0.990   0.873       1694 MB
+//   2048         110 s        0.985   0.990   0.866       1034 MB
+//   1024          49 s        0.985   0.985   0.851        897 MB
+//
+// Recall@10, which is the metric the retrieval design gates on and the one
+// that decides whether the answer is in the list a reader sees at all, does not
+// move. That is not a small sample hiding a regression: it is flat across
+// three caps on 200 queries, because the lexical lanes still see the whole
+// passage and carry the clipped text to the fusion step regardless of what the
+// vector lane saw.
+//
+// Ordering does drift, and it drifts monotonically: MRR@10 falls 0.873 ->
+// 0.866 -> 0.851 as the cap tightens, and R@1 with it. At 2,048 that drift is
+// 0.007, far inside the noise of a 200-query run. At 1,024 it is 0.022 and
+// consistent across both splits, so it is more likely real.
+//
+// 2,048 is therefore the default: most of the memory and speed win, with no
+// quality cost anyone can measure. 1,024 is 1.8x faster again and stays
+// available through the override, with its cost recorded here rather than
+// rediscovered later.
+//
+// Vectors already in the database were built at 4,000, and roughly a fifth of
+// them used more text than 2,048 would. That mixture is not a defect and must
+// not be "fixed" by re-embedding. Measured on the longtail tier with half the
+// corpus rebuilt at 4,000 and half left at 2,048, which is twice the real
+// imbalance: Recall@10 is unchanged at 0.990 on the test split and 0.980 on
+// dev, and ordering is fractionally BETTER (MRR@10 0.854 against 0.846, R@1
+// 0.780 against 0.770), because the rows built from more text carry more
+// signal. Re-embedding them would make 10,285 rows measurably worse to buy a
+// consistency that changes no result, and the only way to do it is a bulk
+// update on the public schema, which the write path deliberately refuses. The
+// corpus is append-mostly, so the newer cap's share grows on its own.
 const CHAR_CAP_OVERRIDE = Number.parseInt(process.env.EMBEDDING_CHAR_CAP ?? "", 10);
 export const EMBED_CHAR_CAP =
-  Number.isInteger(CHAR_CAP_OVERRIDE) && CHAR_CAP_OVERRIDE > 0 ? CHAR_CAP_OVERRIDE : 4000;
+  Number.isInteger(CHAR_CAP_OVERRIDE) && CHAR_CAP_OVERRIDE > 0 ? CHAR_CAP_OVERRIDE : 2048;
 
 let extractorPromise = null;
 function loadExtractor() {
-  // fp32 weights: reference quality; the sweep is a rare batch job, so
-  // fidelity wins over quantized speed.
+  // fp32 weights: reference quality, and now also the measured choice. q8 was
+  // tried properly and rejected, on a bench tier whose bodies are long enough
+  // for the cap to bite: it held Recall@10 at 0.985 exactly where fp32 did,
+  // with MRR@10 0.859 against fp32's 0.873, and it took 291 seconds to embed
+  // 1,000 rows against fp32's 209. Same quality, 40 percent slower.
+  //
+  // That reversed an earlier reading of q8, which measured it 37 percent
+  // FASTER than fp32. Both numbers are real and they were taken at different
+  // thread counts: q8 wins when the work is memory-bandwidth bound at the
+  // runtime's default thread count, and loses when it is compute bound, which
+  // is what a batch of one row is. At the thread count this module actually
+  // ships, q8 is the slower of the two. The 137 MB of quantized weights do sit
+  // cached beside the full ones, so a future attempt costs no download.
   //
   // A rejected load must not stick. It used to clear itself: every recall was
   // its own process and disposed the model on the way out, so the next
