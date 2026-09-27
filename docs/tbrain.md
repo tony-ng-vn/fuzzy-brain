@@ -119,6 +119,10 @@ Omit `TBRAIN_ALLOW_CAPTURE=1` for a read-only connection.
 The read-only connection still exposes `transfer_format`, so the client can prepare a compatible file.
 Use `status` to inspect storage readiness, configured source IDs and whether the write tool is enabled.
 Before `archive_day`, call `transfer_format` and copy one of its returned `authorized_source_ids` into `source_id`.
+Source authorization and revision checks recognize uppercase and lowercase spellings of the same UUID.
+The configured list shows one lowercase spelling for each source.
+Tbrain preserves the supplied transfer rather than changing its saved identifiers or retry hashes.
+Reuse the exact packet for a retry, including its metadata.
 Keep the conversation identity in `source_key` and `source.conversation_id`; never invent a source ID.
 
 The tools are `recall`, `get_node`, `search_archive`, `read_evidence`, `read_archive`, `read_source`, `read_receipt`, `prepare_capture`, `validate_transfer`, `transfer_format`, `status`, and, when enabled, `archive_day`.
