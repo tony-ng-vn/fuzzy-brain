@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, lstat, open, link, unlink, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { outcomeReportSchema, summarizeOperations, traceListFilterSchema } from "./operation-feedback.mjs";
+import { outcomeReportSchema, summarizeOperations, traceListFilterSchema, traceSummarySchema } from "./operation-feedback.mjs";
 import { callerMetadata, inputMetadata, outputMetadata, resultErrorCode, safeErrorCode, safeOperation } from "./operation-metadata.mjs";
 
 const MAX_EVENT_BYTES = 128 * 1024;
@@ -244,14 +244,28 @@ export function createOperationJournal({ directory, enabled = true } = {}) {
       const { items, ...page } = await listEvents({ day, limit, after }, "report", readReport, matches);
       return { ...page, reports: items };
     },
-    async summary({ day = new Date().toISOString().slice(0, 10), limit = 1000 } = {}) {
-      if (!validDay(day) || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw failure("invalid");
+    async summary(input = {}) {
+      const parsed = traceSummarySchema.safeParse(input);
+      if (!parsed.success) throw failure("invalid");
+      const { day = new Date().toISOString().slice(0, 10), limit, after_operation, after_report } = parsed.data;
+      if (!validDay(day)) throw failure("invalid");
+      for (const after of [after_operation, after_report]) {
+        if (after != null && parseId(after).day !== day) throw failure("invalid");
+      }
+      const continued = after_operation !== undefined;
+      // A null continuation marks a finished list; it must never restart at its first record.
+      const page = (after, kind, reader) => after === null
+        ? { items: [], next_after: null, has_more: false }
+        : listEvents({ day, limit, after }, kind, reader);
       const [traces, reports] = await Promise.all([
-        listEvents({ day, limit }, "start", read), listEvents({ day, limit }, "report", readReport),
+        page(after_operation, "start", read), page(after_report, "report", readReport),
       ]);
-      return { day, ...summarizeOperations(traces.items, reports.items), exhaustive: traces.exhaustive && reports.exhaustive,
-        scan_limit_per_kind: limit, next_operation: traces.next_after, next_report: reports.next_after,
-        note: "Counts and percentiles describe only the inspected records. New concurrent records may need another read." };
+      const has_more = traces.has_more || reports.has_more;
+      return { day, ...summarizeOperations(traces.items, reports.items), exhaustive: !continued && !has_more,
+        scan_limit_per_kind: limit, next_operation: traces.next_after, next_report: reports.next_after, has_more,
+        next: has_more ? { tool: "trace_summary", arguments: { day, limit,
+          after_operation: traces.next_after, after_report: reports.next_after } } : null,
+        note: "Counts and percentiles describe this page only. Sum counts across pages, but do not combine percentiles. New concurrent records may need another read." };
     },
   };
 }

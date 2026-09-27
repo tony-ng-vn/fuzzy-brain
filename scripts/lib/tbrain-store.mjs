@@ -220,6 +220,7 @@ export async function readSource(client,schema,input,{ cache = null } = {}) {
 export const archiveSearchShape = {
     query:z.string().trim().min(1).max(2000), from:z.iso.datetime({offset:true}).nullable().default(null),
     until:z.iso.datetime({offset:true}).nullable().default(null), ...page,
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
     source_id: z.uuid().nullable().default(null),
     role: z.enum(["user", "assistant", "system", "tool", "other", "unknown"]).nullable().default(null),
 };

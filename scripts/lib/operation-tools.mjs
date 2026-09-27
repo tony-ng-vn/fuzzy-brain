@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { createOperationJournal } from "./operation-journal.mjs";
-import { outcomeReportShape, traceIdShape, traceListFilterShape } from "./operation-feedback.mjs";
+import { outcomeReportShape, traceIdShape, traceListFilterShape, traceSummaryShape } from "./operation-feedback.mjs";
 import { safeErrorCode } from "./operation-metadata.mjs";
 
 export function configuredOperationJournal(env = process.env) {
@@ -34,6 +34,6 @@ export function registerTraceTools(server, { journal, release }) {
     ({ kind, ...input }) => kind === "reports" ? journal.listReports(input) : journal.list(input));
   register("report_outcome", "Record structured feedback about a request, save, source check, search, or reasoning result. Include expected or used node IDs and evidence IDs in their separate fields. This is an unverified caller report, not an approved memory. Use workflow_id for a failure before any server call. Do not include private internal reasoning or source text.",
     outcomeReportShape, input => journal.report(input), true);
-  register("trace_summary", "Summarize errors, incomplete calls, empty or limited searches, delivery failures, and caller feedback for a UTC day. per_operation separates each operation's timings and failures so long background jobs do not obscure recall latency. recall_states counts result labels from successful recall calls, not answer correctness. Percentiles cover only inspected records. Diagnostic calls are counted separately so this request does not look like an unfinished memory operation.",
-    { day: z.iso.date().optional(), limit: z.number().int().min(1).max(1000).default(1000) }, input => journal.summary(input));
+  register("trace_summary", "Summarize errors, incomplete calls, empty or limited searches, delivery failures, and caller feedback for a UTC day. per_operation separates each operation's timings and failures so long background jobs do not obscure recall latency. recall_states counts result labels from successful recall calls, not answer correctness. Follow next.arguments until next is null. Counts and percentiles cover only this page; do not combine page percentiles. Diagnostic calls are counted separately so this request does not look like an unfinished memory operation.",
+    traceSummaryShape, input => journal.summary(input));
 }

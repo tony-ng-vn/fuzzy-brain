@@ -58,7 +58,7 @@ async function traceCommand(args, journal) {
   const [command, ...rest] = args;
   const options = {};
   let value;
-  const allowed = command === "trace" ? ["kind"] : command === "traces" ? ["day", "limit", "after", "kind", "workflow-id", "parent-id", "operation-id", "operation", "outcome", "min-duration-ms"] : command === "trace-summary" ? ["day", "limit"] : [];
+  const allowed = command === "trace" ? ["kind"] : command === "traces" ? ["day", "limit", "after", "kind", "workflow-id", "parent-id", "operation-id", "operation", "outcome", "min-duration-ms"] : command === "trace-summary" ? ["day", "limit", "after-operation", "after-report"] : [];
   for (let i = 0; i < rest.length; i++) {
     if (!rest[i].startsWith("--")) {
       if (!["trace", "report-outcome"].includes(command) || value !== undefined) throw archiveError("invalid");
@@ -70,7 +70,10 @@ async function traceCommand(args, journal) {
     }
   }
   if (command === "trace-status") return journal.status();
-  if (command === "trace-summary") return journal.summary(options);
+  if (command === "trace-summary") {
+    for (const key of ["after_operation", "after_report"]) if (options[key] === "done") options[key] = null;
+    return journal.summary(options);
+  }
   if (command === "traces") {
     const { kind = "operations", ...page } = options;
     if (!["operations", "reports"].includes(kind)) throw archiveError("invalid");
