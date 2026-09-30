@@ -1,11 +1,12 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AddNodePanel from "@/components/AddNodePanel";
 import CompanionPanel from "@/components/CompanionPanel";
 import NodeDetailPanel from "@/components/NodeDetailPanel";
 import type { BrainEdge, BrainNode } from "@/components/types";
+import { fetchGraphData } from "@/lib/graph-client";
 
 // Both views touch window and WebGL at import or mount time, so neither may
 // ever server-render; BrainMap imports react-force-graph-3d at the top level.
@@ -29,25 +30,45 @@ export default function BrainView() {
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
+  const graphRequest = useRef(0);
 
-  const fetchGraph = useCallback(() => {
-    return fetch("/api/graph")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.error) throw new Error(data.error);
-        setNodes(data.nodes);
-        setEdges(data.edges);
-        return data.nodes as BrainNode[];
-      })
-      .catch((err) => {
+  const fetchGraph = useCallback(async () => {
+    const request = ++graphRequest.current;
+    try {
+      const data = await fetchGraphData();
+      if (request !== graphRequest.current) return null;
+      setNodes(data.nodes);
+      setEdges(data.edges);
+      setError(null);
+      return data.nodes;
+    } catch (err) {
+      if (request === graphRequest.current) {
         setError(err instanceof Error ? err.message : String(err));
-        return [] as BrainNode[];
-      })
-      .finally(() => setLoaded(true));
+      }
+      return null;
+    } finally {
+      if (request === graphRequest.current) setLoaded(true);
+    }
   }, []);
 
   useEffect(() => {
-    fetchGraph();
+    const timer = window.setTimeout(fetchGraph, 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchGraph]);
+
+  // Nodes can also be written through the CLI or companion MCP server. Refresh
+  // when Tony returns to the app so those backend writes do not leave the open
+  // graph stale. Explicit no-store above also prevents a cached graph response.
+  useEffect(() => {
+    const refreshVisibleGraph = () => {
+      if (document.visibilityState === "visible") void fetchGraph();
+    };
+    window.addEventListener("focus", refreshVisibleGraph);
+    document.addEventListener("visibilitychange", refreshVisibleGraph);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleGraph);
+      document.removeEventListener("visibilitychange", refreshVisibleGraph);
+    };
   }, [fetchGraph]);
 
   const clearSelection = useCallback(() => {
@@ -83,21 +104,28 @@ export default function BrainView() {
     clearSelection();
   };
 
-  const runIngest = () => {
+  const runIngest = async () => {
     setShowAdd(false);
     setShowTalk(false);
     clearSelection();
     setIngesting(true);
     setIngestResult(null);
     setIngestError(null);
-    fetch("/api/ingest", { method: "POST", headers: { "x-fuzzy-brain-sync": "1" } })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.error) throw new Error(data.error);
-        setIngestResult(data.output as string);
-      })
-      .catch((err) => setIngestError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setIngesting(false));
+    try {
+      const res = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "x-fuzzy-brain-sync": "1" },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
+      const fresh = await fetchGraph();
+      if (!fresh) throw new Error("Sessions synced, but the graph did not refresh. Try reloading the page.");
+      setIngestResult(data.output as string);
+    } catch (err) {
+      setIngestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIngesting(false);
+    }
   };
 
   return (
@@ -187,7 +215,7 @@ export default function BrainView() {
           onCreated={async (nodeId) => {
             const fresh = await fetchGraph();
             setShowAdd(false);
-            selectNode(fresh.find((n) => n.id === nodeId) ?? null);
+            selectNode(fresh?.find((n) => n.id === nodeId) ?? null);
           }}
         />
       )}
