@@ -4,6 +4,18 @@ Changes to Fuzzy Brain.
 
 ---
 
+## v0.48.1
+
+2026-09-29
+
+**UI**
+
+- The open brain now refreshes from the backend after a session sync and when its browser tab becomes active again, so nodes written through another local tool no longer require a manual page reload to appear.
+- Graph reads bypass browser caches, ignore older responses that finish after a newer refresh, and clear a temporary connection error after the backend recovers.
+- If the graph cannot refresh after a session sync, the app reports that the visible update is incomplete instead of claiming the graph is current.
+
+---
+
 ## v0.48.0
 
 2026-09-27
